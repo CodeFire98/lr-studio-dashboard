@@ -53,7 +53,7 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
   // If there's a pending invite in session, fetch its details and lock the UI to it.
   useEffect(() => {
     if (!open) return;
-    const token = sessionStorage.getItem('lr_pending_invite');
+    const token = localStorage.getItem('lr_pending_invite');
     if (!token) { setInvitePreview(null); return; }
     let cancelled = false;
     previewInvitation(token)

@@ -123,7 +123,7 @@ const App = () => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get('invite');
     if (!token) return;
-    sessionStorage.setItem('lr_pending_invite', token);
+    localStorage.setItem('lr_pending_invite', token);
     setInviteBanner({ status: 'pending', text: "You've been invited. Sign in (or create an account) with the email the invite was sent to." });
     // Strip ?invite from the URL so a reload doesn't re-trigger this branch.
     params.delete('invite');
@@ -138,19 +138,19 @@ const App = () => {
   // Once we have an auth session AND a pending invite token, redeem it.
   useEffect(() => {
     if (!auth) return;
-    const token = sessionStorage.getItem('lr_pending_invite');
+    const token = localStorage.getItem('lr_pending_invite');
     if (!token) return;
     (async () => {
       try {
         await acceptInvitation(token);
-        sessionStorage.removeItem('lr_pending_invite');
+        localStorage.removeItem('lr_pending_invite');
         setInviteBanner({ status: 'done', text: 'Invite accepted — welcome to the workspace.' });
         // Re-sync auth so the new workspace membership shows up in the UI.
         await supabase.auth.refreshSession();
         window.dispatchEvent(new Event('lr_auth_change'));
         setTimeout(() => setInviteBanner(null), 3500);
       } catch (e) {
-        sessionStorage.removeItem('lr_pending_invite');
+        localStorage.removeItem('lr_pending_invite');
         setInviteBanner({ status: 'error', text: `Couldn't accept invite: ${e.message || e}` });
       }
     })();
