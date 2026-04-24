@@ -205,14 +205,6 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
               <GoogleGlyph />
               <span>Continue with Google</span>
             </button>
-            <button
-              type="button"
-              className="oauth-btn"
-              onClick={() => setErr("Apple sign-in isn't set up yet.")}
-            >
-              <AppleGlyph />
-              <span>Continue with Apple</span>
-            </button>
           </div>
 
           <div className="auth-divider"><span>or with email</span></div>
