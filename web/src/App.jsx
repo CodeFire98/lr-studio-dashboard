@@ -281,7 +281,7 @@ const App = () => {
     if (route.view === "tasks") return <TasksView setRoute={setRoute} tasks={tasks} mode={mode}/>;
     if (route.view === "library") return <LibraryView/>;
     if (route.view === "performance") return <PerformanceView/>;
-    if (route.view === "team") return <TeamView/>;
+    if (route.view === "team") return <TeamView overrideAccountId={impersonation?.client?.id} />;
     if (route.view === "brand") return <BrandKitView/>;
     if (route.view === "calendar") return <CalendarView tasks={tasks} setRoute={setRoute}/>;
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;

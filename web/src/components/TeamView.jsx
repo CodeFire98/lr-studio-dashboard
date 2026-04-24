@@ -15,10 +15,11 @@ import {
   changeMemberRole,
 } from '../lib/db.js';
 
-const TeamView = () => {
+const TeamView = ({ overrideAccountId } = {}) => {
   const auth = readAuth();
-  const accountId = auth?.account?.id;
+  const accountId = overrideAccountId || auth?.account?.id;
   const accountName = auth?.account?.name || 'Your Brand';
+  const isImpersonating = !!overrideAccountId;
 
   const [members, setMembers] = useState([]);
   const [invites, setInvites] = useState([]);
@@ -48,7 +49,7 @@ const TeamView = () => {
 
   useEffect(() => { refresh(); }, []); // eslint-disable-line
 
-  const currentUserIsOwner = members.some((m) => m.person.id === auth?.id && m.role === 'owner');
+  const currentUserIsOwner = !isImpersonating && members.some((m) => m.person.id === auth?.id && m.role === 'owner');
 
   const submit = async (e) => {
     e?.preventDefault?.();
