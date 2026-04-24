@@ -119,6 +119,21 @@ async function signInWithPassword({ email, password }) {
   });
   if (error) throw error;
   await refreshFromSession();
+
+  // If this is a brand user who signed up with email confirmation enabled,
+  // create_brand_account was never called. Detect and fix that now.
+  if (_cachedAuth && !_cachedAuth.isAgency && !_cachedAuth.account) {
+    const pendingName = localStorage.getItem('lr_pending_brand_name');
+    const brandName = pendingName || email.split('@')[0] || 'My Brand';
+    try {
+      await supabase.rpc('create_brand_account', { p_name: brandName });
+      localStorage.removeItem('lr_pending_brand_name');
+      await refreshFromSession();
+    } catch (e) {
+      console.error('create_brand_account on sign-in failed', e);
+    }
+  }
+
   return _cachedAuth;
 }
 
@@ -137,6 +152,8 @@ async function signUpBrand({ email, password, displayName, brandName }) {
   // If the project requires email confirmation, session will be null — we
   // need to surface that back to the UI so it can say "check your email".
   if (!data.session) {
+    // Stash the brand name so we can create the account after email confirmation + sign-in.
+    try { localStorage.setItem('lr_pending_brand_name', brandName?.trim() || displayName?.trim() || 'My Brand'); } catch {}
     return { pendingConfirmation: true, user: data.user };
   }
   // Brand-side first-time setup: create their brand account + owner row.
