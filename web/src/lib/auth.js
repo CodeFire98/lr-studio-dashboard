@@ -30,11 +30,51 @@ function avatarColorFor(seed) {
   return palette[h % palette.length];
 }
 
+// Per-user localStorage key that remembers which brand the user picked last.
+function activeBrandKey(userId) {
+  return `lr_active_brand:${userId}`;
+}
+
 // Build the UI-facing profile from an auth session + DB rows.
-function hydrateProfile(user, profileRow, membershipRows) {
-  const firstMembership = membershipRows?.[0];
-  const account = firstMembership?.accounts || null;
+// activeAccountId is the brand the user picked previously (or just picked). If
+// it matches a current membership, that becomes the active account. Otherwise
+// we fall back to the first membership (current behavior) when there's only
+// one, or leave it null when there are multiple so App.jsx can show the picker.
+function hydrateProfile(user, profileRow, membershipRows, activeAccountId) {
   const isAgency = !!profileRow?.is_agency;
+  const memberships = (membershipRows || [])
+    .filter((m) => m.accounts)
+    .map((m) => ({
+      role: m.role,
+      account: {
+        id: m.accounts.id,
+        name: m.accounts.name,
+        type: m.accounts.type,
+        accentColor: m.accounts.accent_color || null,
+      },
+    }));
+
+  // Brand users can belong to multiple brands and must pick one. Agency users
+  // always resolve to their single agency membership (RLS shows them all brands).
+  let activeMembership = null;
+  if (isAgency) {
+    activeMembership = memberships[0] || null;
+  } else {
+    if (activeAccountId) {
+      activeMembership =
+        memberships.find((m) => m.account.id === activeAccountId) || null;
+    }
+    // If exactly one membership, auto-select it — no picker needed.
+    if (!activeMembership && memberships.length === 1) {
+      activeMembership = memberships[0];
+    }
+  }
+
+  const requiresBrandSelection =
+    !isAgency && !activeMembership && memberships.length > 1;
+
+  const account = activeMembership?.account || null;
+  const activeRole = activeMembership?.role || null;
   const name = profileRow?.display_name || user.email || 'You';
   return {
     id: user.id,
@@ -42,13 +82,13 @@ function hydrateProfile(user, profileRow, membershipRows) {
     name,
     initials: profileRow?.initials || initialsFrom(name, user.email),
     role: isAgency
-      ? (firstMembership?.role === 'owner' ? 'Agency Owner, L+R' : 'Agency Member')
-      : (firstMembership?.role === 'owner' ? 'Brand Owner' : 'Brand Lead'),
+      ? (activeRole === 'owner' ? 'Agency Owner, L+R' : 'Agency Member')
+      : (activeRole === 'owner' ? 'Brand Owner' : 'Brand Lead'),
     avatarColor: profileRow?.avatar_color || avatarColorFor(user.email || user.id),
     workspace: isAgency ? 'admin' : 'customer',
-    account: account
-      ? { id: account.id, name: account.name, type: account.type }
-      : null,
+    account,
+    memberships,
+    requiresBrandSelection,
     isAgency,
     signedInAt: new Date().toISOString(),
   };
@@ -81,7 +121,12 @@ async function loadProfileFor(user) {
     }
   }
 
-  return hydrateProfile(user, profileRow, memberships || []);
+  let activeAccountId = null;
+  try {
+    activeAccountId = localStorage.getItem(activeBrandKey(user.id)) || null;
+  } catch {}
+
+  return hydrateProfile(user, profileRow, memberships || [], activeAccountId);
 }
 
 async function refreshFromSession() {
@@ -101,7 +146,11 @@ async function _doRefresh() {
   // BUT skip this if there's a pending invite — the invite flow (accept_invitation)
   // handles account assignment on its own.
   const hasPendingInvite = !!localStorage.getItem('lr_pending_invite');
-  if (_cachedAuth && !_cachedAuth.isAgency && !_cachedAuth.account && !hasPendingInvite) {
+  // Auto-create only for first-time brand users with NO memberships at all.
+  // A user with 2+ memberships pending a brand pick will also have no active
+  // account, but they already own brands — we must not create another one.
+  const hasAnyMembership = (_cachedAuth?.memberships || []).length > 0;
+  if (_cachedAuth && !_cachedAuth.isAgency && !hasAnyMembership && !hasPendingInvite) {
     const pendingName = localStorage.getItem('lr_pending_brand_name');
     const brandName = pendingName || _cachedAuth.name || _cachedAuth.email?.split('@')[0] || 'My Brand';
     try {
@@ -239,6 +288,27 @@ async function signOut() {
   return writeAuth(null);
 }
 
+// Pick which brand the current user is operating in. Persists per-user in
+// localStorage so subsequent sessions restore the same selection on that
+// browser. Pass null to clear and re-trigger the picker.
+async function setActiveBrand(accountId) {
+  if (!_cachedAuth) return null;
+  const userId = _cachedAuth.id;
+  try {
+    if (accountId) localStorage.setItem(activeBrandKey(userId), accountId);
+    else localStorage.removeItem(activeBrandKey(userId));
+  } catch {}
+  // Re-hydrate from the current session so `account`, `role`, and the
+  // `requiresBrandSelection` flag reflect the new pick.
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.user) {
+    _cachedAuth = await loadProfileFor(session.user);
+    try { localStorage.setItem(AUTH_KEY, JSON.stringify(_cachedAuth)); } catch {}
+  }
+  fireChange();
+  return _cachedAuth;
+}
+
 // Google OAuth — requires Google provider enabled in Supabase Dashboard →
 // Authentication → Providers, and the client_id/secret configured. The
 // redirect URL list there must include `${origin}/` (and the prod origin).
@@ -297,6 +367,7 @@ export {
   signUpForInvite,
   signInWithGoogle,
   signOut,
+  setActiveBrand,
   requestPasswordReset,
   readAgencyAccounts,
   writeAgencyAccounts,
