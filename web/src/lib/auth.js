@@ -69,6 +69,23 @@ async function loadProfileFor(user) {
 async function refreshFromSession() {
   const { data: { session } } = await supabase.auth.getSession();
   _cachedAuth = session?.user ? await loadProfileFor(session.user) : null;
+
+  // If a brand user has no account yet (e.g. signed up with email confirmation,
+  // or signed up via Google OAuth), create their brand workspace now.
+  // This covers every login path: email, Google, any future provider.
+  if (_cachedAuth && !_cachedAuth.isAgency && !_cachedAuth.account) {
+    const pendingName = localStorage.getItem('lr_pending_brand_name');
+    const brandName = pendingName || _cachedAuth.name || _cachedAuth.email?.split('@')[0] || 'My Brand';
+    try {
+      await supabase.rpc('create_brand_account', { p_name: brandName });
+      localStorage.removeItem('lr_pending_brand_name');
+      // Re-load profile so the new account shows up.
+      _cachedAuth = await loadProfileFor(session.user);
+    } catch (e) {
+      console.error('auto create_brand_account failed', e);
+    }
+  }
+
   if (_cachedAuth) {
     try { localStorage.setItem(AUTH_KEY, JSON.stringify(_cachedAuth)); } catch {}
   } else {
@@ -119,21 +136,6 @@ async function signInWithPassword({ email, password }) {
   });
   if (error) throw error;
   await refreshFromSession();
-
-  // If this is a brand user who signed up with email confirmation enabled,
-  // create_brand_account was never called. Detect and fix that now.
-  if (_cachedAuth && !_cachedAuth.isAgency && !_cachedAuth.account) {
-    const pendingName = localStorage.getItem('lr_pending_brand_name');
-    const brandName = pendingName || email.split('@')[0] || 'My Brand';
-    try {
-      await supabase.rpc('create_brand_account', { p_name: brandName });
-      localStorage.removeItem('lr_pending_brand_name');
-      await refreshFromSession();
-    } catch (e) {
-      console.error('create_brand_account on sign-in failed', e);
-    }
-  }
-
   return _cachedAuth;
 }
 
