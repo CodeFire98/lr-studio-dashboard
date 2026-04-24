@@ -64,6 +64,23 @@ async function loadProfileFor(user) {
       .select('role, accounts(id, name, type, accent_color)')
       .eq('user_id', user.id),
   ]);
+
+  // If the profile has no display_name (e.g. Google OAuth user whose trigger
+  // ran before the fix), patch it from the auth metadata.
+  if (profileRow && !profileRow.display_name) {
+    const meta = user.user_metadata || {};
+    const nameFromMeta = meta.display_name || meta.full_name || meta.name || '';
+    if (nameFromMeta) {
+      const initials = nameFromMeta.split(/\s+/).slice(0, 2).map(p => (p[0] || '').toUpperCase()).join('');
+      await supabase.from('profiles').update({
+        display_name: nameFromMeta,
+        initials: initials || nameFromMeta.slice(0, 2).toUpperCase(),
+      }).eq('id', user.id);
+      profileRow.display_name = nameFromMeta;
+      profileRow.initials = initials || nameFromMeta.slice(0, 2).toUpperCase();
+    }
+  }
+
   return hydrateProfile(user, profileRow, memberships || []);
 }
 
