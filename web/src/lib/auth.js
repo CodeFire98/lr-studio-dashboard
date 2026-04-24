@@ -10,6 +10,7 @@ const AUTH_KEY = 'lr_auth';
 // ----- In-memory cache of the current session + profile ------------------
 let _cachedAuth = null;        // the profile shape the UI expects, or null
 let _authReady = false;        // becomes true once we've tried loading once
+let _refreshLock = null;       // prevents concurrent refreshFromSession calls
 
 function fireChange() {
   window.dispatchEvent(new Event('lr_auth_change'));
@@ -67,22 +68,32 @@ async function loadProfileFor(user) {
 }
 
 async function refreshFromSession() {
+  // Prevent concurrent calls — onAuthStateChange fires multiple events
+  // (INITIAL_SESSION, SIGNED_IN, TOKEN_REFRESHED) and each would race.
+  if (_refreshLock) return _refreshLock;
+  _refreshLock = _doRefresh();
+  try { await _refreshLock; } finally { _refreshLock = null; }
+}
+
+async function _doRefresh() {
   const { data: { session } } = await supabase.auth.getSession();
   _cachedAuth = session?.user ? await loadProfileFor(session.user) : null;
 
   // If a brand user has no account yet (e.g. signed up with email confirmation,
   // or signed up via Google OAuth), create their brand workspace now.
-  // This covers every login path: email, Google, any future provider.
   if (_cachedAuth && !_cachedAuth.isAgency && !_cachedAuth.account) {
     const pendingName = localStorage.getItem('lr_pending_brand_name');
     const brandName = pendingName || _cachedAuth.name || _cachedAuth.email?.split('@')[0] || 'My Brand';
     try {
       await supabase.rpc('create_brand_account', { p_name: brandName });
       localStorage.removeItem('lr_pending_brand_name');
-      // Re-load profile so the new account shows up.
       _cachedAuth = await loadProfileFor(session.user);
     } catch (e) {
-      console.error('auto create_brand_account failed', e);
+      // If it fails because account already exists (race condition), just reload.
+      _cachedAuth = await loadProfileFor(session.user);
+      if (!_cachedAuth?.account) {
+        console.error('auto create_brand_account failed', e);
+      }
     }
   }
 
