@@ -81,7 +81,10 @@ async function _doRefresh() {
 
   // If a brand user has no account yet (e.g. signed up with email confirmation,
   // or signed up via Google OAuth), create their brand workspace now.
-  if (_cachedAuth && !_cachedAuth.isAgency && !_cachedAuth.account) {
+  // BUT skip this if there's a pending invite — the invite flow (accept_invitation)
+  // handles account assignment on its own.
+  const hasPendingInvite = !!sessionStorage.getItem('lr_pending_invite');
+  if (_cachedAuth && !_cachedAuth.isAgency && !_cachedAuth.account && !hasPendingInvite) {
     const pendingName = localStorage.getItem('lr_pending_brand_name');
     const brandName = pendingName || _cachedAuth.name || _cachedAuth.email?.split('@')[0] || 'My Brand';
     try {
