@@ -2,7 +2,7 @@
 /* Task Detail — brief summary, chat thread, deliverables, collaborators */
 import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon.jsx';
-import { Art, Avatar, Modal, StatusBadge } from './primitives.jsx';
+import { Art, Avatar, StatusBadge } from './primitives.jsx';
 import MOCK from '../lib/mockData.js';
 import { readAuth } from '../lib/auth.js';
 import {
@@ -29,7 +29,6 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
   const task = tasks.find((p) => p.id === taskId);
   const auth = readAuth();
   const viewerId = auth?.id;
-  const [inviteOpen, setInviteOpen] = useState(false);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [tab, setTab] = useState("overview"); // "overview" | "conversation" | "activity"
@@ -229,9 +228,6 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
           </div>
         </div>
         <div className="actions">
-          <button className="btn" onClick={() => setInviteOpen(true)}>
-            <Icon name="invite" size={14}/>Invite collaborators
-          </button>
           {mode === "admin" && (
             <select
               className="btn"
@@ -507,10 +503,6 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                 </div>
               ))}
             </div>
-            <div className="divider"/>
-            <button className="btn btn-sm" style={{width: "100%", justifyContent: "center"}} onClick={() => setInviteOpen(true)}>
-              <Icon name="invite" size={13}/>Invite
-            </button>
           </div>
 
           <div className="card">
@@ -540,37 +532,6 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
         </aside>
       </div>
 
-      {inviteOpen && (
-        <Modal onClose={() => setInviteOpen(false)}>
-          <h3>Invite collaborators</h3>
-          <p>Add teammates or external reviewers to this task. Roles are task-scoped.</p>
-          <div className="row">
-            <input placeholder="teammate@company.com"/>
-            <select defaultValue="Collaborator">
-              <option>Owner</option>
-              <option>Collaborator</option>
-              <option>Reviewer</option>
-              <option>Viewer</option>
-            </select>
-          </div>
-          <div style={{marginTop: 16}}>
-            <div className="tiny" style={{marginBottom: 8}}>Already on this task</div>
-            <div className="collab-list">
-              {task.collaborators.map((c) => (
-                <div className="collab-row" key={c.id}>
-                  <Avatar person={c} size="sm"/>
-                  <div><div className="name">{c.name}</div></div>
-                  <div className="role">{c.id === task.creativeLead.id ? "Lead" : "Collab"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="modal-actions">
-            <button className="btn" onClick={() => setInviteOpen(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={() => setInviteOpen(false)}>Send invite</button>
-          </div>
-        </Modal>
-      )}
     </div></div>
   );
 };
