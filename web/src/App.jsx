@@ -25,8 +25,9 @@ import {
   AdminClientsView,
   AdminTeamView,
 } from './components/admin.jsx';
+import { BrandSelectView } from './components/BrandSelectView.jsx';
 import MOCK from './lib/mockData.js';
-import { readAuth, writeAuth } from './lib/auth.js';
+import { readAuth, writeAuth, setActiveBrand } from './lib/auth.js';
 import { loadTasks, subscribeToTasks, updateTaskStatus, acceptInvitation } from './lib/db.js';
 import { supabase } from './lib/supabase';
 
@@ -142,12 +143,18 @@ const App = () => {
     if (!token) return;
     (async () => {
       try {
-        await acceptInvitation(token);
+        const newAccountId = await acceptInvitation(token);
         localStorage.removeItem('lr_pending_invite');
         setInviteBanner({ status: 'done', text: 'Invite accepted — welcome to the workspace.' });
         // Re-sync auth so the new workspace membership shows up in the UI.
         await supabase.auth.refreshSession();
-        window.dispatchEvent(new Event('lr_auth_change'));
+        // Auto-switch to the brand they just joined — feels natural since they
+        // clicked the invite link *for this brand*, not any other.
+        if (newAccountId) {
+          await setActiveBrand(newAccountId);
+        } else {
+          window.dispatchEvent(new Event('lr_auth_change'));
+        }
         setTimeout(() => setInviteBanner(null), 3500);
       } catch (e) {
         localStorage.removeItem('lr_pending_invite');
@@ -168,31 +175,49 @@ const App = () => {
   }, []);
 
   // Load tasks from Supabase whenever we have an auth session; clear on sign-out.
+  // Brand users with multiple memberships see only the active brand's tasks —
+  // we filter client-side since RLS already limits the set to their accessible
+  // accounts. Agency users see everything (no filter).
+  const activeAccountId = auth?.account?.id || null;
   useEffect(() => {
     if (!auth) { setTasks([]); return; }
+    // If a brand user hasn't picked a brand yet, don't load anything.
+    if (auth.requiresBrandSelection) { setTasks([]); return; }
     let cancelled = false;
     setTasksLoading(true);
     loadTasks()
-      .then((rows) => { if (!cancelled) setTasks(rows); })
+      .then((rows) => {
+        if (cancelled) return;
+        const scoped = auth.isAgency || !activeAccountId
+          ? rows
+          : rows.filter((t) => t.accountId === activeAccountId);
+        setTasks(scoped);
+      })
       .catch((e) => { console.error('loadTasks failed', e); })
       .finally(() => { if (!cancelled) setTasksLoading(false); });
     return () => { cancelled = true; };
-  }, [auth?.id]);
+  }, [auth?.id, activeAccountId, auth?.requiresBrandSelection, auth?.isAgency]);
 
   // Realtime: stream inserts/updates/deletes into local state.
   useEffect(() => {
     if (!auth) return;
+    if (auth.requiresBrandSelection) return;
     const unsubscribe = subscribeToTasks((evt) => {
+      // Brand users ignore events outside their active brand.
+      const isRelevant = (task) =>
+        auth.isAgency || !activeAccountId || task.accountId === activeAccountId;
       if (evt.type === 'INSERT') {
+        if (!isRelevant(evt.task)) return;
         setTasks((prev) => prev.some((t) => t.id === evt.task.id) ? prev : [evt.task, ...prev]);
       } else if (evt.type === 'UPDATE') {
+        if (!isRelevant(evt.task)) return;
         setTasks((prev) => prev.map((t) => (t.id === evt.task.id ? evt.task : t)));
       } else if (evt.type === 'DELETE') {
         setTasks((prev) => prev.filter((t) => t.id !== evt.id));
       }
     });
     return unsubscribe;
-  }, [auth?.id]);
+  }, [auth?.id, activeAccountId, auth?.requiresBrandSelection, auth?.isAgency]);
 
   // Optimistic local push used after a successful INSERT in HomeView.
   const pushTask = (p) =>
@@ -290,6 +315,14 @@ const App = () => {
 
   const onHome = route.view === "home" && mode !== "admin";
   const isGuest = !auth;
+
+  // Brand-selection gate: show picker when a signed-in brand user belongs to
+  // 2+ brands and hasn't picked one yet. Skip for agency and guests.
+  // Note: rendered WITHOUT the `.app` wrapper — that's a grid with a sidebar
+  // column that would squish the picker into a narrow strip.
+  if (auth?.requiresBrandSelection) {
+    return <BrandSelectView auth={auth} onSelected={() => setAuth(readAuth())} />;
+  }
 
   return (
     <div

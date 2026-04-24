@@ -8,6 +8,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import MOCK from '../lib/mockData.js';
+import { setActiveBrand, readAuth } from '../lib/auth.js';
 
 const buildNav = (taskCount) => [
   { key: "home", label: "Home", icon: "home" },
@@ -61,7 +62,23 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
     email: auth.email || persona.email,
     role: auth.title || auth.role || persona.role,
   };
-  const planLine = mode === "admin" ? "L+R Studio · Admin" : "Pro plan · 14 credits";
+  // Brand users with multiple brand memberships see a switcher in the menu.
+  const memberships = auth?.memberships || [];
+  const otherMemberships = memberships.filter(
+    (m) => m.account.id !== auth?.account?.id
+  );
+  const canSwitchBrands = !auth?.isAgency && memberships.length > 1;
+  const handleBrandSwitch = async (accountId) => {
+    setMenuOpen(false);
+    try {
+      await setActiveBrand(accountId);
+    } catch (e) {
+      console.error('brand switch failed', e);
+    }
+  };
+  const planLine = mode === "admin"
+    ? "L+R Studio · Admin"
+    : (auth?.account?.name ? auth.account.name : "Pro plan · 14 credits");
 
   return (
     <aside className="sidebar" data-guest={isGuest ? "true" : "false"}>
@@ -164,6 +181,56 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
                   <span className="kbd-hint">⌘⇧L</span>
                 </button>
               </div>
+
+              {canSwitchBrands && (
+                <>
+                  <div className="user-menu-sep"/>
+                  <div className="user-menu-group">
+                    <div
+                      style={{
+                        padding: '6px 12px 4px',
+                        fontSize: 11,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em',
+                        color: 'var(--ink-3)',
+                      }}
+                    >
+                      Switch brand
+                    </div>
+                    {auth?.account && (
+                      <div
+                        className="user-menu-item"
+                        style={{ cursor: 'default', opacity: 0.85 }}
+                      >
+                        <Icon name="check" size={14}/>
+                        <span style={{ flex: 1 }}>{auth.account.name}</span>
+                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Current</span>
+                      </div>
+                    )}
+                    {otherMemberships.map((m) => (
+                      <button
+                        key={m.account.id}
+                        className="user-menu-item"
+                        onClick={() => handleBrandSwitch(m.account.id)}
+                      >
+                        <span
+                          style={{
+                            width: 14,
+                            height: 14,
+                            borderRadius: 4,
+                            background: m.account.accentColor || 'var(--surface-2)',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span style={{ flex: 1 }}>{m.account.name}</span>
+                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                          {m.role === 'owner' ? 'Owner' : 'Member'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
 
               <div className="user-menu-sep"/>
 
