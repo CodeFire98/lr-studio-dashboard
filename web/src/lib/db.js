@@ -591,6 +591,15 @@ export async function removeTeamMember({ userId, accountId }) {
   if (error) throw error;
 }
 
+export async function changeMemberRole({ userId, accountId, newRole }) {
+  const { error } = await supabase.rpc('change_member_role', {
+    p_user_id: userId,
+    p_account_id: accountId,
+    p_new_role: newRole,
+  });
+  if (error) throw error;
+}
+
 // ---- Cross-task message summary (for admin inbox "awaiting reply") ------
 // Returns a map of taskId → { lastMessage, unreadFromBrand: bool }
 export async function loadLatestMessagePerTask(viewerIsAgency) {

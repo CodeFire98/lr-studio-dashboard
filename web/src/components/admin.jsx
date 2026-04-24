@@ -14,6 +14,7 @@ import {
   createInvitation,
   revokeInvitation,
   removeTeamMember,
+  changeMemberRole,
   loadBrandAccounts,
 } from '../lib/db.js';
 
@@ -328,6 +329,17 @@ const AdminTeamView = ({ auth }) => {
     } catch (ex) { setErr(ex.message); }
   };
 
+  const handleRoleChange = async (m, newRole) => {
+    try {
+      await changeMemberRole({ userId: m.person.id, accountId: agencyId, newRole });
+      setMembers((prev) => prev.map((x) => x.id === m.id ? { ...x, role: newRole } : x));
+      setFlash(`Changed ${m.person.name}'s role to ${newRole}.`);
+    } catch (ex) { setErr(ex.message); }
+  };
+
+  // Check if the current user is an owner (for showing/hiding management controls).
+  const currentUserIsOwner = members.some((m) => m.person.id === auth?.id && m.role === 'owner');
+
   return (
     <div className="view"><div className="view-inner">
       <div className="page-head">
@@ -412,18 +424,31 @@ const AdminTeamView = ({ auth }) => {
                 <div className="mail">{m.person.email || m.person.role}</div>
               </div>
             </div>
-            <div style={{fontSize: 13, color: "var(--ink-2)", textTransform: "capitalize"}}>{m.role}</div>
+            <div style={{fontSize: 13, color: "var(--ink-2)"}}>
+              {currentUserIsOwner && m.person.id !== auth?.id ? (
+                <select
+                  value={m.role}
+                  onChange={(e) => handleRoleChange(m, e.target.value)}
+                  style={{height: 32, padding: "0 8px", borderRadius: 6, border: "1px solid var(--line)", fontSize: 13, textTransform: "capitalize"}}
+                >
+                  <option value="member">Member</option>
+                  <option value="owner">Owner</option>
+                </select>
+              ) : (
+                <span style={{textTransform: "capitalize"}}>{m.role}</span>
+              )}
+            </div>
             <div>
               <span className="role-pill admin">Active</span>
             </div>
             <div style={{textAlign: "right"}}>
               {m.person.id === auth?.id ? (
                 <span style={{color: "var(--ink-4)", fontSize: 12}}>You</span>
-              ) : (
+              ) : currentUserIsOwner ? (
                 <button className="btn btn-sm btn-ghost" onClick={() => handleRemoveMember(m)} title="Remove">
                   <Icon name="close" size={12}/>Remove
                 </button>
-              )}
+              ) : null}
             </div>
           </div>
         ))}
