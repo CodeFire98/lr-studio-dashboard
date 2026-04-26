@@ -141,6 +141,26 @@ async function _doRefresh() {
   const { data: { session } } = await supabase.auth.getSession();
   _cachedAuth = session?.user ? await loadProfileFor(session.user) : null;
 
+  // Auto-accept any invitations matching this user's email. Works for both
+  // email/password and Google OAuth sign-ins — no token URL required. This
+  // runs BEFORE the auto-create-brand guard so a newly-joined brand member
+  // doesn't trigger an unwanted throwaway brand.
+  if (_cachedAuth) {
+    try {
+      const joined = await supabase.rpc('auto_accept_pending_invitations');
+      const newAccountIds = Array.isArray(joined?.data) ? joined.data : [];
+      if (newAccountIds.length > 0) {
+        // Re-hydrate so the new memberships + possibly-flipped is_agency show up.
+        _cachedAuth = await loadProfileFor(session.user);
+        // Expose the newly-joined IDs so App.jsx can show a welcome banner.
+        _cachedAuth.newlyJoinedAccountIds = newAccountIds;
+      }
+    } catch (e) {
+      // Non-fatal — token-link flow still works if this RPC is missing.
+      console.warn('auto_accept_pending_invitations failed', e);
+    }
+  }
+
   // If a brand user has no account yet (e.g. signed up with email confirmation,
   // or signed up via Google OAuth), create their brand workspace now.
   // BUT skip this if there's a pending invite — the invite flow (accept_invitation)
@@ -265,25 +285,6 @@ async function signUpForInvite({ email, password, displayName }) {
   return { pendingConfirmation: false, user: data.user, profile: _cachedAuth };
 }
 
-async function signUpAgency({ email, password, displayName }) {
-  // Domain whitelist + raw_user_meta_data.is_agency are both enforced in the
-  // handle_new_user SQL trigger. The client just reflects the same hint.
-  const { data, error } = await supabase.auth.signUp({
-    email: email.trim(),
-    password,
-    options: {
-      data: {
-        display_name: displayName?.trim() || '',
-        is_agency: true,
-      },
-    },
-  });
-  if (error) throw error;
-  if (!data.session) return { pendingConfirmation: true, user: data.user };
-  await refreshFromSession();
-  return { pendingConfirmation: false, user: data.user, profile: _cachedAuth };
-}
-
 async function signOut() {
   return writeAuth(null);
 }
@@ -351,7 +352,6 @@ window.__LR_AUTH__ = {
   readAuth,
   signInWithPassword,
   signUpBrand,
-  signUpAgency,
   signOut,
   supabase,
   AUTH_KEY,
@@ -363,7 +363,6 @@ export {
   writeAuth,
   signInWithPassword,
   signUpBrand,
-  signUpAgency,
   signUpForInvite,
   signInWithGoogle,
   signOut,

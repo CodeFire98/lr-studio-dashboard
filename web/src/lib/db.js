@@ -569,6 +569,29 @@ export async function acceptInvitation(token) {
   return data; // account_id
 }
 
+// Bulk-accept any invitations whose email matches the signed-in user. Safe to
+// call on every login — returns [] when nothing is pending.
+export async function autoAcceptPendingInvitations() {
+  const { data, error } = await supabase.rpc('auto_accept_pending_invitations');
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+// Check whether this email has any pending invitations waiting. Used to warn
+// a user who signed in with the "wrong" email that invites exist elsewhere.
+// Anon-safe — policy allows reading rows by email (case-insensitive).
+export async function countPendingInvitationsForEmail(email) {
+  if (!email) return 0;
+  const { count, error } = await supabase
+    .from('invitations')
+    .select('id', { count: 'exact', head: true })
+    .ilike('email', email.trim())
+    .is('accepted_at', null)
+    .gt('expires_at', new Date().toISOString());
+  if (error) return 0;
+  return count || 0;
+}
+
 // Anon-safe: preview the invitation so the login UI can pre-fill + lock email.
 export async function previewInvitation(token) {
   const { data, error } = await supabase.rpc('preview_invitation', { p_token: token });

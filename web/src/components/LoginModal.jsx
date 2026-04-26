@@ -7,10 +7,8 @@ import { Icon } from './Icon.jsx';
 import {
   signInWithPassword,
   signUpBrand,
-  signUpAgency,
   signUpForInvite,
   signInWithGoogle,
-  signOut,
 } from '../lib/auth.js';
 import { previewInvitation } from '../lib/db.js';
 
@@ -34,7 +32,6 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [brandName, setBrandName] = useState("");
-  const [role, setRole] = useState("customer"); // "customer" | "admin"
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
@@ -61,7 +58,6 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
         if (cancelled || !preview) return;
         setInvitePreview(preview);
         setEmail(preview.email);
-        setRole(preview.accountType === 'agency' ? 'admin' : 'customer');
         setMode('signup'); // new accepters almost always sign up; they can flip to sign-in if they have one
       })
       .catch(() => { /* invalid/expired token — ignore, backstop RPC will reject on accept */ });
@@ -89,30 +85,17 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
     if (!email || !email.includes("@")) { setErr("Enter a valid email."); return; }
     if (!password || password.length < 6) { setErr("Password must be at least 6 characters."); return; }
     if (mode === "signup" && !name.trim()) { setErr("What should we call you?"); return; }
-    if (mode === "signup" && role === "customer" && !invitePreview && !brandName.trim()) { setErr("What's the brand name?"); return; }
+    if (mode === "signup" && !invitePreview && !brandName.trim()) { setErr("What's the brand name?"); return; }
 
     setLoading(true);
     try {
       let profile = null;
       if (mode === "signin") {
         profile = await signInWithPassword({ email, password });
-        // Validate the selected role matches the account type.
-        // If the user chose "brand" but their profile is agency (or vice-versa), reject.
-        if (profile) {
-          const wantsAgency = role === "admin";
-          if (wantsAgency && !profile.isAgency) {
-            setErr("This account is registered as a brand, not an agency. Switch to 'A brand' and try again.");
-            setLoading(false);
-            await signOut();
-            return;
-          }
-          if (!wantsAgency && profile.isAgency) {
-            setErr("This account belongs to the agency. Switch to 'An agency' to sign in.");
-            setLoading(false);
-            await signOut();
-            return;
-          }
-        }
+        // No role toggle — every auth flow is identical. If the signed-in
+        // user is on the agency via invite, auth.js detects that and sets
+        // workspace='admin' automatically; same email-based invite auto-
+        // accept runs here too, so pending invites redeem on this sign-in.
       } else if (invitePreview) {
         // Bare signup — accept_invitation (run by App.jsx on auth change)
         // adds them to the invited account; no create_brand_account call.
@@ -123,12 +106,10 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
           return;
         }
         profile = res.profile;
-      } else if (role === "admin") {
-        // Agency self-signup without an invite is not allowed.
-        setErr("Agency sign-up is invite-only. Ask your L+R owner to send you an invite.");
-        setLoading(false);
-        return;
       } else {
+        // Fresh signup → creates a brand account. If this email has a
+        // pending agency/brand invite waiting, auth.js will auto-accept it
+        // after the session lands and promote them accordingly.
         const res = await signUpBrand({ email, password, displayName: name, brandName });
         if (res.pendingConfirmation) {
           setInfo("Check your email to confirm your account, then sign in to finish setup.");
@@ -177,6 +158,22 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
               <span>{reason}</span>
             </div>
           )}
+          {invitePreview && (
+            <div
+              className="login-modal-reason"
+              style={{
+                background: 'var(--accent-soft)',
+                color: 'var(--accent-ink)',
+                marginTop: reason ? 6 : 0,
+              }}
+            >
+              <Icon name="team" size={13} />
+              <span>
+                Joining <strong>{invitePreview.accountName}</strong>
+                {invitePreview.accountType === 'agency' ? ' · agency team' : ' · brand team'}
+              </span>
+            </div>
+          )}
           <h2 id="login-modal-title" className="login-modal-title">
             {mode === "signin" ? (
               <>Sign in to <em>send your brief</em></>
@@ -222,7 +219,7 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
                 />
               </label>
             )}
-            {mode === "signup" && role === "customer" && !invitePreview && (
+            {mode === "signup" && !invitePreview && (
               <label className="auth-field">
                 <span>Brand name</span>
                 <input
@@ -260,34 +257,6 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
               />
             </label>
 
-            <div className="auth-field">
-              <span>{invitePreview ? "Joining workspace" : mode === "signup" ? "I'm joining as" : "I'm signing in as"}</span>
-              <div className="auth-role" style={invitePreview ? {pointerEvents: 'none', opacity: 0.9} : undefined}>
-                <button
-                  type="button"
-                  className={role === "customer" ? "on" : ""}
-                  onClick={() => !invitePreview && setRole("customer")}
-                >
-                  <Icon name="brand" size={14}/>
-                  <div>
-                    <div className="auth-role-t">{invitePreview && invitePreview.accountType === 'brand' ? invitePreview.accountName : 'A brand'}</div>
-                    <div className="auth-role-s">Brief your agency, review work</div>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className={role === "admin" ? "on" : ""}
-                  onClick={() => !invitePreview && setRole("admin")}
-                >
-                  <Icon name="sparkles" size={14}/>
-                  <div>
-                    <div className="auth-role-t">{invitePreview && invitePreview.accountType === 'agency' ? invitePreview.accountName : 'An agency'}</div>
-                    <div className="auth-role-s">Deliver creative, manage clients</div>
-                  </div>
-                </button>
-              </div>
-            </div>
-
             {err && <div className="auth-err">{err}</div>}
             {info && <div className="auth-err" style={{background: 'var(--good-soft, #E2F0E7)', color: 'var(--good, #2F7D53)'}}>{info}</div>}
 
@@ -308,8 +277,6 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
           ) : (
             <>Have an account? <button type="button" className="auth-link" onClick={() => setMode("signin")}>Sign in instead</button></>
           )}
-          <span className="dot-sep">·</span>
-          <a className="auth-link" onClick={(e) => e.preventDefault()}>Are you an agency?</a>
         </div>
       </div>
     </div>

@@ -163,6 +163,32 @@ const App = () => {
     })();
   }, [auth?.id]);
 
+  // Email-based auto-accept: when auto_accept_pending_invitations() ran in
+  // auth.js and redeemed any invites, `newlyJoinedAccountIds` is present on
+  // the fresh auth profile. Show a welcome banner + switch to the first one.
+  useEffect(() => {
+    const ids = auth?.newlyJoinedAccountIds;
+    if (!ids || ids.length === 0) return;
+    const count = ids.length;
+    const text = count === 1
+      ? "Welcome — you've been added to a new workspace."
+      : `Welcome — you've been added to ${count} new workspaces.`;
+    setInviteBanner({ status: 'done', text });
+    (async () => {
+      try { await setActiveBrand(ids[0]); } catch {}
+    })();
+    // Clear the flag so this effect doesn't re-fire on future auth changes.
+    try {
+      const raw = localStorage.getItem('lr_auth');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        delete parsed.newlyJoinedAccountIds;
+        localStorage.setItem('lr_auth', JSON.stringify(parsed));
+      }
+    } catch {}
+    setTimeout(() => setInviteBanner(null), 4000);
+  }, [auth?.id, auth?.newlyJoinedAccountIds?.length]);
+
   // Tweaks toolbar protocol
   useEffect(() => {
     const handler = (ev) => {
@@ -250,7 +276,16 @@ const App = () => {
     setAuth(profile);
     setMode(profile.workspace || "customer");
     setLoginOpen(false);
-    // Run the stashed action (e.g. finish submitting the brief).
+    // If the user has 2+ brand memberships and hasn't picked one yet, the
+    // BrandSelectView is about to take over the screen — running a pending
+    // submit now would fail with a null account.id and surface a misleading
+    // "no brand workspace" alert. Drop the pending action and re-prompt
+    // after they pick a brand (handled by the effect below).
+    if (profile?.requiresBrandSelection) {
+      setInviteBanner({ status: 'pending', text: 'Choose a brand workspace below, then resend your brief.' });
+      setPendingAction(null);
+      return;
+    }
     const action = pendingAction;
     setPendingAction(null);
     if (typeof action === "function") {
