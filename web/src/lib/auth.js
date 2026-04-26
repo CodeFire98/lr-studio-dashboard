@@ -84,6 +84,7 @@ function hydrateProfile(user, profileRow, membershipRows, activeAccountId) {
     role: isAgency
       ? (activeRole === 'owner' ? 'Agency Owner, L+R' : 'Agency Member')
       : (activeRole === 'owner' ? 'Brand Owner' : 'Brand Lead'),
+    activeRole, // 'owner' | 'member' | null — raw role on the active account
     avatarColor: profileRow?.avatar_color || avatarColorFor(user.email || user.id),
     workspace: isAgency ? 'admin' : 'customer',
     account,

@@ -26,9 +26,18 @@ import {
   AdminTeamView,
 } from './components/admin.jsx';
 import { BrandSelectView } from './components/BrandSelectView.jsx';
+import { BrandOnboardingModal } from './components/BrandOnboardingModal.jsx';
 import MOCK from './lib/mockData.js';
 import { readAuth, writeAuth, setActiveBrand } from './lib/auth.js';
-import { loadTasks, subscribeToTasks, updateTaskStatus, acceptInvitation } from './lib/db.js';
+import {
+  loadTasks,
+  subscribeToTasks,
+  updateTaskStatus,
+  acceptInvitation,
+  loadBrandOnboardingStatus,
+  completeBrandOnboarding,
+  skipBrandOnboarding,
+} from './lib/db.js';
 import { supabase } from './lib/supabase';
 
 function useTweaks() {
@@ -71,6 +80,10 @@ const App = () => {
   // If the user was in the middle of something (like submitting a brief), stash
   // a callback to run after a successful sign-in.
   const [pendingAction, setPendingAction] = useState(null); // fn or null
+
+  // Brand onboarding modal: shown once per brand to its OWNER. Tracked by
+  // brand_kits.onboarding_completed_at, so switching brands re-checks per brand.
+  const [onboarding, setOnboarding] = useState({ open: false, kit: null, accountId: null });
 
   useEffect(() => { localStorage.setItem("lr_mode", mode); }, [mode]);
   useEffect(() => {
@@ -188,6 +201,42 @@ const App = () => {
     } catch {}
     setTimeout(() => setInviteBanner(null), 4000);
   }, [auth?.id, auth?.newlyJoinedAccountIds?.length]);
+
+  // Brand-onboarding gate: when a brand owner lands on a brand they've
+  // never set up, show the welcome modal once. Skip for agency users,
+  // for invitees (members), and when an admin is shadowing a client.
+  useEffect(() => {
+    if (!auth) { setOnboarding({ open: false, kit: null, accountId: null }); return; }
+    if (auth.isAgency) return;
+    if (auth.requiresBrandSelection) return;
+    if (impersonation) return;
+    const accountId = auth.account?.id;
+    if (!accountId) return;
+    if (auth.activeRole !== 'owner') return;
+    let cancelled = false;
+    loadBrandOnboardingStatus(accountId)
+      .then(({ needsOnboarding, kit }) => {
+        if (cancelled) return;
+        if (needsOnboarding) setOnboarding({ open: true, kit, accountId });
+        else setOnboarding({ open: false, kit: null, accountId: null });
+      })
+      .catch((e) => console.warn('onboarding status check failed', e));
+    return () => { cancelled = true; };
+  }, [auth?.id, auth?.account?.id, auth?.activeRole, auth?.isAgency, auth?.requiresBrandSelection, impersonation]);
+
+  const handleOnboardingComplete = async ({ brandName, patch }) => {
+    await completeBrandOnboarding({ accountId: onboarding.accountId, brandName, patch });
+    setOnboarding({ open: false, kit: null, accountId: null });
+    // Brand name may have changed — re-hydrate auth so the sidebar/picker reflect it.
+    try { await setActiveBrand(onboarding.accountId); } catch {}
+    setInviteBanner({ status: 'done', text: 'Brand setup saved — your team has the context they need.' });
+    setTimeout(() => setInviteBanner(null), 3500);
+  };
+
+  const handleOnboardingSkip = async () => {
+    await skipBrandOnboarding(onboarding.accountId);
+    setOnboarding({ open: false, kit: null, accountId: null });
+  };
 
   // Tweaks toolbar protocol
   useEffect(() => {
@@ -451,6 +500,13 @@ const App = () => {
         onClose={() => { setLoginOpen(false); setPendingAction(null); }}
         onSignedIn={handleSignedIn}
         reason={loginReason}
+      />
+      <BrandOnboardingModal
+        open={onboarding.open}
+        kit={onboarding.kit}
+        accountName={auth?.account?.name || ''}
+        onComplete={handleOnboardingComplete}
+        onSkip={handleOnboardingSkip}
       />
     </div>
   );

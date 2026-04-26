@@ -660,6 +660,8 @@ function mapBrandKitRow(row) {
     primaryColor: row.primary_color || null,
     secondaryColor: row.secondary_color || null,
     logoUrl: row.logo_url || null,
+    websiteUrl: row.website_url || '',
+    socialLinks: row.social_links && typeof row.social_links === 'object' ? row.social_links : {},
     palette: Array.isArray(row.palette) ? row.palette : [],
     fonts: Array.isArray(row.fonts) ? row.fonts : [],
     voiceTags: Array.isArray(row.voice_tags) ? row.voice_tags : [],
@@ -670,6 +672,7 @@ function mapBrandKitRow(row) {
     pastCreatives: Array.isArray(row.past_creatives) ? row.past_creatives : [],
     logos: Array.isArray(row.logos) ? row.logos : [],
     references: Array.isArray(row.references) ? row.references : [],
+    onboardingCompletedAt: row.onboarding_completed_at || null,
     updatedAt: row.updated_at,
   };
 }
@@ -707,6 +710,40 @@ export async function updateBrandKit(accountId, patch) {
     .single();
   if (insertError) throw insertError;
   return mapBrandKitRow(inserted);
+}
+
+// ---- Brand onboarding ----------------------------------------------------
+
+// Cheap query: does the active brand still need to run through the welcome
+// modal? Returns { needsOnboarding, kit } so the caller can both gate the
+// modal and pre-fill any partial answers.
+export async function loadBrandOnboardingStatus(accountId) {
+  if (!accountId) return { needsOnboarding: false, kit: null };
+  const kit = await loadBrandKit(accountId);
+  return {
+    needsOnboarding: !!kit && !kit.onboardingCompletedAt,
+    kit,
+  };
+}
+
+// Single-shot save for the onboarding modal. Updates the brand's display
+// name (in case the auto-derived one was wrong), patches brand_kits with
+// every field the user filled in, and flips the completion marker so the
+// modal never re-fires for this brand.
+export async function completeBrandOnboarding({ accountId, brandName, patch }) {
+  if (!accountId) throw new Error('completeBrandOnboarding: accountId is required');
+  if (brandName && brandName.trim()) {
+    await updateAccountName(accountId, brandName.trim());
+  }
+  const fullPatch = { ...patch, onboarding_completed_at: new Date().toISOString() };
+  return updateBrandKit(accountId, fullPatch);
+}
+
+// Skip path — same completion marker, no field updates. Used when the
+// owner dismisses the modal but we don't want to re-prompt them every login.
+export async function skipBrandOnboarding(accountId) {
+  if (!accountId) throw new Error('skipBrandOnboarding: accountId is required');
+  return updateBrandKit(accountId, { onboarding_completed_at: new Date().toISOString() });
 }
 
 // ---- Brand accounts (admin clients view) --------------------------------
