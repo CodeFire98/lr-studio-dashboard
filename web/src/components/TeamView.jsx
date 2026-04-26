@@ -47,7 +47,28 @@ const TeamView = ({ overrideAccountId } = {}) => {
     }
   };
 
-  useEffect(() => { refresh(); }, []); // eslint-disable-line
+  // Re-fetch whenever the active brand (or impersonated client) changes — switching
+  // brands while sitting on this tab needs to swap the team list, not stay stale.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMembers([]);
+    setInvites([]);
+    setErr('');
+    if (!accountId) { setErr('No brand workspace found.'); setLoading(false); return; }
+    Promise.all([
+      loadTeamForAccount(accountId),
+      loadInvitationsForAccount(accountId),
+    ])
+      .then(([team, pending]) => {
+        if (cancelled) return;
+        setMembers(team);
+        setInvites(pending);
+      })
+      .catch((ex) => { if (!cancelled) setErr(ex.message || "Couldn't load team."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [accountId]);
 
   const currentUserIsOwner = !isImpersonating && members.some((m) => m.person.id === auth?.id && m.role === 'owner');
 
