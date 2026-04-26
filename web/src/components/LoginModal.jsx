@@ -9,6 +9,7 @@ import {
   signUpBrand,
   signUpForInvite,
   signInWithGoogle,
+  requestPasswordReset,
 } from '../lib/auth.js';
 import { previewInvitation } from '../lib/db.js';
 
@@ -27,7 +28,7 @@ const AppleGlyph = () => (
 );
 
 const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason = null }) => {
-  const [mode, setMode] = useState(initialMode);
+  const [mode, setMode] = useState(initialMode); // "signin" | "signup" | "reset"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -83,6 +84,21 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
     setErr("");
     setInfo("");
     if (!email || !email.includes("@")) { setErr("Enter a valid email."); return; }
+
+    // Reset mode: only the email is needed.
+    if (mode === "reset") {
+      setLoading(true);
+      try {
+        await requestPasswordReset(email);
+        setInfo("Check your inbox for a password-reset link. It expires in 1 hour.");
+      } catch (caught) {
+        setErr(caught?.message || "Couldn't send the reset email. Try again.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (!password || password.length < 6) { setErr("Password must be at least 6 characters."); return; }
     if (mode === "signup" && !name.trim()) { setErr("What should we call you?"); return; }
     if (mode === "signup" && !invitePreview && !brandName.trim()) { setErr("What's the brand name?"); return; }
@@ -177,6 +193,8 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
           <h2 id="login-modal-title" className="login-modal-title">
             {mode === "signin" ? (
               <>Sign in to <em>send your brief</em></>
+            ) : mode === "reset" ? (
+              <>Reset your <em>password</em></>
             ) : (
               <>Create your <em>workspace</em></>
             )}
@@ -184,27 +202,32 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
           <p className="login-modal-sub">
             {mode === "signin"
               ? "Your draft is saved — we'll pick right back up."
+              : mode === "reset"
+              ? "Enter the email you signed up with — we'll send a reset link."
               : "Takes a minute. Your draft brief is waiting on the other side."}
           </p>
         </div>
 
         <div className="login-modal-body">
-          <div className="login-modal-oauth">
-            <button
-              type="button"
-              className="oauth-btn"
-              onClick={async () => {
-                setErr("");
-                try { await signInWithGoogle(); }
-                catch (ex) { setErr(ex.message || "Google sign-in failed — is it enabled in Supabase?"); }
-              }}
-            >
-              <GoogleGlyph />
-              <span>Continue with Google</span>
-            </button>
-          </div>
-
-          <div className="auth-divider"><span>or with email</span></div>
+          {mode !== "reset" && (
+            <>
+              <div className="login-modal-oauth">
+                <button
+                  type="button"
+                  className="oauth-btn"
+                  onClick={async () => {
+                    setErr("");
+                    try { await signInWithGoogle(); }
+                    catch (ex) { setErr(ex.message || "Google sign-in failed — is it enabled in Supabase?"); }
+                  }}
+                >
+                  <GoogleGlyph />
+                  <span>Continue with Google</span>
+                </button>
+              </div>
+              <div className="auth-divider"><span>or with email</span></div>
+            </>
+          )}
 
           <form className="auth-form" onSubmit={handleSubmit}>
             {mode === "signup" && (
@@ -237,25 +260,33 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
-                autoFocus={mode === "signin"}
+                autoFocus={mode === "signin" || mode === "reset"}
                 readOnly={!!invitePreview}
                 style={invitePreview ? {background: 'var(--surface-2)', cursor: 'not-allowed'} : undefined}
               />
             </label>
-            <label className="auth-field">
-              <span className="auth-field-row">
-                Password
-                {mode === "signin" && (
-                  <a className="auth-link" onClick={(e) => e.preventDefault()}>Forgot?</a>
-                )}
-              </span>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete={mode === "signup" ? "new-password" : "current-password"}
-              />
-            </label>
+            {mode !== "reset" && (
+              <label className="auth-field">
+                <span className="auth-field-row">
+                  Password
+                  {mode === "signin" && (
+                    <button
+                      type="button"
+                      className="auth-link"
+                      onClick={() => { setErr(""); setInfo(""); setMode("reset"); }}
+                    >
+                      Forgot?
+                    </button>
+                  )}
+                </span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                />
+              </label>
+            )}
 
             {err && <div className="auth-err">{err}</div>}
             {info && <div className="auth-err" style={{background: 'var(--good-soft, #E2F0E7)', color: 'var(--good, #2F7D53)'}}>{info}</div>}
@@ -265,17 +296,27 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
               className="btn btn-primary btn-lg auth-submit"
               disabled={loading}
             >
-              {loading ? "One moment…" : mode === "signin" ? "Sign in & send brief" : "Create & send brief"}
+              {loading
+                ? "One moment…"
+                : mode === "signin"
+                ? "Sign in & send brief"
+                : mode === "reset"
+                ? "Send reset link"
+                : "Create & send brief"}
               {!loading && <Icon name="arrow-right" size={14} />}
             </button>
           </form>
         </div>
 
         <div className="login-modal-foot">
-          {mode === "signin" ? (
-            <>New here? <button type="button" className="auth-link" onClick={() => setMode("signup")}>Create an account</button></>
-          ) : (
-            <>Have an account? <button type="button" className="auth-link" onClick={() => setMode("signin")}>Sign in instead</button></>
+          {mode === "signin" && (
+            <>New here? <button type="button" className="auth-link" onClick={() => { setErr(""); setInfo(""); setMode("signup"); }}>Create an account</button></>
+          )}
+          {mode === "signup" && (
+            <>Have an account? <button type="button" className="auth-link" onClick={() => { setErr(""); setInfo(""); setMode("signin"); }}>Sign in instead</button></>
+          )}
+          {mode === "reset" && (
+            <>Remembered it? <button type="button" className="auth-link" onClick={() => { setErr(""); setInfo(""); setMode("signin"); }}>Back to sign in</button></>
           )}
         </div>
       </div>

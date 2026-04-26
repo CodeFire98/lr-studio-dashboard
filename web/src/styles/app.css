@@ -2596,6 +2596,18 @@ input, textarea { font: inherit; color: inherit; }
 }
 .onboarding-skip { font-size: 13px; }
 
+.onboarding-logo-row { display: flex; align-items: center; gap: 14px; }
+.onboarding-logo-preview {
+  width: 64px; height: 64px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  border: 1px dashed var(--line);
+  background: var(--surface-2);
+  display: grid; place-items: center;
+  color: var(--ink-4);
+}
+.onboarding-logo-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
 @media (max-width: 560px) {
   .onboarding-body { padding: 18px 20px 20px; }
   .onboarding-colors { grid-template-columns: 1fr; }

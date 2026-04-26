@@ -6,7 +6,7 @@
    "Skip for now" still flips the completion marker so we don't re-prompt. */
 import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
-import { completeBrandOnboarding, skipBrandOnboarding } from '../lib/db.js';
+import { completeBrandOnboarding, skipBrandOnboarding, uploadBrandLogo } from '../lib/db.js';
 
 const VOICE_TAGS = [
   'Playful', 'Premium', 'Bold', 'Warm', 'Editorial',
@@ -26,8 +26,9 @@ function normaliseHex(value) {
   return trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
 }
 
-const BrandOnboardingModal = ({ open, kit, accountName, onComplete, onSkip }) => {
+const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, onSkip }) => {
   const dialogRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const [brandName, setBrandName] = useState(accountName || '');
   const [tagline, setTagline] = useState(kit?.tagline || '');
@@ -44,6 +45,7 @@ const BrandOnboardingModal = ({ open, kit, accountName, onComplete, onSkip }) =>
   const [primaryColor, setPrimaryColor] = useState(kit?.primaryColor || '');
   const [accentColor, setAccentColor] = useState(kit?.palette?.[0] || '');
   const [logoUrl, setLogoUrl] = useState(kit?.logoUrl || '');
+  const [uploadingLogo, setUploadingLogo] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [skipping, setSkipping] = useState(false);
@@ -113,7 +115,24 @@ const BrandOnboardingModal = ({ open, kit, accountName, onComplete, onSkip }) =>
     catch (ex) { setErr(ex?.message || 'Could not skip.'); setSkipping(false); }
   };
 
-  const busy = submitting || skipping;
+  const handleLogoFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!accountId) { setErr('Brand account is missing — try reopening the modal.'); return; }
+    if (file.size > 4 * 1024 * 1024) { setErr('Logo must be under 4MB.'); return; }
+    setErr(''); setUploadingLogo(true);
+    try {
+      const { url } = await uploadBrandLogo({ accountId, file });
+      setLogoUrl(url);
+    } catch (ex) {
+      setErr(ex?.message || 'Logo upload failed.');
+    } finally {
+      setUploadingLogo(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const busy = submitting || skipping || uploadingLogo;
 
   return (
     <div className="login-modal-backdrop" onMouseDown={(e) => e.preventDefault()}>
@@ -239,14 +258,44 @@ const BrandOnboardingModal = ({ open, kit, accountName, onComplete, onSkip }) =>
           {/* 6. Visual identity */}
           <div className="auth-field">
             <span>6 · Logo &amp; brand colors</span>
-            <input
-              type="url"
-              value={logoUrl}
-              onChange={(e) => setLogoUrl(e.target.value)}
-              placeholder="Logo URL (paste a link, or add later in Brand Kit)"
-              style={{ marginBottom: 8 }}
-            />
-            <div className="onboarding-colors">
+            <div className="onboarding-logo-row">
+              <div
+                className="onboarding-logo-preview"
+                style={logoUrl ? { background: `center / contain no-repeat url(${JSON.stringify(logoUrl)})` } : undefined}
+              >
+                {!logoUrl && <Icon name="image" size={20} />}
+              </div>
+              <div className="onboarding-logo-actions">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={handleLogoFile}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={busy}
+                >
+                  <Icon name="upload" size={12} />
+                  {uploadingLogo ? 'Uploading…' : logoUrl ? 'Replace logo' : 'Upload logo'}
+                </button>
+                {logoUrl && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => setLogoUrl('')}
+                    disabled={busy}
+                  >
+                    Remove
+                  </button>
+                )}
+                <span className="onboarding-hint">PNG, JPG, SVG · up to 4MB</span>
+              </div>
+            </div>
+            <div className="onboarding-colors" style={{ marginTop: 10 }}>
               <ColorField
                 label="Primary"
                 value={primaryColor}

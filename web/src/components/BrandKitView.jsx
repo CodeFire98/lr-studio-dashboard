@@ -3,11 +3,11 @@
    Loads from Supabase (brand_kits table). Supports inline edit of text +
    list fields. Procedural Art remains the visual fallback for palette-only
    gallery items (photography, inspiration, past_creatives). */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art } from './primitives.jsx';
 import { readAuth } from '../lib/auth.js';
-import { loadBrandKit, updateBrandKit } from '../lib/db.js';
+import { loadBrandKit, updateBrandKit, uploadBrandLogo } from '../lib/db.js';
 
 // ---- Inline-edit primitives ---------------------------------------------
 
@@ -145,6 +145,207 @@ const InlineList = ({ field, value, onSave }) => {
       <div style={{ display: 'flex', gap: 6, marginTop: 8, justifyContent: 'flex-end' }}>
         <button className="btn btn-sm btn-ghost" disabled={saving} onClick={() => { setDraft(Array.isArray(value) ? value : []); setEditing(false); setErr(''); }}>Cancel</button>
         <button className="btn btn-sm btn-primary" disabled={saving} onClick={commit}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+    </div>
+  );
+};
+
+// ---- Social-links inline editor ----------------------------------------
+// Edits brand_kits.social_links (jsonb { instagram, tiktok, linkedin }).
+// Keeps the same edit/cancel/save UX as InlineText for consistency.
+const SOCIAL_SLOTS = [
+  { key: 'instagram', label: 'Instagram', placeholder: 'https://instagram.com/yourbrand' },
+  { key: 'tiktok',    label: 'TikTok',    placeholder: 'https://tiktok.com/@yourbrand' },
+  { key: 'linkedin',  label: 'LinkedIn',  placeholder: 'https://linkedin.com/company/yourbrand' },
+];
+
+const InlineSocials = ({ value, onSave }) => {
+  const initial = () => ({
+    instagram: value?.instagram || '',
+    tiktok:    value?.tiktok    || '',
+    linkedin:  value?.linkedin  || '',
+  });
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => { setDraft(initial()); }, [value?.instagram, value?.tiktok, value?.linkedin]);
+
+  const commit = async () => {
+    setSaving(true); setErr('');
+    try {
+      const cleaned = Object.fromEntries(
+        Object.entries(draft)
+          .map(([k, v]) => [k, (v || '').trim()])
+          .filter(([, v]) => v.length > 0)
+      );
+      await onSave('social_links', cleaned);
+      setEditing(false);
+    } catch (e) {
+      setErr(e.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    const filled = SOCIAL_SLOTS.filter((s) => (value?.[s.key] || '').trim());
+    return (
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+        <div style={{ flex: 1 }}>
+          {filled.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No social links yet.</div>
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {filled.map((s) => (
+                <li key={s.key} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13 }}>
+                  <span style={{ minWidth: 70, color: 'var(--ink-3)', fontWeight: 500 }}>{s.label}</span>
+                  <a
+                    href={value[s.key]}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: 'var(--ink-2)', textDecoration: 'none', wordBreak: 'break-all' }}
+                  >
+                    {value[s.key]}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <EditToggle editing={false} onEdit={() => setEditing(true)}/>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {SOCIAL_SLOTS.map((s) => (
+          <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ minWidth: 70, fontSize: 12, color: 'var(--ink-3)', fontWeight: 500 }}>{s.label}</span>
+            <input
+              type="url"
+              value={draft[s.key]}
+              onChange={(e) => setDraft({ ...draft, [s.key]: e.target.value })}
+              placeholder={s.placeholder}
+              style={{ flex: 1, padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 8, background: 'var(--surface)', color: 'var(--ink)', fontSize: 13, outline: 'none' }}
+            />
+          </div>
+        ))}
+      </div>
+      {err && <div style={{ color: 'var(--accent-ink)', fontSize: 12, marginTop: 6 }}>{err}</div>}
+      <div style={{ display: 'flex', gap: 6, marginTop: 8, justifyContent: 'flex-end' }}>
+        <button className="btn btn-sm btn-ghost" disabled={saving} onClick={() => { setDraft(initial()); setEditing(false); setErr(''); }}>Cancel</button>
+        <button className="btn btn-sm btn-primary" disabled={saving} onClick={commit}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+    </div>
+  );
+};
+
+// Read-only display helper for a URL: clickable, truncated when long.
+const renderUrl = (v) => {
+  if (!v) return <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>;
+  const display = v.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return (
+    <a
+      href={v.startsWith('http') ? v : `https://${v}`}
+      target="_blank"
+      rel="noreferrer"
+      style={{ fontSize: 14, color: 'var(--ink-2)', textDecoration: 'none', wordBreak: 'break-all' }}
+    >
+      {display}
+    </a>
+  );
+};
+
+// ---- Brand logo upload card --------------------------------------------
+// Uploads to the public 'brand-logos' bucket and persists the resulting
+// URL to brand_kits.logo_url. Single primary logo per brand for now;
+// secondary/mono variants will land when we expose the multi-logo array.
+const BrandLogoCard = ({ accountId, logoUrl, onSave }) => {
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) { setErr('Logo must be under 4MB.'); return; }
+    setErr(''); setUploading(true);
+    try {
+      const { url } = await uploadBrandLogo({ accountId, file });
+      await onSave('logo_url', url);
+    } catch (ex) {
+      setErr(ex?.message || 'Logo upload failed.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const remove = async () => {
+    setErr('');
+    try { await onSave('logo_url', null); }
+    catch (ex) { setErr(ex?.message || 'Could not remove the logo.'); }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div><div className="card-title">Logo</div><div className="card-sub">Primary brand mark</div></div>
+      </div>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+        <div
+          style={{
+            width: 120, height: 120,
+            borderRadius: 14,
+            border: '1px solid var(--line)',
+            background: logoUrl
+              ? `center / contain no-repeat url(${JSON.stringify(logoUrl)}), var(--surface-2)`
+              : 'var(--surface-2)',
+            display: 'grid', placeItems: 'center',
+            color: 'var(--ink-4)',
+            flexShrink: 0,
+          }}
+        >
+          {!logoUrl && <Icon name="image" size={28}/>}
+        </div>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/svg+xml,image/webp"
+            style={{ display: 'none' }}
+            onChange={handleFile}
+          />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              <Icon name="upload" size={12}/>
+              {uploading ? 'Uploading…' : logoUrl ? 'Replace' : 'Upload logo'}
+            </button>
+            {logoUrl && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={remove}
+                disabled={uploading}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--ink-4)' }}>
+            PNG, JPG, SVG, or WebP · up to 4MB. Stored in a public bucket so it loads anywhere.
+          </div>
+          {err && <div style={{ color: 'var(--accent-ink)', fontSize: 12 }}>{err}</div>}
+        </div>
       </div>
     </div>
   );
@@ -333,6 +534,31 @@ const BrandKitView = () => {
         />
       </div>
 
+      {/* Online presence — website + socials. First place the agency looks. */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head">
+          <div>
+            <div className="card-title">Online presence</div>
+            <div className="card-sub">Where the team can see how your brand shows up today</div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 24 }}>
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>Website</div>
+            <InlineText
+              field="website_url"
+              value={kit.websiteUrl}
+              display={renderUrl}
+              onSave={saveField}
+            />
+          </div>
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>Social</div>
+            <InlineSocials value={kit.socialLinks} onSave={saveField}/>
+          </div>
+        </div>
+      </div>
+
       {/* Identity + palette */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16, marginBottom: 16 }}>
         <div className="card">
@@ -446,22 +672,11 @@ const BrandKitView = () => {
           )}
         </div>
 
-        <div className="card">
-          <div className="card-head">
-            <div><div className="card-title">Logos</div><div className="card-sub">Primary, secondary, mono</div></div>
-          </div>
-          {logos.length === 0 ? (
-            <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No logos uploaded.</div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {logos.map((l, i) => (
-                <div key={l.id || i} style={i === 0 ? { gridColumn: '1 / -1' } : {}}>
-                  <LogoBlock logo={l}/>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <BrandLogoCard
+          accountId={accountId}
+          logoUrl={kit.logoUrl}
+          onSave={saveField}
+        />
       </div>
 
       {/* Do / Don't */}

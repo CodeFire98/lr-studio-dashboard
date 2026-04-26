@@ -11,9 +11,25 @@ import {
   loadInvitationsForAccount,
   createInvitation,
   revokeInvitation,
+  resendInvitation,
   removeTeamMember,
   changeMemberRole,
 } from '../lib/db.js';
+
+// Format the gap between now and an ISO timestamp as something human-readable.
+// Returns { label, status } where status is 'fresh' | 'soon' | 'expired'.
+function formatExpiry(iso) {
+  if (!iso) return { label: 'No expiry', status: 'fresh' };
+  const ms = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return { label: 'Unknown', status: 'fresh' };
+  if (ms <= 0) return { label: 'Expired', status: 'expired' };
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor(ms / 3600000);
+  if (days >= 2) return { label: `Expires in ${days} days`, status: 'fresh' };
+  if (days === 1) return { label: 'Expires tomorrow', status: 'soon' };
+  if (hours >= 1) return { label: `Expires in ${hours}h`, status: 'soon' };
+  return { label: 'Expires soon', status: 'soon' };
+}
 
 const TeamView = ({ overrideAccountId } = {}) => {
   const auth = readAuth();
@@ -111,6 +127,20 @@ const TeamView = ({ overrideAccountId } = {}) => {
     } catch (ex) { setErr(ex.message); }
   };
 
+  const [resendingId, setResendingId] = useState(null);
+  const handleResendInvite = async (inv) => {
+    setErr(''); setFlash(''); setResendingId(inv.id);
+    try {
+      const fresh = await resendInvitation(inv, { invitedBy: auth?.id || null });
+      setInvites((prev) => [fresh, ...prev.filter((x) => x.id !== inv.id)]);
+      setFlash(`Sent a fresh invite link to ${fresh.email}.`);
+    } catch (ex) {
+      setErr(ex.message || "Couldn't resend invite.");
+    } finally {
+      setResendingId(null);
+    }
+  };
+
   const handleRemoveMember = async (m) => {
     if (!confirm(`Remove ${m.person.name} from ${accountName}?`)) return;
     try {
@@ -176,23 +206,73 @@ const TeamView = ({ overrideAccountId } = {}) => {
             </div>
           </div>
           <div style={{display: "flex", flexDirection: "column", gap: 8, padding: "10px 16px 16px"}}>
-            {invites.map((inv) => (
-              <div key={inv.id} style={{display: "grid", gridTemplateColumns: "1.5fr 1fr auto auto", gap: 12, alignItems: "center", padding: 10, border: "1px solid var(--line)", borderRadius: 8}}>
-                <div>
-                  <div style={{fontSize: 13, fontWeight: 500}}>{inv.email}</div>
-                  <div style={{fontSize: 11, color: "var(--ink-4)", marginTop: 2, fontFamily: "var(--font-mono)"}}>
-                    {inv.inviteUrl.length > 64 ? inv.inviteUrl.slice(0, 62) + '...' : inv.inviteUrl}
+            {invites.map((inv) => {
+              const expiry = formatExpiry(inv.expiresAt);
+              const isExpired = expiry.status === 'expired';
+              const isResending = resendingId === inv.id;
+              return (
+                <div
+                  key={inv.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1.5fr auto 1fr auto auto auto",
+                    gap: 12,
+                    alignItems: "center",
+                    padding: 10,
+                    border: `1px solid ${isExpired ? 'var(--accent-soft)' : 'var(--line)'}`,
+                    borderRadius: 8,
+                    background: isExpired ? 'var(--accent-tint)' : undefined,
+                  }}
+                >
+                  <div>
+                    <div style={{fontSize: 13, fontWeight: 500}}>{inv.email}</div>
+                    <div style={{fontSize: 11, color: "var(--ink-4)", marginTop: 2, fontFamily: "var(--font-mono)"}}>
+                      {inv.inviteUrl.length > 56 ? inv.inviteUrl.slice(0, 54) + '...' : inv.inviteUrl}
+                    </div>
                   </div>
+                  <span
+                    style={{
+                      padding: '3px 8px',
+                      borderRadius: 999,
+                      fontSize: 11,
+                      fontWeight: 500,
+                      background:
+                        expiry.status === 'expired' ? 'var(--accent-soft)' :
+                        expiry.status === 'soon'    ? 'color-mix(in oklab, var(--good) 18%, transparent)' :
+                                                      'var(--surface-2)',
+                      color:
+                        expiry.status === 'expired' ? 'var(--accent-ink)' :
+                        expiry.status === 'soon'    ? 'var(--good)' :
+                                                      'var(--ink-3)',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={inv.expiresAt ? `Expires ${new Date(inv.expiresAt).toLocaleString()}` : ''}
+                  >
+                    {expiry.label}
+                  </span>
+                  <div style={{fontSize: 12, color: "var(--ink-3)"}}>Role: {inv.role === 'owner' ? 'Admin' : 'Member'}</div>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => copyLink(inv)}
+                    disabled={isExpired}
+                    title={isExpired ? 'Resend first to get a fresh link' : 'Copy invite link'}
+                  >
+                    {copiedToken === inv.token ? 'Copied!' : 'Copy link'}
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => handleResendInvite(inv)}
+                    disabled={isResending}
+                    title="Revoke and re-issue a fresh link"
+                  >
+                    <Icon name="refresh" size={12}/>{isResending ? 'Sending…' : 'Resend'}
+                  </button>
+                  <button className="btn btn-sm btn-ghost" onClick={() => handleRevokeInvite(inv)} title="Cancel">
+                    <Icon name="close" size={12}/>
+                  </button>
                 </div>
-                <div style={{fontSize: 12, color: "var(--ink-3)"}}>Role: {inv.role === 'owner' ? 'Admin' : 'Member'}</div>
-                <button className="btn btn-sm" onClick={() => copyLink(inv)}>
-                  {copiedToken === inv.token ? 'Copied!' : 'Copy link'}
-                </button>
-                <button className="btn btn-sm btn-ghost" onClick={() => handleRevokeInvite(inv)} title="Cancel">
-                  <Icon name="close" size={12}/>
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

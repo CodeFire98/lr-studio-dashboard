@@ -504,6 +504,7 @@ const App = () => {
       <BrandOnboardingModal
         open={onboarding.open}
         kit={onboarding.kit}
+        accountId={onboarding.accountId}
         accountName={auth?.account?.name || ''}
         onComplete={handleOnboardingComplete}
         onSkip={handleOnboardingSkip}

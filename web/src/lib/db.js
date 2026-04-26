@@ -517,6 +517,7 @@ export async function loadInvitationsForAccount(accountId) {
   if (error) throw error;
   return (data || []).map((inv) => ({
     id: inv.id,
+    accountId: inv.account_id,
     email: inv.email,
     role: inv.role,
     token: inv.token,
@@ -561,6 +562,22 @@ export async function createInvitation({ accountId, email, role, invitedBy }) {
 export async function revokeInvitation(id) {
   const { error } = await supabase.from('invitations').delete().eq('id', id);
   if (error) throw error;
+}
+
+// Resend = revoke the existing pending invite + create a fresh one with the
+// same email/role. Cleaner than mutating the existing row because each
+// invitation row owns its token and expiry, and a fresh row resets both.
+export async function resendInvitation(existing, { invitedBy } = {}) {
+  if (!existing?.id || !existing?.accountId || !existing?.email) {
+    throw new Error('resendInvitation: invitation is missing fields');
+  }
+  await revokeInvitation(existing.id);
+  return createInvitation({
+    accountId: existing.accountId,
+    email: existing.email,
+    role: existing.role,
+    invitedBy: invitedBy || null,
+  });
 }
 
 export async function acceptInvitation(token) {
@@ -710,6 +727,28 @@ export async function updateBrandKit(accountId, patch) {
     .single();
   if (insertError) throw insertError;
   return mapBrandKitRow(inserted);
+}
+
+// ---- Brand logo upload ---------------------------------------------------
+
+// Public bucket: 'brand-logos'. Path scheme '<accountId>/<ts>_<filename>'.
+// Returns the public URL of the uploaded asset; the caller is responsible
+// for persisting it to brand_kits.logo_url.
+export async function uploadBrandLogo({ accountId, file }) {
+  if (!accountId) throw new Error('uploadBrandLogo: accountId is required');
+  if (!file)      throw new Error('uploadBrandLogo: file is required');
+  const safeName = (file.name || 'logo').replace(/[^\w.\-]+/g, '_');
+  const path = `${accountId}/${Date.now()}_${safeName}`;
+  const { error: uploadError } = await supabase.storage
+    .from('brand-logos')
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined,
+    });
+  if (uploadError) throw uploadError;
+  const { data } = supabase.storage.from('brand-logos').getPublicUrl(path);
+  return { url: data.publicUrl, path };
 }
 
 // ---- Brand onboarding ----------------------------------------------------
