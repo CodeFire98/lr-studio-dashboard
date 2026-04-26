@@ -87,6 +87,8 @@ export function mapTaskRow(row) {
     deadlineDate: row.deadline,
     createdAt: formatRelative(row.created_at),
     createdAtISO: row.created_at,
+    deliveredAtISO: row.delivered_at || null,
+    assignedLeadId: row.assigned_lead_id || null,
     creativeLead: lead,
     creator,
     collaborators: [lead],
@@ -178,6 +180,21 @@ export async function updateTaskStatus(id, status) {
     .from('tasks')
     .update({ status })
     .eq('id', id)
+    .select(TASK_SELECT)
+    .single();
+  if (error) throw error;
+  return mapTaskRow(data);
+}
+
+// Reassign a task's creative lead. Pass `userId = null` to unassign. The
+// existing log_task_activity trigger records an 'assigned' activity row
+// whenever assigned_lead_id changes, so no client-side activity write is
+// needed.
+export async function assignTaskLead({ taskId, userId }) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({ assigned_lead_id: userId })
+    .eq('id', taskId)
     .select(TASK_SELECT)
     .single();
   if (error) throw error;

@@ -16,6 +16,9 @@ import {
   deleteAsset,
   assetSignedUrl,
   subscribeToAssetsForTask,
+  loadAgencyAccountId,
+  loadTeamForAccount,
+  assignTaskLead,
 } from '../lib/db.js';
 
 const CHIP_LABELS = {
@@ -113,6 +116,46 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
     });
     return () => { cancelled = true; unsub(); };
   }, [task?.id]);
+
+  // Agency lead picker: load the L+R team once (per session) so the dropdown
+  // can offer assignment targets. Brand viewers don't need this list.
+  const [agencyMembers, setAgencyMembers] = useState([]);
+  const [reassigning, setReassigning] = useState(false);
+  useEffect(() => {
+    if (mode !== 'admin') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const agencyId = await loadAgencyAccountId();
+        if (!agencyId || cancelled) return;
+        const team = await loadTeamForAccount(agencyId);
+        if (!cancelled) setAgencyMembers(team);
+      } catch (e) {
+        console.warn('failed to load agency team', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mode]);
+
+  const handleAssignLead = async (userId) => {
+    if (!task?.id) return;
+    const next = userId || null;
+    if (next === (task.assignedLeadId || null)) return;
+    setReassigning(true);
+    try {
+      const updated = await assignTaskLead({ taskId: task.id, userId: next });
+      // Bubble the new lead up so the parent list (and topbar crumb) refresh.
+      updateTask(task.id, {
+        assignedLeadId: updated.assignedLeadId,
+        creativeLead: updated.creativeLead,
+        collaborators: updated.collaborators,
+      });
+    } catch (e) {
+      alert(`Couldn't reassign: ${e.message || e}`);
+    } finally {
+      setReassigning(false);
+    }
+  };
 
   useEffect(() => {
     if (tab === "conversation" && threadRef.current) {
@@ -492,6 +535,33 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                 </div>
                 <div className="role">Lead</div>
               </div>
+              {mode === 'admin' && agencyMembers.length > 0 && (
+                <div style={{ padding: '8px 16px 12px', borderTop: '1px solid var(--line-2)' }}>
+                  <div className="tiny" style={{ marginBottom: 6 }}>Reassign lead</div>
+                  <select
+                    value={task.assignedLeadId || ''}
+                    onChange={(e) => handleAssignLead(e.target.value)}
+                    disabled={reassigning}
+                    style={{
+                      width: '100%',
+                      height: 34,
+                      padding: '0 10px',
+                      border: '1px solid var(--line)',
+                      borderRadius: 8,
+                      background: 'var(--surface)',
+                      color: 'var(--ink)',
+                      fontSize: 13,
+                    }}
+                  >
+                    <option value="">Unassigned</option>
+                    {agencyMembers.map((m) => (
+                      <option key={m.person.id} value={m.person.id}>
+                        {m.person.name}{m.role === 'owner' ? ' · Lead' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {task.collaborators.filter((c) => c.id !== task.creativeLead.id).map((c) => (
                 <div className="collab-row" key={c.id}>
                   <Avatar person={c} size="sm"/>

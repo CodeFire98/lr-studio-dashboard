@@ -463,9 +463,6 @@ const App = () => {
                 <input placeholder="Search tasks, briefs, creatives" style={{border: 0, background: "transparent", outline: "none", width: 180, fontSize: 13}}/>
                 <kbd>⌘K</kbd>
               </div>
-              <button className="btn btn-ghost" title="Theme" onClick={() => setTweaks({...tweaks, dark: !tweaks.dark})}>
-                <Icon name={tweaks.dark ? "sun" : "moon"} size={15}/>
-              </button>
               <button className="btn btn-ghost" title="Tweaks" onClick={() => setTweaksOpen((v) => !v)}>
                 <Icon name="sliders" size={15}/>
               </button>
@@ -484,9 +481,6 @@ const App = () => {
                 <Icon name="login" size={13}/>Log In
               </button>
             )}
-            <button className="btn btn-ghost" title="Theme" onClick={() => setTweaks({...tweaks, dark: !tweaks.dark})}>
-              <Icon name={tweaks.dark ? "sun" : "moon"} size={15}/>
-            </button>
             <button className="btn btn-ghost" title="Tweaks" onClick={() => setTweaksOpen((v) => !v)}>
               <Icon name="sliders" size={15}/>
             </button>

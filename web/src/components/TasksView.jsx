@@ -1,27 +1,65 @@
 /* eslint-disable */
-/* Tasks list — cards/rows with filters */
+/* Tasks list — cards/rows with filters.
+   Agency users get an extra scope toggle: All vs. Assigned to me, driven
+   by tasks.assigned_lead_id (auto-set by the default-lead trigger and
+   reassignable from a task's detail view). */
 import React, { useState, useMemo } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art, AvatarStack, StatusBadge, STATUS_LABELS } from './primitives.jsx';
+import { readAuth } from '../lib/auth.js';
+
+function deliveredThisMonthCount(tasks) {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  let n = 0;
+  for (const t of tasks) {
+    if (t.status !== 'delivered') continue;
+    const iso = t.deliveredAtISO || t.createdAtISO;
+    if (!iso) continue;
+    const d = new Date(iso);
+    if (d.getFullYear() === y && d.getMonth() === m) n += 1;
+  }
+  return n;
+}
 
 const TasksView = ({ setRoute, tasks, mode }) => {
+  const auth = readAuth();
+  const viewerId = auth?.id;
+  const isAgency = mode === 'admin';
+
   const [layout, setLayout] = useState("grid");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [scope, setScope] = useState("all"); // "all" | "mine" — agency only
 
-  const filtered = tasks.filter((p) => statusFilter === "all" || p.status === statusFilter);
+  // Apply scope first (agency-only), then the status filter on top.
+  const scoped = useMemo(() => {
+    if (!isAgency || scope !== 'mine' || !viewerId) return tasks;
+    return tasks.filter((t) => t.assignedLeadId === viewerId);
+  }, [tasks, isAgency, scope, viewerId]);
+
+  const filtered = scoped.filter((p) => statusFilter === "all" || p.status === statusFilter);
 
   const statusCounts = useMemo(() => {
-    const c = { all: tasks.length };
-    for (const p of tasks) c[p.status] = (c[p.status] || 0) + 1;
+    const c = { all: scoped.length };
+    for (const p of scoped) c[p.status] = (c[p.status] || 0) + 1;
     return c;
-  }, [tasks]);
+  }, [scoped]);
+
+  const deliveredCount = useMemo(() => deliveredThisMonthCount(scoped), [scoped]);
+  const assignedToMeCount = useMemo(() => {
+    if (!isAgency || !viewerId) return 0;
+    return tasks.filter((t) => t.assignedLeadId === viewerId).length;
+  }, [tasks, isAgency, viewerId]);
+
+  const subText = `${scoped.length} ${scoped.length === 1 ? 'brief' : 'briefs'} · ${deliveredCount} delivered this month`;
 
   return (
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
           <h1>Tasks</h1>
-          <div className="sub">{tasks.length} briefs · 2 delivered this month</div>
+          <div className="sub">{subText}</div>
         </div>
         <div className="actions">
           <button className="btn"><Icon name="filter" size={14}/>Filter</button>
@@ -30,6 +68,19 @@ const TasksView = ({ setRoute, tasks, mode }) => {
           </button>
         </div>
       </div>
+
+      {isAgency && (
+        <div className="filterbar" style={{ marginBottom: 12 }}>
+          <div className="seg">
+            <button className={scope === 'all' ? 'on' : ''} onClick={() => setScope('all')}>
+              All tasks<span className="seg-count">{tasks.length}</span>
+            </button>
+            <button className={scope === 'mine' ? 'on' : ''} onClick={() => setScope('mine')}>
+              Assigned to me<span className="seg-count">{assignedToMeCount}</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="filterbar">
         <div className="seg">
@@ -51,8 +102,18 @@ const TasksView = ({ setRoute, tasks, mode }) => {
 
       {filtered.length === 0 ? (
         <div className="empty">
-          <div className="big">Nothing matches that filter.</div>
-          <div>Try another status, or <a onClick={() => setStatusFilter("all")} style={{color: "var(--accent)", cursor: "pointer"}}>clear it</a>.</div>
+          <div className="big">
+            {isAgency && scope === 'mine' && statusFilter === 'all'
+              ? "Nothing's assigned to you right now."
+              : 'Nothing matches that filter.'}
+          </div>
+          <div>
+            {isAgency && scope === 'mine' && statusFilter === 'all' ? (
+              <>Try switching to <a onClick={() => setScope('all')} style={{color: "var(--accent)", cursor: "pointer"}}>All tasks</a>.</>
+            ) : (
+              <>Try another status, or <a onClick={() => setStatusFilter("all")} style={{color: "var(--accent)", cursor: "pointer"}}>clear it</a>.</>
+            )}
+          </div>
         </div>
       ) : layout === "grid" ? (
         <div className="project-grid">
