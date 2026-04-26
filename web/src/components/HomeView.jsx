@@ -7,6 +7,23 @@ import MOCK from '../lib/mockData.js';
 import { parseBrief } from '../lib/chipParser.js';
 import { submitTask } from '../lib/db.js';
 
+// Greeting tail rotates with the local clock so the hero feels alive instead of
+// stuck in a permanent morning. One short phrase per slot, kept in the same
+// "lowercase, no terminal punctuation" voice as the original copy.
+const GREETINGS = {
+  morning:   "it's a fresh morning at L+R",       // 5 → 11
+  afternoon: "the afternoon's looking good at L+R", // 12 → 16
+  evening:   "evening at L+R — let's wrap up something nice", // 17 → 20
+  night:     "burning the late-night oil at L+R",  // 21 → 4
+};
+function greetingTail(now = new Date()) {
+  const h = now.getHours();
+  if (h >= 5  && h <= 11) return GREETINGS.morning;
+  if (h >= 12 && h <= 16) return GREETINGS.afternoon;
+  if (h >= 17 && h <= 20) return GREETINGS.evening;
+  return GREETINGS.night;
+}
+
 const REQUIRED_CHIPS = [
   { key: "count", label: "Number", placeholder: "# creatives" },
   { key: "deadline", label: "Deadline", placeholder: "Deadline" },
@@ -473,12 +490,12 @@ const HomeView = ({ setRoute, pushTask, requireAuth, auth }) => {
         <div className="greeting">
           <span className="status-dot"/>
           {auth
-            ? `Hello, ${(auth.name || MOCK.people.you.name).split(" ")[0]} — it's a quiet morning at L+R`
+            ? `Hello, ${(auth.name || MOCK.people.you.name).split(" ")[0]} — ${greetingTail()}`
             : "Welcome to L+R — a calmer way to brief your agency"}
         </div>
 
         <h1 className="home-title">
-          {auth ? <>What can we do for <em>you</em> today?</> : <>What can we <em>make</em> for you today?</>}
+          What can we <em>make</em> for you today?
         </h1>
         <p className="home-sub" style={{fontSize: 13, color: "rgb(154, 152, 154)"}}>Describe your creative need in plain language. Attach references if you have them. We'll parse the brief and get a creative lead on it within 24 hours.</p>
 
@@ -595,7 +612,16 @@ const HomeView = ({ setRoute, pushTask, requireAuth, auth }) => {
                 </button>
               ))}
             </div>
-            <a className="browse-past" onClick={() => setRoute({ view: "tasks" })}>
+            <a
+              className="browse-past"
+              onClick={() => {
+                if (!auth) {
+                  requireAuth?.("Sign in to see your past briefs.", () => setRoute({ view: "tasks" }));
+                  return;
+                }
+                setRoute({ view: "tasks" });
+              }}
+            >
               Or browse past briefs <Icon name="arrow-right" size={13} />
             </a>
           </div>

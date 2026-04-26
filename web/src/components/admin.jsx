@@ -17,6 +17,7 @@ import {
   changeMemberRole,
   loadBrandAccounts,
 } from '../lib/db.js';
+import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
 const AdminHome = ({ tasks, setRoute }) => {
   const auth = readAuth();
@@ -47,10 +48,7 @@ const AdminHome = ({ tasks, setRoute }) => {
           <h1>Inbox</h1>
           <div className="sub">What needs your eyes today, {firstName}.</div>
         </div>
-        <div className="actions">
-          <button className="btn"><Icon name="filter" size={14}/>All clients</button>
-          <button className="btn btn-dark"><Icon name="upload" size={14}/>Upload creative</button>
-        </div>
+        <div className="actions" />
       </div>
 
       {newBriefs.length > 0 && (
@@ -312,7 +310,14 @@ const AdminTeamView = ({ auth }) => {
   };
 
   const handleRevokeInvite = async (inv) => {
-    if (!confirm(`Cancel invite for ${inv.email}?`)) return;
+    const ok = await confirmDialog({
+      title: `Cancel invite for ${inv.email}?`,
+      body: 'The link will stop working immediately.',
+      confirmText: 'Cancel invite',
+      cancelText: 'Keep it',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await revokeInvitation(inv.id);
       setInvites((prev) => prev.filter((x) => x.id !== inv.id));
@@ -321,7 +326,14 @@ const AdminTeamView = ({ auth }) => {
   };
 
   const handleRemoveMember = async (m) => {
-    if (!confirm(`Remove ${m.person.name} from the L+R team?`)) return;
+    const ok = await confirmDialog({
+      title: `Remove ${m.person.name}?`,
+      body: `They'll lose access to the L+R team. You can re-invite them anytime.`,
+      confirmText: 'Remove',
+      cancelText: 'Keep them',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await removeTeamMember({ userId: m.person.id, accountId: agencyId });
       setMembers((prev) => prev.filter((x) => x.id !== m.id));

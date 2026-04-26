@@ -15,6 +15,7 @@ import {
   removeTeamMember,
   changeMemberRole,
 } from '../lib/db.js';
+import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
 // Format the gap between now and an ISO timestamp as something human-readable.
 // Returns { label, status } where status is 'fresh' | 'soon' | 'expired'.
@@ -119,7 +120,14 @@ const TeamView = ({ overrideAccountId } = {}) => {
   };
 
   const handleRevokeInvite = async (inv) => {
-    if (!confirm(`Cancel invite for ${inv.email}?`)) return;
+    const ok = await confirmDialog({
+      title: `Cancel invite for ${inv.email}?`,
+      body: 'The link will stop working immediately.',
+      confirmText: 'Cancel invite',
+      cancelText: 'Keep it',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await revokeInvitation(inv.id);
       setInvites((prev) => prev.filter((x) => x.id !== inv.id));
@@ -142,7 +150,14 @@ const TeamView = ({ overrideAccountId } = {}) => {
   };
 
   const handleRemoveMember = async (m) => {
-    if (!confirm(`Remove ${m.person.name} from ${accountName}?`)) return;
+    const ok = await confirmDialog({
+      title: `Remove ${m.person.name}?`,
+      body: `They'll lose access to ${accountName}. You can re-invite them anytime.`,
+      confirmText: 'Remove',
+      cancelText: 'Keep them',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await removeTeamMember({ userId: m.person.id, accountId });
       setMembers((prev) => prev.filter((x) => x.id !== m.id));

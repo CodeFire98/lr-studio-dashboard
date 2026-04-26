@@ -760,6 +760,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 13px;
   color: var(--ink-3);
   margin-top: var(--space-6);
+  cursor: pointer;
   transition: color var(--dur-fast);
 }
 .browse-past:hover { color: var(--accent); }

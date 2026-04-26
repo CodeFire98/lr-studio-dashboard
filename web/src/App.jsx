@@ -27,6 +27,7 @@ import {
 } from './components/admin.jsx';
 import { BrandSelectView } from './components/BrandSelectView.jsx';
 import { BrandOnboardingModal } from './components/BrandOnboardingModal.jsx';
+import { ConfirmHost } from './components/ConfirmDialog.jsx';
 import MOCK from './lib/mockData.js';
 import { readAuth, writeAuth, setActiveBrand } from './lib/auth.js';
 import {
@@ -503,6 +504,7 @@ const App = () => {
         onComplete={handleOnboardingComplete}
         onSkip={handleOnboardingSkip}
       />
+      <ConfirmHost />
     </div>
   );
 };

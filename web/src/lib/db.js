@@ -768,6 +768,62 @@ export async function uploadBrandLogo({ accountId, file }) {
   return { url: data.publicUrl, path };
 }
 
+// ---- Brand reference assets ---------------------------------------------
+// Public 'brand-assets' bucket — anything the brand uploads as visual
+// reference for the agency (mood images, past creatives, packaging shots,
+// etc.). Path scheme '<accountId>/<ts>_<filename>'.
+
+export async function uploadBrandAsset({ accountId, file }) {
+  if (!accountId) throw new Error('uploadBrandAsset: accountId is required');
+  if (!file)      throw new Error('uploadBrandAsset: file is required');
+  const safeName = (file.name || 'asset').replace(/[^\w.\-]+/g, '_');
+  const path = `${accountId}/${Date.now()}_${safeName}`;
+  const { error } = await supabase.storage
+    .from('brand-assets')
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined,
+    });
+  if (error) throw error;
+  const { data } = supabase.storage.from('brand-assets').getPublicUrl(path);
+  return {
+    path,
+    url: data.publicUrl,
+    name: file.name,
+    sizeBytes: file.size,
+    mimeType: file.type || null,
+  };
+}
+
+export async function listBrandAssets(accountId) {
+  if (!accountId) return [];
+  const { data, error } = await supabase.storage
+    .from('brand-assets')
+    .list(accountId, { limit: 200, sortBy: { column: 'created_at', order: 'desc' } });
+  if (error) throw error;
+  return (data || [])
+    .filter((o) => o.name && !o.name.endsWith('/'))
+    .map((o) => {
+      const path = `${accountId}/${o.name}`;
+      const { data: pub } = supabase.storage.from('brand-assets').getPublicUrl(path);
+      return {
+        path,
+        name: o.name.replace(/^\d+_/, ''), // strip the timestamp prefix
+        url: pub.publicUrl,
+        sizeBytes: o.metadata?.size || 0,
+        mimeType: o.metadata?.mimetype || '',
+        createdAt: o.created_at,
+      };
+    });
+}
+
+export async function deleteBrandAsset(path) {
+  if (!path) throw new Error('deleteBrandAsset: path is required');
+  const { error } = await supabase.storage.from('brand-assets').remove([path]);
+  if (error) throw error;
+}
+
 // ---- Brand onboarding ----------------------------------------------------
 
 // Cheap query: does the active brand still need to run through the welcome

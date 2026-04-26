@@ -78,7 +78,7 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
   };
   const planLine = mode === "admin"
     ? "L+R Studio · Admin"
-    : (auth?.account?.name ? auth.account.name : "Pro plan · 14 credits");
+    : (auth?.account?.name || (auth?.email ? auth.email : ""));
 
   return (
     <aside className="sidebar" data-guest={isGuest ? "true" : "false"}>

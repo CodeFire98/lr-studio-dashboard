@@ -7,7 +7,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art } from './primitives.jsx';
 import { readAuth } from '../lib/auth.js';
-import { loadBrandKit, updateBrandKit, uploadBrandLogo } from '../lib/db.js';
+import {
+  loadBrandKit,
+  updateBrandKit,
+  uploadBrandLogo,
+  uploadBrandAsset,
+  listBrandAssets,
+  deleteBrandAsset,
+} from '../lib/db.js';
+import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
 // ---- Inline-edit primitives ---------------------------------------------
 
@@ -351,6 +359,212 @@ const BrandLogoCard = ({ accountId, logoUrl, onSave }) => {
   );
 };
 
+// ---- Export kit ---------------------------------------------------------
+// Bundles every editable kit field + asset URLs into a single JSON file and
+// triggers a browser download. Reference + logo URLs are public bucket URLs
+// so the recipient can fetch the actual images by pasting the URL — no
+// signed-URL gymnastics, no zip dependency. We can layer real ZIP+image
+// bundling on top later if asked.
+async function exportBrandKit(kit) {
+  if (!kit) return;
+  const refs = await listBrandAssets(kit.accountId).catch(() => []);
+  const payload = {
+    brand:       kit.name,
+    accountId:   kit.accountId,
+    exportedAt:  new Date().toISOString(),
+    summary:     kit.aiSummary || '',
+    tagline:     kit.tagline || '',
+    mission:     kit.mission || '',
+    audience:    kit.audience || '',
+    toneVoice:   kit.toneVoice || '',
+    voiceTags:   kit.voiceTags || [],
+    dos:         kit.dos || [],
+    donts:       kit.donts || [],
+    primaryColor: kit.primaryColor || null,
+    secondaryColor: kit.secondaryColor || null,
+    palette:     kit.palette || [],
+    fonts:       kit.fonts || [],
+    websiteUrl:  kit.websiteUrl || '',
+    socialLinks: kit.socialLinks || {},
+    logoUrl:     kit.logoUrl || null,
+    references:  refs.map((r) => ({ name: r.name, url: r.url, sizeBytes: r.sizeBytes, mimeType: r.mimeType })),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const safeName = (kit.name || 'brand').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${safeName}-brand-kit.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// ---- References / brand assets gallery ---------------------------------
+// Generic visual library the brand uploads for the agency to draw from:
+// past creatives, mood images, packaging shots, etc. Stored in the public
+// 'brand-assets' bucket under the account UUID prefix.
+const ReferencesCard = ({ accountId }) => {
+  const fileInputRef = useRef(null);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!accountId) return;
+    let cancelled = false;
+    setLoading(true);
+    listBrandAssets(accountId)
+      .then((rows) => { if (!cancelled) setItems(rows); })
+      .catch((e) => { if (!cancelled) setErr(e?.message || 'Could not load references.'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [accountId]);
+
+  const handleUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setErr(''); setUploading(true);
+    try {
+      const next = [...items];
+      for (const f of files) {
+        if (f.size > 10 * 1024 * 1024) {
+          setErr(`${f.name} skipped — over 10MB.`);
+          continue;
+        }
+        const uploaded = await uploadBrandAsset({ accountId, file: f });
+        next.unshift({
+          path: uploaded.path,
+          name: f.name,
+          url: uploaded.url,
+          sizeBytes: f.size,
+          mimeType: f.type,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      setItems(next);
+    } catch (ex) {
+      setErr(ex?.message || 'Upload failed.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleDelete = async (item) => {
+    const ok = await confirmDialog({
+      title: `Delete ${item.name}?`,
+      body: 'This removes it from your reference library for this brand.',
+      confirmText: 'Delete',
+      cancelText: 'Keep it',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteBrandAsset(item.path);
+      setItems((prev) => prev.filter((x) => x.path !== item.path));
+    } catch (ex) {
+      alert(ex?.message || 'Delete failed.');
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">References &amp; assets</div>
+          <div className="card-sub">Drop in past creatives, mood images, packaging shots — anything the team should see.</div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,application/pdf"
+          multiple
+          style={{ display: 'none' }}
+          onChange={handleUpload}
+        />
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading || !accountId}
+        >
+          <Icon name="plus" size={14}/>{uploading ? 'Uploading…' : 'Add asset'}
+        </button>
+      </div>
+      {err && <div style={{ padding: '0 16px 8px', color: 'var(--accent-ink)', fontSize: 12 }}>{err}</div>}
+      {loading ? (
+        <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--ink-4)' }}>Loading references…</div>
+      ) : items.length === 0 ? (
+        <div style={{ padding: '20px', fontSize: 13, color: 'var(--ink-4)' }}>
+          No references yet. Use <strong>Add asset</strong> to upload images or PDFs.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10, padding: '4px 16px 16px' }}>
+          {items.map((item) => {
+            const isImage = (item.mimeType || '').startsWith('image/');
+            return (
+              <div
+                key={item.path}
+                style={{
+                  position: 'relative',
+                  aspectRatio: '1/1',
+                  borderRadius: 10,
+                  overflow: 'hidden',
+                  border: '1px solid var(--line-2)',
+                  background: 'var(--surface-2)',
+                }}
+              >
+                {isImage ? (
+                  <a href={item.url} target="_blank" rel="noreferrer" style={{ display: 'block', height: '100%' }}>
+                    <img src={item.url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
+                  </a>
+                ) : (
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      height: '100%', padding: 12, gap: 8,
+                      color: 'var(--ink-2)', textDecoration: 'none',
+                    }}
+                  >
+                    <Icon name="folder" size={28}/>
+                    <span style={{ fontSize: 12, textAlign: 'center', wordBreak: 'break-word', lineHeight: 1.3 }}>
+                      {item.name}
+                    </span>
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleDelete(item)}
+                  title="Delete"
+                  style={{
+                    position: 'absolute',
+                    top: 6, right: 6,
+                    width: 24, height: 24,
+                    borderRadius: 6,
+                    border: 0,
+                    background: 'rgba(0,0,0,0.55)',
+                    color: '#fff',
+                    display: 'grid', placeItems: 'center',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Icon name="x" size={11}/>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ---- Display helpers ----------------------------------------------------
 
 const LogoBlock = ({ logo }) => {
@@ -502,8 +716,9 @@ const BrandKitView = () => {
           <div className="sub">Everything L+R references when we make work for {brandName}. Keep this fresh — it's the first place we look.</div>
         </div>
         <div className="actions">
-          <button className="btn" title="Export coming soon" disabled><Icon name="download" size={14}/>Export kit</button>
-          <button className="btn btn-primary" title="Coming in Phase 6b" disabled><Icon name="plus" size={14}/>Add asset</button>
+          <button className="btn" onClick={() => exportBrandKit(kit)}>
+            <Icon name="download" size={14}/>Export kit
+          </button>
         </div>
       </div>
 
@@ -700,6 +915,9 @@ const BrandKitView = () => {
           <InlineList field="donts" value={kit.donts} onSave={saveField}/>
         </div>
       </div>
+
+      {/* References & assets — brand-uploaded visual library */}
+      <ReferencesCard accountId={accountId}/>
 
       {/* Photography */}
       {photography.length > 0 && (

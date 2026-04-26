@@ -20,6 +20,7 @@ import {
   loadTeamForAccount,
   assignTaskLead,
 } from '../lib/db.js';
+import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
 const CHIP_LABELS = {
   count: "Count", deadline: "Deadline", format: "Format", platform: "Platform", objective: "Objective",
@@ -235,7 +236,14 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
   };
 
   const handleDeleteAsset = async (asset) => {
-    if (!confirm(`Delete ${asset.filename}?`)) return;
+    const ok = await confirmDialog({
+      title: `Delete ${asset.filename}?`,
+      body: 'This permanently removes the file from the task.',
+      confirmText: 'Delete',
+      cancelText: 'Keep it',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteAsset(asset);
       setAssets((prev) => prev.filter((a) => a.id !== asset.id));
@@ -336,7 +344,6 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                 <div className="card-title">Brief summary</div>
                 <div className="card-sub">Captured {task.createdAt}</div>
               </div>
-              <button className="btn btn-sm btn-ghost"><Icon name="sparkles" size={12}/>Re-parse</button>
             </div>
             <p style={{ color: "var(--ink-2)", margin: "0 0 16px", lineHeight: 1.55 }}>
               "{task.brief.message}"
