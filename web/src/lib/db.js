@@ -112,15 +112,103 @@ const TASK_SELECT = `
   creator:profiles!created_by(id, display_name, initials, avatar_color, is_agency)
 `;
 
+// List variant: embeds assets so the grid can render image previews without
+// an N+1. We don't need the creator profile here (only the lead is shown on
+// the card), so keep the projection narrower than the detail-view select.
+const TASKS_LIST_SELECT = `
+  *,
+  account:accounts(id, name, type, accent_color),
+  assigned_lead:profiles!assigned_lead_id(id, display_name, initials, avatar_color, is_agency),
+  assets(id, kind, version, storage_path, mime_type, created_at)
+`;
+
 // ---- Queries -------------------------------------------------------------
+
+// Pick which assets feed the card preview, tiered by status:
+//   delivered → most-recent deliverable as a hero
+//   review/in-progress → up to 4 latest WIPs/deliverables for a collage
+//   brief received    → first reference image (mood, not work)
+const KIND_RANK = { deliverable: 3, wip: 2, reference: 1 };
+
+function pickPreviewAssetRows(taskRow) {
+  const all = (taskRow.assets || []).filter((a) =>
+    (a.mime_type || '').startsWith('image/')
+  );
+  if (!all.length) return { kind: 'empty', rows: [] };
+  all.sort((a, b) => {
+    const dr = (KIND_RANK[b.kind] || 0) - (KIND_RANK[a.kind] || 0);
+    if (dr !== 0) return dr;
+    return (b.created_at || '').localeCompare(a.created_at || '');
+  });
+  if (taskRow.status === 'delivered') {
+    const hero = all.find((a) => a.kind === 'deliverable') || all[0];
+    return { kind: 'hero', rows: [hero] };
+  }
+  const work = all.filter((a) => a.kind === 'wip' || a.kind === 'deliverable');
+  if (work.length >= 2) return { kind: 'collage', rows: work.slice(0, 4) };
+  if (work.length === 1) return { kind: 'hero', rows: [work[0]] };
+  return { kind: 'reference', rows: [all[0]] };
+}
+
+// Bulk-sign preview asset URLs in a single Storage call so the grid doesn't
+// fan out one signed-URL request per card. Mutates the mapped tasks in place
+// to attach `previewAssets`.
+async function attachPreviewAssets(mappedTasks, rawRows) {
+  const byId = new Map(rawRows.map((r) => [r.id, r]));
+  const allPaths = [];
+  const planByTask = new Map();
+  for (const r of rawRows) {
+    const pick = pickPreviewAssetRows(r);
+    planByTask.set(r.id, pick);
+    for (const row of pick.rows) {
+      if (row?.storage_path) allPaths.push(row.storage_path);
+    }
+  }
+
+  const urlMap = new Map();
+  if (allPaths.length > 0) {
+    try {
+      const { data, error } = await supabase.storage
+        .from('assets')
+        .createSignedUrls(allPaths, 60 * 60 * 6); // 6h TTL — outlives a typical session
+      if (!error && Array.isArray(data)) {
+        for (const item of data) {
+          if (item?.path && item?.signedUrl) urlMap.set(item.path, item.signedUrl);
+        }
+      }
+    } catch (e) {
+      console.warn('preview asset signing failed', e);
+    }
+  }
+
+  for (const t of mappedTasks) {
+    const plan = planByTask.get(t.id);
+    if (!plan || plan.kind === 'empty') {
+      t.previewAssets = { kind: 'empty', items: [] };
+      continue;
+    }
+    const items = plan.rows
+      .map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        version: r.version,
+        url: urlMap.get(r.storage_path),
+      }))
+      .filter((it) => it.url);
+    t.previewAssets = { kind: items.length ? plan.kind : 'empty', items };
+  }
+}
 
 export async function loadTasks() {
   const { data, error } = await supabase
     .from('tasks')
-    .select(TASK_SELECT)
+    .select(TASKS_LIST_SELECT)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return (data || []).map(mapTaskRow);
+  const rows = data || [];
+  const mapped = rows.map(mapTaskRow);
+  await attachPreviewAssets(mapped, rows);
+  return mapped;
 }
 
 export async function loadTaskById(id) {

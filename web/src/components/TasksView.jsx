@@ -140,6 +140,126 @@ function platformOf(task) {
   return task.brief?.chips?.platform?.value || null;
 }
 
+// Stage-tiered preview: real creative thumbnails when uploaded, otherwise a
+// typographic poster keyed off the brief metadata. Falls back to the poster
+// gracefully if a signed image URL fails to load.
+const TaskPreview = ({ task }) => {
+  const [failed, setFailed] = useState(false);
+  const preview = task.previewAssets;
+  const items = preview?.items || [];
+  const kind = failed ? 'empty' : (preview?.kind || 'empty');
+
+  if (kind === 'hero' && items[0]) {
+    return (
+      <div className="tp-hero">
+        <img src={items[0].url} alt="" onError={() => setFailed(true)} loading="lazy" />
+        {task.status === 'delivered' && task.artLabel && (
+          <span className="tp-overlay-bottom">{task.artLabel}</span>
+        )}
+      </div>
+    );
+  }
+
+  if (kind === 'collage') {
+    return (
+      <div className={`tp-collage tp-collage-${items.length}`}>
+        {items.map((it, i) => (
+          <div key={it.id} className="tp-tile">
+            <img src={it.url} alt="" onError={() => setFailed(true)} loading="lazy" />
+            {i === 0 && it.version > 1 && <span className="tp-version">v{it.version}</span>}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (kind === 'reference' && items[0]) {
+    return (
+      <div className="tp-hero tp-reference">
+        <img src={items[0].url} alt="" onError={() => setFailed(true)} loading="lazy" />
+        <span className="tp-ref-tag">Reference</span>
+      </div>
+    );
+  }
+
+  return <TaskPoster task={task} />;
+};
+
+// Editorial empty state: brand-ish palette ground, big serif anchor (creative
+// count / format / objective), thin format · platform subline, 3-stripe
+// palette accent at the bottom edge. The card always renders something
+// distinguishable, even before any asset has been uploaded.
+const TaskPoster = ({ task }) => {
+  const palette = task.palette || ['#F4EBDD', '#E8C9A8', '#1B1F1C'];
+  const [bg, mid, ink] = palette;
+  const chips = task.brief?.chips || {};
+  const count = chips.count?.value;
+  const countUnit = chips.count?.unit || 'creatives';
+  const format = chips.format?.value || null;
+  const platform = chips.platform?.value || null;
+  const objective = chips.objective?.value || null;
+
+  let heroNum = null;
+  let heroLabel = null;
+  if (count) {
+    heroNum = String(count);
+    heroLabel = countUnit;
+  } else if (format) {
+    heroLabel = format;
+  } else {
+    heroLabel = task.title.split(/\s+/).slice(0, 4).join(' ');
+  }
+  const subline = [format, platform].filter(Boolean).join(' · ');
+
+  return (
+    <div className="tp-poster" style={{ background: bg, color: ink }}>
+      <div className="tp-poster-bleed" style={{ background: `radial-gradient(circle at 70% 25%, ${mid}, transparent 65%)` }} />
+      <div className="tp-poster-inner">
+        {heroNum && <div className="tp-poster-num" style={{ color: ink }}>{heroNum}</div>}
+        <div className="tp-poster-label" style={{ color: ink }}>{heroLabel}</div>
+        {(count && subline) && (
+          <div className="tp-poster-sub" style={{ color: `color-mix(in oklab, ${ink} 65%, transparent)` }}>
+            {subline}
+          </div>
+        )}
+        {!count && objective && (
+          <div className="tp-poster-sub" style={{ color: `color-mix(in oklab, ${ink} 65%, transparent)` }}>
+            {objective}
+          </div>
+        )}
+      </div>
+      <div className="tp-poster-stripe">
+        {palette.slice(0, 3).map((c, i) => <span key={i} style={{ background: c }} />)}
+      </div>
+    </div>
+  );
+};
+
+// Thin progress-style line at the bottom edge of the thumbnail. Hidden when
+// the deadline is far out (>14d), full green when delivered, full red when
+// overdue and not delivered. Drives the eye toward what's actually due.
+const UrgencyBar = ({ task }) => {
+  if (task.status === 'delivered') {
+    return <div className="urgency-bar"><div className="urgency-fill urgency-delivered" /></div>;
+  }
+  if (!task.deadlineDate) return null;
+  const due = new Date(task.deadlineDate);
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((due - todayStart) / 86400000);
+  if (days > 14) return null;
+  let pct, tone;
+  if (days < 0) { pct = 100; tone = 'overdue'; }
+  else if (days <= 2) { pct = 95; tone = 'urgent'; }
+  else if (days <= 7) { pct = 70; tone = 'warm'; }
+  else { pct = 40; tone = 'soon'; }
+  return (
+    <div className="urgency-bar">
+      <div className={`urgency-fill urgency-${tone}`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+};
+
 const TasksView = ({ setRoute, tasks, mode }) => {
   const auth = readAuth();
   const viewerId = auth?.id;
@@ -311,23 +431,37 @@ const TasksView = ({ setRoute, tasks, mode }) => {
         </div>
       ) : layout === "grid" ? (
         <div className="project-grid">
-          {filtered.map((p) => (
-            <div key={p.id} className="project-card" onClick={() => setRoute({ view: "tasks", id: p.id })}>
-              <div className="project-thumb">
-                <Art palette={p.palette} kicker={p.artKicker} label={p.artLabel} variant={p.id.length}/>
-                <div className="thumb-status"><StatusBadge status={p.status}/></div>
-              </div>
-              <div className="project-body">
-                <div className="project-tag">{p.tag}</div>
-                <div className="project-title">{p.title}</div>
-                <div className="project-meta">
-                  <span>Due {p.deadline}</span>
-                  <span className="dot"/>
-                  <AvatarStack people={p.collaborators} size="sm"/>
+          {filtered.map((p) => {
+            const chips = p.brief?.chips || {};
+            const count = chips.count?.value;
+            const format = chips.format?.value;
+            const platform = chips.platform?.value;
+            return (
+              <div key={p.id} className="project-card" onClick={() => setRoute({ view: "tasks", id: p.id })}>
+                <div className="project-thumb">
+                  <TaskPreview task={p} />
+                  <div className="thumb-status"><StatusBadge status={p.status}/></div>
+                  <UrgencyBar task={p} />
+                </div>
+                <div className="project-body">
+                  <div className="project-tag">{p.tag}</div>
+                  <div className="project-title">{p.title}</div>
+                  {(count || format || platform) && (
+                    <div className="project-meta-chips">
+                      {count && <span className="meta-chip">{count} {chips.count?.unit || 'creatives'}</span>}
+                      {format && <span className="meta-chip meta-chip-faded">{format}</span>}
+                      {platform && <span className="meta-chip meta-chip-faded">{platform}</span>}
+                    </div>
+                  )}
+                  <div className="project-meta">
+                    <span>Due {p.deadline}</span>
+                    <span className="dot"/>
+                    <AvatarStack people={p.collaborators} size="sm"/>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="project-list">
