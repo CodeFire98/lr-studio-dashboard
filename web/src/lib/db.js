@@ -150,10 +150,19 @@ function chipDeadlineToIso(chip) {
 
 export async function submitTask({ accountId, userId, text, chips, titleHint }) {
   const count = chips?.count?.value ?? null;
-  const title =
-    titleHint ||
-    (count ? `${count} ${chips.count.unit || 'creatives'}` : 'New creative brief') +
-    (chips?.campaign?.value ? ` — ${chips.campaign.value}` : '');
+  const format = chips?.format?.value ?? null;
+  const platform = chips?.platform?.value ?? null;
+  const campaign = chips?.campaign?.value ?? null;
+
+  let title = titleHint;
+  if (!title) {
+    const parts = [];
+    if (count) parts.push(String(count));
+    if (format) parts.push(format.toLowerCase());
+    if (platform) parts.push(`for ${platform}`);
+    if (campaign) parts.push(`— ${campaign}`);
+    title = parts.length ? parts.join(' ') : 'New creative brief';
+  }
   const payload = {
     account_id: accountId,
     title,
