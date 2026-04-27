@@ -50,7 +50,7 @@ const SUGGESTIONS = {
   count: { mode: "single-num", picks: ["1","3","5","10","15","25","50","100"], suffix: " creatives", custom: "numeric" },
   deadline: { mode: "single", picks: ["ASAP (24–48 hrs)","This week","Next week","In 2 weeks","In 1 month"], custom: "date" },
   format: { mode: "multi", picks: ["Static image / ad","Carousel","Lifestyle photography","Product photography","Illustration","Packaging design","Video"] },
-  platform: { mode: "multi", picks: ["Instagram","TikTok","Facebook","YouTube","Pinterest","Email","Web","Out-of-home"] },
+  platform: { mode: "multi", picks: ["Instagram","TikTok","Facebook","YouTube","Pinterest","LinkedIn","Email","Web","Out-of-home"] },
   objective: { mode: "single", picks: ["Brand awareness","Product launch","Conversion / sales","Lead generation","Re-engagement / winback","Recruiting / employer brand"] },
   campaign: { mode: "single", picks: ["Spring collection","Summer campaign","New Year","Valentine's Day","Mother's / Father's Day","Pride","Black Friday","Holiday gifting"], custom: "text" },
   audience: { mode: "text", placeholder: "e.g. Women 28–45, design-conscious, US & UK" },

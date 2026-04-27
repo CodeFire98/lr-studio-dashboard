@@ -42,6 +42,7 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
   const [voiceTags, setVoiceTags] = useState(() =>
     Array.isArray(kit?.voiceTags) ? kit.voiceTags.slice(0, 3) : []
   );
+  const [customVoice, setCustomVoice] = useState('');
   const [primaryColor, setPrimaryColor] = useState(kit?.primaryColor || '');
   const [accentColor, setAccentColor] = useState(kit?.palette?.[0] || '');
   const [logoUrl, setLogoUrl] = useState(kit?.logoUrl || '');
@@ -64,6 +65,7 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
     });
     setAudience(kit?.audience || '');
     setVoiceTags(Array.isArray(kit?.voiceTags) ? kit.voiceTags.slice(0, 3) : []);
+    setCustomVoice('');
     setPrimaryColor(kit?.primaryColor || '');
     setAccentColor(kit?.palette?.[0] || '');
     setLogoUrl(kit?.logoUrl || '');
@@ -92,12 +94,15 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
           .map(([k, v]) => [k, (v || '').trim()])
           .filter(([, v]) => v.length > 0)
       );
+      const finalVoiceTags = customVoice.trim()
+        ? [...voiceTags, customVoice.trim()]
+        : voiceTags;
       const patch = {
         tagline: tagline.trim() || null,
         website_url: websiteUrl.trim() || null,
         social_links: cleanedSocials,
         audience: audience.trim() || null,
-        voice_tags: voiceTags,
+        voice_tags: finalVoiceTags,
         primary_color: primaryHex,
         palette: accentHex ? [accentHex] : [],
         logo_url: logoUrl.trim() || null,
@@ -253,6 +258,14 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
                 );
               })}
             </div>
+            <input
+              type="text"
+              value={customVoice}
+              onChange={(e) => setCustomVoice(e.target.value)}
+              placeholder="Other — describe your tone"
+              maxLength={40}
+              style={{ marginTop: 8 }}
+            />
           </div>
 
           {/* 6. Visual identity */}
@@ -336,13 +349,33 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
 };
 
 const ColorField = ({ label, value, onChange }) => {
+  const pickerRef = useRef(null);
   const isValid = !value || HEX_RE.test(value.trim());
   const swatch = isValid && value ? (value.startsWith('#') ? value : `#${value}`) : '#E8E8E8';
   return (
     <label className="onboarding-color">
       <span className="onboarding-color-label">{label}</span>
       <span className="onboarding-color-row">
-        <span className="onboarding-color-swatch" style={{ background: swatch }} />
+        <span
+          className="onboarding-color-swatch"
+          style={{ background: swatch, cursor: 'pointer', position: 'relative' }}
+          onClick={() => pickerRef.current?.click()}
+          title="Pick a color"
+        >
+          <input
+            ref={pickerRef}
+            type="color"
+            value={swatch}
+            onChange={(e) => onChange(e.target.value)}
+            style={{
+              position: 'absolute', inset: 0,
+              width: '100%', height: '100%',
+              opacity: 0, cursor: 'pointer',
+              border: 'none', padding: 0,
+            }}
+            tabIndex={-1}
+          />
+        </span>
         <input
           type="text"
           value={value}
