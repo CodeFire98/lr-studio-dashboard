@@ -221,6 +221,42 @@ export async function updateTaskStatus(id, status) {
   return mapTaskRow(data);
 }
 
+// Map chip keys to DB column names.
+const CHIP_TO_COLUMN = {
+  count: 'creatives_count',
+  deadline: 'deadline',
+  format: 'format',
+  platform: 'platform',
+  objective: 'objective',
+};
+
+export async function updateTaskField({ taskId, chipKey, oldValue, newValue, actorId }) {
+  const col = CHIP_TO_COLUMN[chipKey];
+  if (!col) throw new Error(`Unknown chip key: ${chipKey}`);
+
+  const dbValue = chipKey === 'deadline' ? chipDeadlineToIso({ value: newValue }) : newValue;
+  const patch = { [col]: dbValue || null };
+
+  // Update the task row.
+  const { data, error } = await supabase
+    .from('tasks')
+    .update(patch)
+    .eq('id', taskId)
+    .select(TASK_SELECT)
+    .single();
+  if (error) throw error;
+
+  // Insert an activity row for the edit.
+  await supabase.from('activity').insert({
+    task_id: taskId,
+    actor_id: actorId,
+    action: 'field_edited',
+    payload: { field: chipKey, from: oldValue || null, to: newValue || null },
+  });
+
+  return mapTaskRow(data);
+}
+
 // Reassign a task's creative lead. Pass `userId = null` to unassign. The
 // existing log_task_activity trigger records an 'assigned' activity row
 // whenever assigned_lead_id changes, so no client-side activity write is
@@ -330,6 +366,7 @@ export function mapActivityRow(row) {
   else if (row.action === 'assigned') label = `${actor.name} updated the assignment`;
   else if (row.action === 'comment_posted') label = `${actor.name} posted a comment`;
   else if (row.action === 'asset_uploaded') label = `${actor.name} uploaded ${payload.filename || 'a file'}`;
+  else if (row.action === 'field_edited') label = `${actor.name} changed ${payload.field || 'a field'} from "${payload.from || '—'}" to "${payload.to || '—'}"`;
   return {
     id: row.id,
     taskId: row.task_id,

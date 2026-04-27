@@ -19,6 +19,7 @@ import {
   loadAgencyAccountId,
   loadTeamForAccount,
   assignTaskLead,
+  updateTaskField,
 } from '../lib/db.js';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
@@ -122,6 +123,9 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
   // can offer assignment targets. Brand viewers don't need this list.
   const [agencyMembers, setAgencyMembers] = useState([]);
   const [reassigning, setReassigning] = useState(false);
+  const [editingChip, setEditingChip] = useState(null); // { key, value }
+  const [editValue, setEditValue] = useState('');
+  const [savingChip, setSavingChip] = useState(false);
   useEffect(() => {
     if (mode !== 'admin') return;
     let cancelled = false;
@@ -137,6 +141,46 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
     })();
     return () => { cancelled = true; };
   }, [mode]);
+
+  const startEditChip = (key, currentValue) => {
+    const display = key === 'count' ? String(currentValue?.value || '') : (currentValue?.value || '');
+    setEditingChip(key);
+    setEditValue(display);
+  };
+
+  const saveChipEdit = async () => {
+    if (!editingChip || savingChip) return;
+    const chip = task.brief.chips[editingChip];
+    const oldDisplay = editingChip === 'count' ? String(chip?.value || '') : (chip?.value || '');
+    const newVal = editValue.trim();
+    if (newVal === oldDisplay) { setEditingChip(null); return; }
+
+    const ok = await confirmDialog({
+      title: 'Update this field?',
+      body: `Change ${CHIP_LABELS[editingChip] || editingChip} from "${oldDisplay || '—'}" to "${newVal || '—'}"? This will be logged in the activity feed.`,
+      confirmText: 'Save change',
+      cancelText: 'Cancel',
+    });
+    if (!ok) return;
+
+    setSavingChip(true);
+    try {
+      const dbVal = editingChip === 'count' ? (parseInt(newVal, 10) || null) : newVal;
+      const updated = await updateTaskField({
+        taskId: task.id,
+        chipKey: editingChip,
+        oldValue: oldDisplay,
+        newValue: editingChip === 'count' ? dbVal : newVal,
+        actorId: viewerId,
+      });
+      updateTask(task.id, updated);
+    } catch (e) {
+      alert(`Couldn't update: ${e.message || e}`);
+    } finally {
+      setSavingChip(false);
+      setEditingChip(null);
+    }
+  };
 
   const handleAssignLead = async (userId) => {
     if (!task?.id) return;
@@ -349,12 +393,42 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
               "{task.brief.message}"
             </p>
             <div className="brief-grid">
-              {Object.entries(task.brief.chips).map(([k, v]) => (
-                <div className="brief-field" key={k}>
-                  <div className="k">{CHIP_LABELS[k] || k}</div>
-                  <div className="v">{k === "count" ? `${v.value} ${v.unit || ""}`.trim() : v.value}</div>
-                </div>
-              ))}
+              {Object.entries(task.brief.chips).map(([k, v]) => {
+                const editable = ['count', 'deadline', 'format', 'platform', 'objective'].includes(k);
+                const display = k === "count" ? `${v.value} ${v.unit || ""}`.trim() : v.value;
+                const isEditing = editingChip === k;
+                return (
+                  <div className="brief-field" key={k} style={editable ? { cursor: 'pointer' } : undefined}>
+                    <div className="k">{CHIP_LABELS[k] || k}</div>
+                    {isEditing ? (
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        <input
+                          type={k === 'count' ? 'number' : 'text'}
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveChipEdit(); if (e.key === 'Escape') setEditingChip(null); }}
+                          autoFocus
+                          disabled={savingChip}
+                          style={{
+                            flex: 1, padding: '4px 6px', fontSize: 13,
+                            border: '1px solid var(--accent)', borderRadius: 6,
+                            outline: 'none', background: 'var(--surface)',
+                          }}
+                        />
+                        <button className="btn btn-sm btn-primary" onClick={saveChipEdit} disabled={savingChip} style={{ padding: '4px 8px', fontSize: 11 }}>
+                          {savingChip ? '…' : '✓'}
+                        </button>
+                        <button className="btn btn-sm btn-ghost" onClick={() => setEditingChip(null)} disabled={savingChip} style={{ padding: '4px 8px', fontSize: 11 }}>✕</button>
+                      </div>
+                    ) : (
+                      <div className="v" onClick={editable ? () => startEditChip(k, v) : undefined}
+                        title={editable ? 'Click to edit' : undefined}
+                        style={editable ? { borderBottom: '1px dashed var(--ink-5)', display: 'inline-block' } : undefined}
+                      >{display}</div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
