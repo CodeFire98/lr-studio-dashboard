@@ -418,41 +418,27 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                     {isEditing ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {k === 'deadline' ? (
-                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                            <input
-                              type="date"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              autoFocus
-                              disabled={savingChip}
-                              style={{
-                                padding: '4px 6px', fontSize: 13,
-                                border: '1px solid var(--accent)', borderRadius: 6,
-                                outline: 'none', background: 'var(--surface)',
-                              }}
-                            />
-                            <button
-                              className="btn btn-sm btn-primary"
-                              disabled={savingChip || !editValue}
-                              onClick={() => {
-                                const d = new Date(editValue);
-                                const formatted = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                                saveChipEdit(formatted);
-                              }}
-                              style={{ padding: '4px 10px', fontSize: 11 }}
-                            >{savingChip ? '…' : 'Save'}</button>
-                          </div>
+                          <input
+                            type="date"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            autoFocus
+                            disabled={savingChip}
+                            style={{
+                              padding: '4px 6px', fontSize: 13,
+                              border: '1px solid var(--accent)', borderRadius: 6,
+                              outline: 'none', background: 'var(--surface)',
+                            }}
+                          />
                         ) : options ? (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                             {options.map((opt) => {
-                              const selected = k === 'count'
-                                ? editValue === opt
-                                : editValue === opt;
+                              const selected = editValue === opt;
                               return (
                                 <button
                                   key={opt}
                                   type="button"
-                                  onClick={() => saveChipEdit(k === 'count' ? opt : opt)}
+                                  onClick={() => setEditValue(opt)}
                                   disabled={savingChip}
                                   style={{
                                     padding: '4px 10px', fontSize: 12, borderRadius: 6,
@@ -482,12 +468,28 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                             }}
                           />
                         )}
-                        <button
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => setEditingChip(null)}
-                          disabled={savingChip}
-                          style={{ alignSelf: 'flex-start', padding: '2px 8px', fontSize: 11 }}
-                        >Cancel</button>
+                        <div style={{ display: 'flex', gap: 6, alignSelf: 'flex-start', marginTop: 4 }}>
+                          <button
+                            className="btn btn-sm btn-primary"
+                            disabled={savingChip || !editValue}
+                            onClick={() => {
+                              if (k === 'deadline') {
+                                const d = new Date(editValue);
+                                const formatted = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                                saveChipEdit(formatted);
+                              } else {
+                                saveChipEdit(editValue);
+                              }
+                            }}
+                            style={{ padding: '5px 14px', fontSize: 12 }}
+                          >{savingChip ? 'Saving…' : 'Save'}</button>
+                          <button
+                            className="btn btn-sm btn-ghost"
+                            onClick={() => setEditingChip(null)}
+                            disabled={savingChip}
+                            style={{ padding: '5px 14px', fontSize: 12 }}
+                          >Cancel</button>
+                        </div>
                       </div>
                     ) : (
                       <div className="v" onClick={editable ? () => startEditChip(k, v) : undefined}
