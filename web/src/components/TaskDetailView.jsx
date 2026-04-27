@@ -418,25 +418,30 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                     {isEditing ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {k === 'deadline' ? (
-                          <input
-                            type="date"
-                            value={editValue}
-                            onChange={(e) => {
-                              setEditValue(e.target.value);
-                              if (e.target.value) {
-                                const d = new Date(e.target.value);
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <input
+                              type="date"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              autoFocus
+                              disabled={savingChip}
+                              style={{
+                                padding: '4px 6px', fontSize: 13,
+                                border: '1px solid var(--accent)', borderRadius: 6,
+                                outline: 'none', background: 'var(--surface)',
+                              }}
+                            />
+                            <button
+                              className="btn btn-sm btn-primary"
+                              disabled={savingChip || !editValue}
+                              onClick={() => {
+                                const d = new Date(editValue);
                                 const formatted = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                                 saveChipEdit(formatted);
-                              }
-                            }}
-                            autoFocus
-                            disabled={savingChip}
-                            style={{
-                              padding: '4px 6px', fontSize: 13,
-                              border: '1px solid var(--accent)', borderRadius: 6,
-                              outline: 'none', background: 'var(--surface)',
-                            }}
-                          />
+                              }}
+                              style={{ padding: '4px 10px', fontSize: 11 }}
+                            >{savingChip ? '…' : 'Save'}</button>
+                          </div>
                         ) : options ? (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                             {options.map((opt) => {
