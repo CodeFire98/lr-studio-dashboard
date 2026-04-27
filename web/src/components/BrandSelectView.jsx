@@ -4,6 +4,7 @@
 import React, { useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { setActiveBrand, signOut } from '../lib/auth.js';
+import { promptCreateBrand } from './CreateBrandModal.jsx';
 
 const BrandSelectView = ({ auth, onSelected }) => {
   const memberships = auth?.memberships || [];
@@ -18,6 +19,18 @@ const BrandSelectView = ({ auth, onSelected }) => {
     } catch (e) {
       console.error('setActiveBrand failed', e);
       setBusyId(null);
+    }
+  };
+
+  const create = async () => {
+    if (busyId) return;
+    try {
+      const newAccountId = await promptCreateBrand();
+      // createAdditionalBrand has already setActiveBrand'd inside the helper,
+      // so all we need is to nudge App.jsx to re-read auth.
+      if (newAccountId) onSelected?.(newAccountId);
+    } catch (e) {
+      console.error('create brand failed', e);
     }
   };
 
@@ -129,6 +142,41 @@ const BrandSelectView = ({ auth, onSelected }) => {
             );
           })}
         </div>
+
+        <button
+          type="button"
+          onClick={create}
+          disabled={!!busyId}
+          style={{
+            width: '100%',
+            marginTop: 12,
+            padding: '12px 16px',
+            borderRadius: 12,
+            border: '1px dashed var(--line)',
+            background: 'transparent',
+            color: 'var(--ink-2)',
+            cursor: busyId ? 'default' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            fontSize: 14,
+            transition: 'border-color 120ms, color 120ms',
+          }}
+          onMouseEnter={(e) => {
+            if (!busyId) {
+              e.currentTarget.style.borderColor = 'var(--accent)';
+              e.currentTarget.style.color = 'var(--ink-1)';
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = 'var(--line)';
+            e.currentTarget.style.color = 'var(--ink-2)';
+          }}
+        >
+          <Icon name="plus" size={14}/>
+          <span>Create a new brand</span>
+        </button>
 
         <div style={{ textAlign: 'center', marginTop: 24 }}>
           <button

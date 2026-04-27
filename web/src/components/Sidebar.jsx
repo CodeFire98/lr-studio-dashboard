@@ -9,6 +9,7 @@ import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import MOCK from '../lib/mockData.js';
 import { setActiveBrand, readAuth } from '../lib/auth.js';
+import { promptCreateBrand } from './CreateBrandModal.jsx';
 
 const buildNav = (taskCount) => [
   { key: "home", label: "Home", icon: "home" },
@@ -69,6 +70,10 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
     (m) => m.account.id !== auth?.account?.id
   );
   const canSwitchBrands = !auth?.isAgency && memberships.length > 1;
+  // Any non-agency signed-in user can spin up an additional brand workspace.
+  // Even users with a single membership see this — the section just shows
+  // the current brand + a "Create new brand" action.
+  const canCreateBrand = !!auth && !auth.isAgency;
   const handleBrandSwitch = async (accountId) => {
     setMenuOpen(false);
     try {
@@ -76,6 +81,11 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
     } catch (e) {
       console.error('brand switch failed', e);
     }
+  };
+  const handleCreateBrand = async () => {
+    setMenuOpen(false);
+    try { await promptCreateBrand(); }
+    catch (e) { console.error('create brand failed', e); }
   };
   const planLine = mode === "admin"
     ? "L+R Studio · Admin"
@@ -183,7 +193,7 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
                 </button>
               </div>
 
-              {canSwitchBrands && (
+              {(canSwitchBrands || canCreateBrand) && (
                 <>
                   <div className="user-menu-sep"/>
                   <div className="user-menu-group">
@@ -196,7 +206,7 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
                         color: 'var(--ink-3)',
                       }}
                     >
-                      Switch brand
+                      {canSwitchBrands ? 'Switch brand' : 'Brands'}
                     </div>
                     {auth?.account && (
                       <div
@@ -229,6 +239,15 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
                         </span>
                       </button>
                     ))}
+                    {canCreateBrand && (
+                      <button
+                        className="user-menu-item"
+                        onClick={handleCreateBrand}
+                      >
+                        <Icon name="plus" size={14}/>
+                        <span>Create new brand</span>
+                      </button>
+                    )}
                   </div>
                 </>
               )}

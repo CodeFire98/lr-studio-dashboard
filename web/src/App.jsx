@@ -28,6 +28,7 @@ import {
 import { BrandSelectView } from './components/BrandSelectView.jsx';
 import { BrandOnboardingModal } from './components/BrandOnboardingModal.jsx';
 import { ConfirmHost } from './components/ConfirmDialog.jsx';
+import { CreateBrandHost } from './components/CreateBrandModal.jsx';
 import MOCK from './lib/mockData.js';
 import { readAuth, writeAuth, setActiveBrand } from './lib/auth.js';
 import {
@@ -408,7 +409,12 @@ const App = () => {
   // Note: rendered WITHOUT the `.app` wrapper — that's a grid with a sidebar
   // column that would squish the picker into a narrow strip.
   if (auth?.requiresBrandSelection) {
-    return <BrandSelectView auth={auth} onSelected={() => setAuth(readAuth())} />;
+    return (
+      <>
+        <BrandSelectView auth={auth} onSelected={() => setAuth(readAuth())} />
+        <CreateBrandHost />
+      </>
+    );
   }
 
   return (
@@ -507,6 +513,7 @@ const App = () => {
         onSkip={handleOnboardingSkip}
       />
       <ConfirmHost />
+      <CreateBrandHost />
     </div>
   );
 };

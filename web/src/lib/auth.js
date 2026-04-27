@@ -290,6 +290,23 @@ async function signOut() {
   return writeAuth(null);
 }
 
+// Create an additional brand workspace for the currently signed-in user.
+// Unlike signUpBrand (first-time signup) and the idempotent create_brand_account
+// RPC, this always provisions a fresh brand + brand_kit and makes the caller
+// its owner. Used by the "Create new brand" actions in the sidebar / picker.
+async function createAdditionalBrand({ brandName }) {
+  const trimmed = (brandName || '').trim();
+  if (!trimmed) throw new Error('Brand name is required');
+  const { data: accountId, error } = await supabase.rpc(
+    'create_additional_brand_account',
+    { p_name: trimmed }
+  );
+  if (error) throw error;
+  // Switch to the newly-created brand so the next render lands the user inside it.
+  await setActiveBrand(accountId);
+  return accountId;
+}
+
 // Pick which brand the current user is operating in. Persists per-user in
 // localStorage so subsequent sessions restore the same selection on that
 // browser. Pass null to clear and re-trigger the picker.
@@ -368,6 +385,7 @@ export {
   signInWithGoogle,
   signOut,
   setActiveBrand,
+  createAdditionalBrand,
   requestPasswordReset,
   readAgencyAccounts,
   writeAgencyAccounts,
