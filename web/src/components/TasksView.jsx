@@ -269,7 +269,9 @@ const TasksView = ({ setRoute, tasks, mode }) => {
   const [statusFilter, setStatusFilter] = useState("all");
   const [scope, setScope] = useState("all"); // "all" | "mine" — agency only
   const [dateFilter, setDateFilter] = useState('all');
-  const [platformFilter, setPlatformFilter] = useState('all');
+  // Agency users filter by brand (their queue spans many brands); brand users
+  // see only their own brand's tasks, so they get a Platform filter instead.
+  const [groupFilter, setGroupFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Apply scope first (agency-only), then chained filters on top.
@@ -278,30 +280,35 @@ const TasksView = ({ setRoute, tasks, mode }) => {
     return tasks.filter((t) => t.assignedLeadId === viewerId);
   }, [tasks, isAgency, scope, viewerId]);
 
-  // Build the platform options dynamically from whatever's in the (scoped) data
+  const groupValueOf = isAgency ? (t) => t.tag || null : platformOf;
+  const groupLabel = isAgency ? 'Brand' : 'Platform';
+
+  // Build the filter options dynamically from whatever's in the (scoped) data
   // so we never offer a filter that returns zero results.
-  const platformOptions = useMemo(() => {
+  const groupOptions = useMemo(() => {
     const seen = new Map();
     for (const t of scoped) {
-      const p = platformOf(t);
-      if (!p) continue;
-      seen.set(p.toLowerCase(), p);
+      const v = groupValueOf(t);
+      if (!v) continue;
+      seen.set(v.toLowerCase(), v);
     }
-    const opts = [{ value: 'all', label: 'Platform · Any' }];
-    for (const [, label] of seen) opts.push({ value: label, label });
+    const sorted = [...seen.values()].sort((a, b) => a.localeCompare(b));
+    const opts = [{ value: 'all', label: `${groupLabel} · Any` }];
+    for (const v of sorted) opts.push({ value: v, label: v });
     return opts;
-  }, [scoped]);
+  }, [scoped, isAgency]);
 
-  // If the active platform filter no longer exists in the dataset, reset it.
+  // If the active filter value no longer exists in the dataset, reset it.
+  // Also resets when toggling between agency and brand views.
   useEffect(() => {
-    if (platformFilter === 'all') return;
-    const has = platformOptions.some((o) => o.value === platformFilter);
-    if (!has) setPlatformFilter('all');
-  }, [platformOptions, platformFilter]);
+    if (groupFilter === 'all') return;
+    const has = groupOptions.some((o) => o.value === groupFilter);
+    if (!has) setGroupFilter('all');
+  }, [groupOptions, groupFilter]);
 
   const filtered = scoped.filter((p) => {
     if (statusFilter !== 'all' && p.status !== statusFilter) return false;
-    if (platformFilter !== 'all' && platformOf(p) !== platformFilter) return false;
+    if (groupFilter !== 'all' && groupValueOf(p) !== groupFilter) return false;
     if (!passesDateFilter(p, dateFilter)) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -325,10 +332,10 @@ const TasksView = ({ setRoute, tasks, mode }) => {
   }, [tasks, isAgency, viewerId]);
 
   const subText = `${scoped.length} ${scoped.length === 1 ? 'brief' : 'briefs'} · ${deliveredCount} delivered this month`;
-  const filtersDirty = statusFilter !== 'all' || platformFilter !== 'all' || dateFilter !== 'all' || searchQuery !== '';
+  const filtersDirty = statusFilter !== 'all' || groupFilter !== 'all' || dateFilter !== 'all' || searchQuery !== '';
   const clearAllFilters = () => {
     setStatusFilter('all');
-    setPlatformFilter('all');
+    setGroupFilter('all');
     setDateFilter('all');
     setSearchQuery('');
   };
@@ -397,10 +404,10 @@ const TasksView = ({ setRoute, tasks, mode }) => {
           />
         </div>
         <FilterPill
-          label="Platform"
-          value={platformFilter}
-          onChange={setPlatformFilter}
-          options={platformOptions}
+          label={groupLabel}
+          value={groupFilter}
+          onChange={setGroupFilter}
+          options={groupOptions}
         />
         <FilterPill
           label="Date"
