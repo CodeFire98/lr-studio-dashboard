@@ -705,7 +705,12 @@ const BrandKitView = () => {
   const logos = kit.logos || [];
   const photography = kit.photography || [];
   const inspiration = kit.inspiration || [];
-  const pastCreatives = kit.pastCreatives || [];
+  // Past creatives only render when at least one entry has a real image
+  // URL. Caption-only entries (e.g. IG posts where we don't yet cache the
+  // images) stay in the DB but are hidden until the social-asset pipeline
+  // is wired up (see project_past_creatives_deferred memory).
+  const pastCreativesAll = kit.pastCreatives || [];
+  const pastCreatives = pastCreativesAll.filter((p) => p.imageUrl || p.image_url);
 
   return (
     <div className="view"><div className="view-inner" style={{ maxWidth: 1200 }}>
