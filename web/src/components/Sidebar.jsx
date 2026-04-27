@@ -28,6 +28,7 @@ const GUEST_NAV = [
 const buildAdminNav = (taskCount) => [
   { key: "home", label: "Inbox", icon: "home" },
   { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
+  { key: "calendar", label: "Calendar", icon: "calendar" },
   { key: "team", label: "Clients", icon: "team" },
   { key: "members", label: "Team", icon: "team" },
 ];

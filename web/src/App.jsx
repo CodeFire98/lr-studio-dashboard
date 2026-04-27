@@ -356,6 +356,7 @@ const App = () => {
         return <><span>Tasks</span><span className="crumb-sep">/</span><strong>{p?.title || "Task"}</strong></>;
       }
       if (route.view === "tasks") return <><strong>All tasks</strong></>;
+      if (route.view === "calendar") return <><strong>Calendar</strong></>;
       if (route.view === "library") return <><strong>Upload creatives</strong></>;
       if (route.view === "team") return <><strong>Clients</strong></>;
       if (route.view === "members") return <><strong>Team</strong></>;
@@ -379,6 +380,7 @@ const App = () => {
       if (route.view === "home") return <AdminHome tasks={tasks} setRoute={setRoute}/>;
       if (route.view === "tasks" && route.id) return <TaskDetailView taskId={route.id} tasks={tasks} updateTask={updateTask} setRoute={setRoute} mode={mode}/>;
       if (route.view === "tasks") return <TasksView setRoute={setRoute} tasks={tasks} mode={mode}/>;
+      if (route.view === "calendar") return <CalendarView tasks={tasks} setRoute={setRoute}/>;
       if (route.view === "library") return <AdminUploadView tasks={tasks}/>;
       if (route.view === "team") return <AdminClientsView onOpenClient={enterClientView}/>;
       if (route.view === "members") return <AdminTeamView auth={auth}/>;
