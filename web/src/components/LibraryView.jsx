@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Icon } from './Icon.jsx';
 import { loadLibraryAssets, assetSignedUrl } from '../lib/db.js';
+import { useLightbox } from './Lightbox.jsx';
 
 const TYPE_FILTERS = [
   { key: 'all', label: 'All types', test: () => true },
@@ -79,10 +80,17 @@ const LibraryView = () => {
     });
   }, [assets, typeKey, dateKey, taskId, q]);
 
+  const lightbox = useLightbox();
   const handleOpen = async (a) => {
     try {
       const url = await assetSignedUrl(a.storagePath);
-      window.open(url, '_blank');
+      lightbox.open({
+        src: url,
+        mimeType: a.mimeType,
+        name: a.filename,
+        alt: a.filename,
+        downloadUrl: url,
+      });
     } catch (e) { alert(`Couldn't open: ${e.message || e}`); }
   };
 

@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { App } from './App.jsx';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import { PasswordResetPage } from './components/PasswordResetPage.jsx';
+import { LightboxProvider } from './components/Lightbox.jsx';
 import './styles/app.css';
 
 window.LR_TWEAKS = window.LR_TWEAKS || {
@@ -23,6 +24,8 @@ const isRecovery =
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary>
-    {isRecovery ? <PasswordResetPage /> : <App />}
+    <LightboxProvider>
+      {isRecovery ? <PasswordResetPage /> : <App />}
+    </LightboxProvider>
   </ErrorBoundary>
 );

@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art } from './primitives.jsx';
+import { useLightbox } from './Lightbox.jsx';
 import { readAuth } from '../lib/auth.js';
 import {
   loadBrandKit,
@@ -16,6 +17,37 @@ import {
   deleteBrandAsset,
 } from '../lib/db.js';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
+
+// System / pre-installed faces we never need to fetch from Google Fonts.
+// Anything not on this list gets a <link> appended so e.g. "Karla" actually
+// renders as Karla on the typography card. Brand-only faces ("Söhne",
+// "Reckless") fail silently and fall through to the role-appropriate
+// stack — which is the right behaviour for a kit screen anyway.
+const SYSTEM_FONT_NAMES = new Set([
+  'Arial', 'Helvetica', 'Helvetica Neue', 'Times', 'Times New Roman',
+  'Courier', 'Courier New', 'Georgia', 'Verdana', 'Tahoma', 'Trebuchet MS',
+  'Geist', 'Geist Mono', 'Instrument Serif', 'system-ui',
+  'sans-serif', 'serif', 'monospace',
+]);
+
+function useGoogleFonts(families) {
+  const key = (families || []).filter(Boolean).join('|');
+  useEffect(() => {
+    const need = (families || [])
+      .filter((f) => f && !SYSTEM_FONT_NAMES.has(f.trim()))
+      .map((f) => f.trim());
+    if (need.length === 0) return;
+    const id = 'gf_' + need.map((f) => f.replace(/\s+/g, '_')).join('+');
+    if (document.getElementById(id)) return;
+    const link = document.createElement('link');
+    link.id = id;
+    link.rel = 'stylesheet';
+    const fams = need.map((f) => `family=${encodeURIComponent(f)}:ital,wght@0,400;0,500;0,600;1,400`).join('&');
+    link.href = `https://fonts.googleapis.com/css2?${fams}&display=swap`;
+    document.head.appendChild(link);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+}
 
 // ---- Inline-edit primitives ---------------------------------------------
 
@@ -411,6 +443,14 @@ const ReferencesCard = ({ accountId }) => {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState('');
+  const lightbox = useLightbox();
+  const openItem = (item) => lightbox.open({
+    src: item.url,
+    mimeType: item.mimeType,
+    name: item.name,
+    alt: item.name,
+    downloadUrl: item.url,
+  });
 
   useEffect(() => {
     if (!accountId) return;
@@ -518,25 +558,29 @@ const ReferencesCard = ({ accountId }) => {
                 }}
               >
                 {isImage ? (
-                  <a href={item.url} target="_blank" rel="noreferrer" style={{ display: 'block', height: '100%' }}>
+                  <button
+                    type="button"
+                    onClick={() => openItem(item)}
+                    style={{ display: 'block', height: '100%', width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'zoom-in' }}
+                  >
                     <img src={item.url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
-                  </a>
+                  </button>
                 ) : (
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => openItem(item)}
                     style={{
                       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      height: '100%', padding: 12, gap: 8,
+                      width: '100%', height: '100%', padding: 12, gap: 8,
                       color: 'var(--ink-2)', textDecoration: 'none',
+                      border: 0, background: 'transparent', cursor: 'pointer',
                     }}
                   >
                     <Icon name="folder" size={28}/>
                     <span style={{ fontSize: 12, textAlign: 'center', wordBreak: 'break-word', lineHeight: 1.3 }}>
                       {item.name}
                     </span>
-                  </a>
+                  </button>
                 )}
                 <button
                   type="button"
@@ -632,6 +676,12 @@ const BrandKitView = () => {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [accountId]);
+
+  // Pull in any non-system fonts from Google Fonts so the typography card
+  // can actually render each family in its own face (otherwise "Karla"
+  // would render in the page's default serif and tell us nothing). Call
+  // this BEFORE any early returns below — Rules of Hooks.
+  useGoogleFonts((kit?.fonts || []).map((f) => f.family).filter(Boolean));
 
   const saveField = async (field, value) => {
     const row = await updateBrandKit(accountId, { [field]: value });
@@ -870,24 +920,29 @@ const BrandKitView = () => {
             <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No fonts set.</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {fonts.map((f, i) => (
-                <div key={`${f.family}_${i}`} style={{ padding: '14px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line-2)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-                    <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, letterSpacing: '-0.01em' }}>{f.family}</div>
-                    <div className="tiny">{f.role}</div>
+              {fonts.map((f, i) => {
+                const isDisplay = f.role?.includes('Display');
+                const fallback = isDisplay ? 'var(--font-serif)' : 'var(--font-sans)';
+                const stack = `"${f.family}", ${fallback}`;
+                return (
+                  <div key={`${f.family}_${i}`} style={{ padding: '14px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line-2)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                      <div style={{ fontFamily: stack, fontSize: 22, letterSpacing: '-0.01em' }}>{f.family}</div>
+                      <div className="tiny">{f.role}</div>
+                    </div>
+                    <div style={{
+                      fontFamily: stack,
+                      fontSize: isDisplay ? 36 : 18,
+                      lineHeight: 1.15,
+                      letterSpacing: isDisplay ? '-0.02em' : '0',
+                      fontStyle: isDisplay ? 'italic' : 'normal',
+                      color: 'var(--ink)',
+                    }}>
+                      {f.sample}
+                    </div>
                   </div>
-                  <div style={{
-                    fontFamily: f.role?.includes('Display') ? 'var(--font-serif)' : 'var(--font-sans)',
-                    fontSize: f.role?.includes('Display') ? 36 : 18,
-                    lineHeight: 1.15,
-                    letterSpacing: f.role?.includes('Display') ? '-0.02em' : '0',
-                    fontStyle: f.role?.includes('Display') ? 'italic' : 'normal',
-                    color: 'var(--ink)',
-                  }}>
-                    {f.sample}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

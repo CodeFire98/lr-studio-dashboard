@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art, Avatar, StatusBadge } from './primitives.jsx';
+import { useLightbox } from './Lightbox.jsx';
 import MOCK from '../lib/mockData.js';
 import { readAuth } from '../lib/auth.js';
 import {
@@ -284,10 +285,17 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
     setUploadProgress((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const handleDownload = async (asset) => {
+  const lightbox = useLightbox();
+  const handleOpenAsset = async (asset) => {
     try {
       const url = await assetSignedUrl(asset.storagePath);
-      window.open(url, '_blank');
+      lightbox.open({
+        src: url,
+        mimeType: asset.mimeType,
+        name: asset.filename,
+        alt: asset.filename,
+        downloadUrl: url,
+      });
     } catch (e) {
       alert(`Couldn't get file: ${e.message || e}`);
     }
@@ -548,7 +556,7 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                     key={a.id}
                     asset={a}
                     thumb={assetThumbs[a.id]}
-                    onClick={() => handleDownload(a)}
+                    onClick={() => handleOpenAsset(a)}
                     onDelete={canDelete(a) ? () => handleDeleteAsset(a) : null}
                   />
                 ))}
@@ -593,7 +601,7 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
                     key={a.id}
                     asset={a}
                     thumb={assetThumbs[a.id]}
-                    onClick={() => handleDownload(a)}
+                    onClick={() => handleOpenAsset(a)}
                     onDelete={canDelete(a) ? () => handleDeleteAsset(a) : null}
                   />
                 ))}

@@ -1,6 +1,7 @@
 /* eslint-disable */
 /* Shared primitives: Avatar, AvatarStack, Status, Art (procedural creative placeholder) */
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLightbox } from './Lightbox.jsx';
 
 const Avatar = ({ person, size = "md", ...rest }) => {
   const cls = size === "lg" ? "avatar avatar-lg" : size === "sm" ? "avatar avatar-sm" : "avatar";
@@ -49,17 +50,31 @@ const StatusBadge = ({ status }) => (
    (Firecrawl-enriched brand kits, asset uploads); otherwise falls back to
    the procedural gradient placeholder so empty/Luma-seed cards still
    render nicely. */
-const Art = ({ palette, kicker, label, variant = 0, pattern, imageUrl }) => {
+const Art = ({ palette, kicker, label, variant = 0, pattern, imageUrl, mimeType }) => {
   const [a, b, c] = palette || ["#F4EBDD", "#E8C9A8", "#1B1F1C"];
   const [imgFailed, setImgFailed] = useState(false);
   const showImage = !!imageUrl && !imgFailed;
+  const { open: openLightbox } = useLightbox();
   // Choose a composition based on variant
   const v = Math.abs(variant) % 5;
   const id = useMemo(() => "art_" + Math.random().toString(36).slice(2, 8), []);
 
   if (showImage) {
+    const handleClick = () => openLightbox({
+      src: imageUrl,
+      mimeType: mimeType || 'image/*',
+      name: label || kicker || '',
+      alt: label || kicker || '',
+    });
     return (
-      <div className="art" style={{ background: a }}>
+      <div
+        className="art"
+        style={{ background: a, cursor: 'zoom-in' }}
+        onClick={handleClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(); } }}
+      >
         <img
           src={imageUrl}
           alt={label || kicker || ""}
