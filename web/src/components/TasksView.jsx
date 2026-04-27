@@ -150,6 +150,7 @@ const TasksView = ({ setRoute, tasks, mode }) => {
   const [scope, setScope] = useState("all"); // "all" | "mine" — agency only
   const [dateFilter, setDateFilter] = useState('all');
   const [platformFilter, setPlatformFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Apply scope first (agency-only), then chained filters on top.
   const scoped = useMemo(() => {
@@ -178,11 +179,18 @@ const TasksView = ({ setRoute, tasks, mode }) => {
     if (!has) setPlatformFilter('all');
   }, [platformOptions, platformFilter]);
 
-  const filtered = scoped.filter((p) =>
-    (statusFilter === 'all' || p.status === statusFilter)
-    && (platformFilter === 'all' || platformOf(p) === platformFilter)
-    && passesDateFilter(p, dateFilter)
-  );
+  const filtered = scoped.filter((p) => {
+    if (statusFilter !== 'all' && p.status !== statusFilter) return false;
+    if (platformFilter !== 'all' && platformOf(p) !== platformFilter) return false;
+    if (!passesDateFilter(p, dateFilter)) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const title = (p.title || '').toLowerCase();
+      const brand = (p.tag || '').toLowerCase();
+      if (!title.includes(q) && !brand.includes(q)) return false;
+    }
+    return true;
+  });
 
   const statusCounts = useMemo(() => {
     const c = { all: scoped.length };
@@ -197,11 +205,12 @@ const TasksView = ({ setRoute, tasks, mode }) => {
   }, [tasks, isAgency, viewerId]);
 
   const subText = `${scoped.length} ${scoped.length === 1 ? 'brief' : 'briefs'} · ${deliveredCount} delivered this month`;
-  const filtersDirty = statusFilter !== 'all' || platformFilter !== 'all' || dateFilter !== 'all';
+  const filtersDirty = statusFilter !== 'all' || platformFilter !== 'all' || dateFilter !== 'all' || searchQuery !== '';
   const clearAllFilters = () => {
     setStatusFilter('all');
     setPlatformFilter('all');
     setDateFilter('all');
+    setSearchQuery('');
   };
 
   return (
@@ -212,9 +221,11 @@ const TasksView = ({ setRoute, tasks, mode }) => {
           <div className="sub">{subText}</div>
         </div>
         <div className="actions">
-          <button className="btn btn-primary" onClick={() => setRoute({ view: "home" })}>
-            <Icon name="plus" size={14}/>New brief
-          </button>
+          {!isAgency && (
+            <button className="btn btn-primary" onClick={() => setRoute({ view: "home" })}>
+              <Icon name="plus" size={14}/>New brief
+            </button>
+          )}
         </div>
       </div>
 
@@ -246,6 +257,25 @@ const TasksView = ({ setRoute, tasks, mode }) => {
             Clear filters
           </button>
         )}
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <Icon name="search" size={13} style={{ position: 'absolute', left: 9, color: 'var(--ink-4)', pointerEvents: 'none' }} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search brand or task…"
+            style={{
+              padding: '6px 10px 6px 30px',
+              fontSize: 13,
+              border: '1px solid var(--line)',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--surface)',
+              color: 'var(--ink)',
+              width: 200,
+              outline: 'none',
+            }}
+          />
+        </div>
         <FilterPill
           label="Platform"
           value={platformFilter}
