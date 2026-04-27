@@ -75,7 +75,7 @@ export function mapTaskRow(row) {
 
   const artLabel = row.status === 'delivered' && row.delivered_at
     ? `Delivered ${formatShortDate(row.delivered_at)}`
-    : (row.title?.slice(0, 40) || 'Brief');
+    : null;
 
   return {
     id: row.id,
@@ -138,10 +138,36 @@ function chipDeadlineToIso(chip) {
   if (!chip) return null;
   if (chip.iso) return chip.iso;
   if (!chip.value) return null;
+  const raw = chip.value.replace(/^due\s*/i, '').trim();
   const now = new Date();
-  const parsed = new Date(`${chip.value} ${now.getFullYear()}`);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  // Handle relative presets
+  const lower = raw.toLowerCase();
+  if (lower.includes('asap') || lower.includes('24') || lower.includes('48')) {
+    const d = new Date(today); d.setDate(d.getDate() + 2);
+    return d.toISOString().slice(0, 10);
+  }
+  if (lower === 'this week') {
+    const d = new Date(today); d.setDate(d.getDate() + (7 - d.getDay()));
+    return d.toISOString().slice(0, 10);
+  }
+  if (lower === 'next week') {
+    const d = new Date(today); d.setDate(d.getDate() + (14 - d.getDay()));
+    return d.toISOString().slice(0, 10);
+  }
+  if (lower === 'in 2 weeks') {
+    const d = new Date(today); d.setDate(d.getDate() + 14);
+    return d.toISOString().slice(0, 10);
+  }
+  if (lower === 'in 1 month') {
+    const d = new Date(today); d.setMonth(d.getMonth() + 1);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Try parsing as an absolute date like "May 15"
+  const parsed = new Date(`${raw} ${now.getFullYear()}`);
   if (isNaN(parsed.getTime())) return null;
-  // If the parsed date is already past today by more than a month, bump to next year.
   if (parsed.getTime() + 30 * 86400000 < now.getTime()) {
     parsed.setFullYear(now.getFullYear() + 1);
   }
