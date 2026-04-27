@@ -628,7 +628,7 @@ const BrandKitView = () => {
     setLoading(true);
     loadBrandKit(accountId)
       .then((row) => { if (!cancelled) setKit(row); })
-      .catch((e) => { if (!cancelled) setErr(e.message || 'Could not load brand kit.'); })
+      .catch((e) => { if (!cancelled) setErr(e.message || 'Could not load brand intelligence.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [accountId]);
@@ -644,7 +644,7 @@ const BrandKitView = () => {
       const row = await updateBrandKit(accountId, { tagline: '', mission: '' });
       setKit(row);
     } catch (e) {
-      setErr(e.message || 'Could not create brand kit.');
+      setErr(e.message || 'Could not create brand intelligence.');
     } finally {
       setCreating(false);
     }
@@ -653,8 +653,8 @@ const BrandKitView = () => {
   if (!accountId) {
     return (
       <div className="view"><div className="view-inner">
-        <div className="page-head"><div className="titles"><h1>Brand Kit</h1>
-          <div className="sub">Sign in with a brand workspace to see your brand kit.</div>
+        <div className="page-head"><div className="titles"><h1>Brand Intelligence</h1>
+          <div className="sub">Sign in with a brand workspace to see your brand intelligence.</div>
         </div></div>
       </div></div>
     );
@@ -663,7 +663,7 @@ const BrandKitView = () => {
   if (loading) {
     return (
       <div className="view"><div className="view-inner">
-        <div className="page-head"><div className="titles"><h1>Brand Kit</h1>
+        <div className="page-head"><div className="titles"><h1>Brand Intelligence</h1>
           <div className="sub">Loading…</div>
         </div></div>
       </div></div>
@@ -673,7 +673,7 @@ const BrandKitView = () => {
   if (err) {
     return (
       <div className="view"><div className="view-inner">
-        <div className="page-head"><div className="titles"><h1>Brand Kit</h1>
+        <div className="page-head"><div className="titles"><h1>Brand Intelligence</h1>
           <div className="sub" style={{ color: 'var(--accent-ink)' }}>{err}</div>
         </div></div>
       </div></div>
@@ -683,15 +683,15 @@ const BrandKitView = () => {
   if (!kit) {
     return (
       <div className="view"><div className="view-inner">
-        <div className="page-head"><div className="titles"><h1>Brand Kit</h1>
-          <div className="sub">Brand kit hasn't been set up yet.</div>
+        <div className="page-head"><div className="titles"><h1>Brand Intelligence</h1>
+          <div className="sub">Brand intelligence hasn't been set up yet.</div>
         </div></div>
         <div className="empty" style={{ padding: 32 }}>
-          <div className="big">No brand kit yet</div>
-          A brand kit is where L+R pulls your tagline, tone, palette, and references when we make work for you.
+          <div className="big">No brand intelligence yet</div>
+          Brand intelligence is where L+R pulls your tagline, tone, palette, and references when we make work for you.
           <div style={{ marginTop: 16 }}>
             <button className="btn btn-primary" disabled={creating} onClick={createKit}>
-              <Icon name="plus" size={14}/>{creating ? 'Creating…' : 'Create brand kit'}
+              <Icon name="plus" size={14}/>{creating ? 'Creating…' : 'Create brand intelligence'}
             </button>
           </div>
         </div>
@@ -712,12 +712,12 @@ const BrandKitView = () => {
       <div className="page-head">
         <div className="titles">
           <div className="tiny" style={{ marginBottom: 8 }}>Knowledge base</div>
-          <h1>Brand Kit</h1>
+          <h1>Brand Intelligence</h1>
           <div className="sub">Everything L+R references when we make work for {brandName}. Keep this fresh — it's the first place we look.</div>
         </div>
         <div className="actions">
           <button className="btn" onClick={() => exportBrandKit(kit)}>
-            <Icon name="download" size={14}/>Export kit
+            <Icon name="download" size={14}/>Export
           </button>
         </div>
       </div>

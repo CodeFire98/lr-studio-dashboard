@@ -164,7 +164,7 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
           </h2>
           <p className="login-modal-sub">
             Six quick questions. Everything except the name is optional — you can refine
-            anything later in <strong>Brand Kit</strong>.
+            anything later in <strong>Brand Intelligence</strong>.
           </p>
         </div>
 

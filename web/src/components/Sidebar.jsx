@@ -14,7 +14,7 @@ import { promptCreateBrand } from './CreateBrandModal.jsx';
 const buildNav = (taskCount) => [
   { key: "home", label: "Home", icon: "home" },
   { key: "tasks", label: "Tasks", icon: "folder", badge: taskCount || undefined },
-  { key: "brand", label: "Brand Kit", icon: "brand" },
+  { key: "brand", label: "Brand Intelligence", icon: "brand" },
   { key: "library", label: "Library", icon: "library" },
   { key: "calendar", label: "Calendar", icon: "calendar" },
   { key: "performance", label: "Performance", icon: "chart" },
@@ -122,7 +122,7 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
           <div className="teaser-label">With an account</div>
           <ul>
             <li><Icon name="folder" size={12}/><span>Track every task</span></li>
-            <li><Icon name="brand" size={12}/><span>Save your brand kit</span></li>
+            <li><Icon name="brand" size={12}/><span>Build your brand intelligence</span></li>
             <li><Icon name="chart" size={12}/><span>See performance</span></li>
           </ul>
         </div>

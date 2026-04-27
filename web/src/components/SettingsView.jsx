@@ -136,7 +136,7 @@ const SettingsView = ({ auth, mode }) => {
               <div>
                 <div className="pf-row-t">Delete workspace</div>
                 <div className="pf-row-s">
-                  Permanently removes this brand workspace, its tasks, assets, and brand kit.
+                  Permanently removes this brand workspace, its tasks, assets, and brand intelligence.
                 </div>
               </div>
               <button

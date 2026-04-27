@@ -472,9 +472,6 @@ const App = () => {
                 <input placeholder="Search tasks, briefs, creatives" style={{border: 0, background: "transparent", outline: "none", width: 180, fontSize: 13}}/>
                 <kbd>⌘K</kbd>
               </div>
-              <button className="btn btn-ghost" title="Tweaks" onClick={() => setTweaksOpen((v) => !v)}>
-                <Icon name="sliders" size={15}/>
-              </button>
               {auth && mode !== "admin" && (
                 <button className="btn btn-primary btn-sm" onClick={() => setRoute({view: "home"})}>
                   <Icon name="plus" size={13}/>New brief
@@ -483,15 +480,10 @@ const App = () => {
             </div>
           </div>
         )}
-        {onHome && (
+        {onHome && isGuest && (
           <div style={{position: "absolute", top: 18, right: 24, zIndex: 5, display: "flex", gap: 8}}>
-            {isGuest && (
-              <button className="btn btn-primary btn-sm" onClick={() => requireAuth(null, null)}>
-                <Icon name="login" size={13}/>Log In
-              </button>
-            )}
-            <button className="btn btn-ghost" title="Tweaks" onClick={() => setTweaksOpen((v) => !v)}>
-              <Icon name="sliders" size={15}/>
+            <button className="btn btn-primary btn-sm" onClick={() => requireAuth(null, null)}>
+              <Icon name="login" size={13}/>Log In
             </button>
           </div>
         )}
