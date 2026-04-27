@@ -1,0 +1,11 @@
+# L+R Studio Supabase project config.
+# Generated for the brand-kit enrichment edge function (phase 17).
+# Hosted project ref: vmfwnfflhvskadkfnvds
+
+project_id = "vmfwnfflhvskadkfnvds"
+
+[functions.enrich-brand-kit]
+# Verify the caller's JWT — the function only operates on brand kits the
+# caller is allowed to read/edit per RLS. The function then uses the
+# service role internally to write the enrichment back.
+verify_jwt = true

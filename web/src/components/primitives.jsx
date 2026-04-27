@@ -1,6 +1,6 @@
 /* eslint-disable */
 /* Shared primitives: Avatar, AvatarStack, Status, Art (procedural creative placeholder) */
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 const Avatar = ({ person, size = "md", ...rest }) => {
   const cls = size === "lg" ? "avatar avatar-lg" : size === "sm" ? "avatar avatar-sm" : "avatar";
@@ -45,13 +45,34 @@ const StatusBadge = ({ status }) => (
   </span>
 );
 
-/* Procedural creative art — gradient + type placeholder.
-   Takes a 3-color palette and optional labels. */
-const Art = ({ palette, kicker, label, variant = 0, pattern }) => {
+/* Creative thumbnail. Renders a real image when `imageUrl` is provided
+   (Firecrawl-enriched brand kits, asset uploads); otherwise falls back to
+   the procedural gradient placeholder so empty/Luma-seed cards still
+   render nicely. */
+const Art = ({ palette, kicker, label, variant = 0, pattern, imageUrl }) => {
   const [a, b, c] = palette || ["#F4EBDD", "#E8C9A8", "#1B1F1C"];
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImage = !!imageUrl && !imgFailed;
   // Choose a composition based on variant
   const v = Math.abs(variant) % 5;
   const id = useMemo(() => "art_" + Math.random().toString(36).slice(2, 8), []);
+
+  if (showImage) {
+    return (
+      <div className="art" style={{ background: a }}>
+        <img
+          src={imageUrl}
+          alt={label || kicker || ""}
+          loading="lazy"
+          onError={() => setImgFailed(true)}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+        />
+        {kicker && <span className="kicker" style={{ color: "#fff", textShadow: "0 1px 2px rgba(0,0,0,0.45)" }}>{kicker}</span>}
+        {label && <span className="label" style={{ color: "#fff", textShadow: "0 1px 2px rgba(0,0,0,0.45)" }}>{label}</span>}
+      </div>
+    );
+  }
+
   return (
     <div className="art" style={{ background: a }}>
       <svg width="100%" height="100%" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid slice" style={{ position: "absolute", inset: 0 }}>

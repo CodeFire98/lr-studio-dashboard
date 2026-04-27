@@ -928,7 +928,7 @@ const BrandKitView = () => {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8 }}>
             {photography.map((p, i) => (
               <div key={p.id || i} style={{ aspectRatio: '1/1', position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--line-2)' }}>
-                <Art palette={p.palette} kicker={p.kicker} variant={(p.id || String(i)).length}/>
+                <Art palette={p.palette} kicker={p.kicker} variant={(p.id || String(i)).length} imageUrl={p.imageUrl || p.image_url}/>
               </div>
             ))}
           </div>
@@ -946,7 +946,7 @@ const BrandKitView = () => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {inspiration.map((p, i) => (
                   <div key={p.id || i} style={{ aspectRatio: '4/3', position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--line-2)' }}>
-                    <Art palette={p.palette} label={p.label} variant={(p.id || String(i)).length + 2}/>
+                    <Art palette={p.palette} label={p.label} variant={(p.id || String(i)).length + 2} imageUrl={p.imageUrl || p.image_url}/>
                   </div>
                 ))}
               </div>
@@ -960,7 +960,7 @@ const BrandKitView = () => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {pastCreatives.map((p, i) => (
                   <div key={p.id || i} style={{ aspectRatio: '4/3', position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--line-2)' }}>
-                    <Art palette={p.palette} label={p.label} kicker="Approved" variant={(p.id || String(i)).length + 4}/>
+                    <Art palette={p.palette} label={p.label} kicker="Approved" variant={(p.id || String(i)).length + 4} imageUrl={p.imageUrl || p.image_url}/>
                   </div>
                 ))}
               </div>
