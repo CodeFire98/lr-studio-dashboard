@@ -117,7 +117,9 @@ const InlineText = ({ field, value, multiline, display, onSave }) => {
   );
 };
 
-const InlineList = ({ field, value, onSave }) => {
+// `hideDisplay` skips the bulleted list when the list is already presented
+// upstream (e.g. voice tags shown as pills) — just leaves the Edit button.
+const InlineList = ({ field, value, onSave, hideDisplay = false }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(Array.isArray(value) ? value : []);
   const [saving, setSaving] = useState(false);
@@ -141,16 +143,18 @@ const InlineList = ({ field, value, onSave }) => {
   if (!editing) {
     return (
       <div>
-        {Array.isArray(value) && value.length > 0 ? (
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {value.map((d, i) => (
-              <li key={i} style={{ fontSize: 14, color: 'var(--ink-2)' }}>— {d}</li>
-            ))}
-          </ul>
-        ) : (
-          <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No items yet.</div>
+        {!hideDisplay && (
+          Array.isArray(value) && value.length > 0 ? (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {value.map((d, i) => (
+                <li key={i} style={{ fontSize: 14, color: 'var(--ink-2)' }}>— {d}</li>
+              ))}
+            </ul>
+          ) : (
+            <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No items yet.</div>
+          )
         )}
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: hideDisplay ? 0 : 10 }}>
           <EditToggle editing={false} onEdit={() => setEditing(true)}/>
         </div>
       </div>
@@ -875,7 +879,7 @@ const BrandKitView = () => {
                   ))}
                 </div>
               )}
-              <InlineList field="voice_tags" value={kit.voiceTags} onSave={saveField}/>
+              <InlineList field="voice_tags" value={kit.voiceTags} onSave={saveField} hideDisplay/>
             </div>
           </div>
         </div>
