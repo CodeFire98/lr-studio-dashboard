@@ -231,6 +231,9 @@ const App = () => {
     setOnboarding({ open: false, kit: null, accountId: null });
     // Brand name may have changed — re-hydrate auth so the sidebar/picker reflect it.
     try { await setActiveBrand(onboarding.accountId); } catch {}
+    // Drop the user into Brand Intelligence so they can see everything we
+    // captured during onboarding (esp. the Fetch-brand auto-fill output).
+    setRoute({ view: "brand" });
     setInviteBanner({ status: 'done', text: 'Brand setup saved — your team has the context they need.' });
     setTimeout(() => setInviteBanner(null), 3500);
   };

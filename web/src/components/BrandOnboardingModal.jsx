@@ -298,20 +298,11 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
             display: 'flex', flexDirection: 'column', gap: 12,
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <span style={{
-                  width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center',
-                  background: 'var(--accent)', color: 'var(--accent-contrast)',
-                  flexShrink: 0,
-                }}>
-                  <Icon name="sparkles" size={18}/>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 240 }}>
+                <strong style={{ fontSize: 15, color: 'var(--ink)' }}>Skip the typing — let us fill the rest</strong>
+                <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                  We'll read your website, find your socials, palette, voice, and logo. Powered by L+R Brand Intelligence.
                 </span>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <strong style={{ fontSize: 15, color: 'var(--ink)' }}>Skip the typing — let us fill the rest</strong>
-                  <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                    We'll read your website, find your socials, palette, voice, and logo. Powered by L+R Brand Intelligence.
-                  </span>
-                </div>
               </div>
               <button
                 type="button"

@@ -1635,9 +1635,28 @@ const BrandKitView = () => {
 
   const handleReenrich = async () => {
     if (!accountId) return;
-    setReenriching(true); setReenrichErr('');
+    setReenrichErr('');
+    // First-time fetch with no website on file (e.g. user skipped onboarding):
+    // prompt for a URL, persist it, then enrich. Keeps the action discoverable
+    // even before any data is captured.
+    let url = kit?.websiteUrl?.trim();
+    if (!url) {
+      const entered = window.prompt(
+        "What's your brand's website? We'll read it to populate the kit.",
+        'https://'
+      );
+      if (!entered) return;
+      url = entered.trim();
+      if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    }
+    setReenriching(true);
     try {
-      await triggerBrandKitEnrichment({ accountId, websiteUrl: kit?.websiteUrl });
+      // Persist the URL on the kit before enrichment so the field is set
+      // regardless of how the enrichment goes.
+      if (!kit?.websiteUrl) {
+        await updateBrandKit(accountId, { website_url: url });
+      }
+      await triggerBrandKitEnrichment({ accountId, websiteUrl: url });
       const row = await loadBrandKit(accountId);
       setKit(row);
     } catch (e) {
@@ -1718,10 +1737,24 @@ const BrandKitView = () => {
           <div className="sub">Everything L+R references when we make work for {brandName}. Built for the designer or copywriter who's about to make something.</div>
         </div>
         <div className="actions">
+          <button
+            className="btn btn-primary"
+            onClick={handleReenrich}
+            disabled={reenriching}
+            title={kit.websiteUrl
+              ? (kit.enrichedAt ? 'Re-scan the website and refresh enrichment fields' : 'Read your website and populate the kit')
+              : 'Add a website to populate the kit'}
+            style={reenriching ? { animation: 'lr-button-pulse 1.4s ease-in-out infinite' } : undefined}
+          >
+            <Icon name="sparkles" size={14}/>{reenriching ? 'Fetching…' : 'Fetch Brand'}
+          </button>
           <button className="btn" onClick={() => exportBrandKit(kit)}>
             <Icon name="download" size={14}/>Export
           </button>
         </div>
+        {reenrichErr && (
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--accent-ink)' }}>{reenrichErr}</div>
+        )}
       </div>
 
       {/* 1. HERO — logo + name + tagline + positioning + palette strip */}
