@@ -654,6 +654,361 @@ const LogoBlock = ({ logo }) => {
   );
 };
 
+// ---- Firecrawl-enriched display cards ---------------------------------
+// Each of these renders nothing when its data is absent so unenriched
+// brands (Luma seed, freshly-created accounts) don't show empty cards.
+
+const Chip = ({ children, accent }) => (
+  <span style={{
+    display: 'inline-flex', alignItems: 'center',
+    padding: '5px 10px', borderRadius: 999,
+    background: accent ? 'var(--accent-tint)' : 'var(--surface-2)',
+    color: accent ? 'var(--accent-ink)' : 'var(--ink-2)',
+    border: '1px solid var(--line)',
+    fontSize: 12, fontWeight: 500,
+  }}>{children}</span>
+);
+
+const PositioningCard = ({ kit }) => {
+  const has = (
+    kit.positioningStatement ||
+    kit.industry ||
+    (Array.isArray(kit.brandPillars) && kit.brandPillars.length) ||
+    (Array.isArray(kit.valueProps) && kit.valueProps.length) ||
+    (Array.isArray(kit.keyDifferentiators) && kit.keyDifferentiators.length) ||
+    (Array.isArray(kit.productCategories) && kit.productCategories.length) ||
+    (kit.personality && Object.keys(kit.personality).length)
+  );
+  if (!has) return null;
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Positioning &amp; strategy</div>
+          <div className="card-sub">How the brand frames itself in the market</div>
+        </div>
+        {kit.industry && (
+          <span style={{
+            padding: '4px 10px', borderRadius: 999,
+            background: 'var(--surface-2)', color: 'var(--ink-2)',
+            border: '1px solid var(--line)',
+            fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600,
+          }}>{kit.industry}</span>
+        )}
+      </div>
+      {kit.positioningStatement && (
+        <div style={{
+          fontSize: 16, lineHeight: 1.5, color: 'var(--ink)',
+          fontFamily: 'var(--font-serif)',
+          padding: '0 0 16px',
+          borderBottom: '1px solid var(--line-2)',
+          marginBottom: 16,
+        }}>“{kit.positioningStatement}”</div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        {Array.isArray(kit.brandPillars) && kit.brandPillars.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Brand pillars</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {kit.brandPillars.map((p, i) => <Chip key={i} accent>{p}</Chip>)}
+            </div>
+          </div>
+        )}
+        {Array.isArray(kit.productCategories) && kit.productCategories.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Product categories</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {kit.productCategories.map((p, i) => <Chip key={i}>{p}</Chip>)}
+            </div>
+          </div>
+        )}
+        {Array.isArray(kit.valueProps) && kit.valueProps.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Value propositions</div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {kit.valueProps.map((v, i) => (
+                <li key={i} style={{ fontSize: 13, color: 'var(--ink-2)' }}>— {v}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {Array.isArray(kit.keyDifferentiators) && kit.keyDifferentiators.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Key differentiators</div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {kit.keyDifferentiators.map((v, i) => (
+                <li key={i} style={{ fontSize: 13, color: 'var(--ink-2)' }}>— {v}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+      {kit.personality && Object.keys(kit.personality).length > 0 && (
+        <div style={{
+          marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line-2)',
+          display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 12, color: 'var(--ink-3)',
+        }}>
+          {kit.personality.tone && <span><strong style={{ color: 'var(--ink-2)' }}>Tone:</strong> {kit.personality.tone}</span>}
+          {kit.personality.energy && <span><strong style={{ color: 'var(--ink-2)' }}>Energy:</strong> {kit.personality.energy}</span>}
+          {kit.personality.targetAudience && <span><strong style={{ color: 'var(--ink-2)' }}>Audience:</strong> {kit.personality.targetAudience}</span>}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const PaletteCard = ({ kit, palette }) => {
+  // Compose the displayed swatches: use the palette array first (already
+  // ordered by role), then add any extra named colors that didn't land in
+  // the palette (e.g. text_secondary), and finally the semantic group as a
+  // separate row so primary brand colors still read first.
+  const seen = new Set((palette || []).map((c) => (c.hex || '').toLowerCase()));
+  const extras = [];
+  for (const [key, hex] of [
+    ['accent', kit.accentColor],
+    ['background', kit.backgroundColor],
+    ['text', kit.textPrimaryColor],
+    ['text-2', kit.textSecondaryColor],
+  ]) {
+    if (hex && !seen.has(hex.toLowerCase())) {
+      extras.push({ hex, role: key });
+      seen.add(hex.toLowerCase());
+    }
+  }
+  const allSwatches = [...(palette || []), ...extras];
+  const semantic = kit.semanticColors || {};
+  const semanticEntries = Object.entries(semantic).filter(([, v]) => typeof v === 'string');
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div><div className="card-title">Palette</div><div className="card-sub">{allSwatches.length} colors{kit.colorScheme ? ` · ${kit.colorScheme} scheme` : ''}</div></div>
+      </div>
+      {allSwatches.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No palette colors set. Upload a guidelines PDF and we'll extract them.</div>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {allSwatches.map((c, i) => {
+              const dark = ['#1B1F1C', '#5E6A52', '#000000', '#151515'].includes((c.hex || '').toUpperCase());
+              return (
+                <div key={`${c.hex}_${i}`} style={{
+                  position: 'relative',
+                  background: c.hex,
+                  borderRadius: 10,
+                  border: '1px solid var(--line)',
+                  padding: '44px 14px 14px',
+                  color: dark ? '#FBF6ED' : '#1B1F1C',
+                }}>
+                  <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, letterSpacing: '-0.01em' }}>{c.name || c.role || ''}</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>{c.hex}</div>
+                  {c.role && <div style={{ position: 'absolute', top: 10, left: 14, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.55, fontWeight: 500 }}>{c.role}</div>}
+                </div>
+              );
+            })}
+          </div>
+          {semanticEntries.length > 0 && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line-2)' }}>
+              <div className="tiny" style={{ marginBottom: 8 }}>Semantic</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {semanticEntries.map(([role, hex]) => (
+                  <div key={role} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '4px 10px 4px 6px', borderRadius: 999,
+                    background: 'var(--surface-2)', border: '1px solid var(--line)',
+                    fontSize: 11, color: 'var(--ink-2)',
+                  }}>
+                    <span style={{ width: 14, height: 14, borderRadius: 4, background: hex, border: '1px solid rgba(0,0,0,0.15)' }}/>
+                    <span style={{ textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>{role}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', opacity: 0.7 }}>{hex}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+const DesignTokensCard = ({ kit }) => {
+  const ts = kit.typeScale || {};
+  const sp = kit.spacingTokens || {};
+  const ui = kit.uiComponents || {};
+  const fontSizes = ts.fontSizes || {};
+  const fontWeights = ts.fontWeights || {};
+  const stacks = kit.fontStacks || {};
+  const has = (
+    Object.keys(fontSizes).length ||
+    Object.keys(fontWeights).length ||
+    Object.keys(sp).length ||
+    Object.keys(ui).length ||
+    Object.keys(stacks).length
+  );
+  if (!has) return null;
+  const renderButton = (def, label) => {
+    if (!def) return null;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="tiny">{label}</div>
+        <div style={{
+          display: 'inline-flex', alignSelf: 'flex-start',
+          padding: '10px 18px',
+          background: def.background || 'transparent',
+          color: def.textColor || 'var(--ink)',
+          borderRadius: def.borderRadius || 8,
+          border: def.borderColor ? `1px solid ${def.borderColor}` : '1px solid transparent',
+          boxShadow: def.shadow && def.shadow !== 'none' ? def.shadow : undefined,
+          fontSize: 13, fontWeight: 500,
+        }}>Sample button</div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--ink-4)' }}>
+          radius {def.borderRadius || '—'} · bg {def.background || '—'} · fg {def.textColor || '—'}
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Design tokens</div>
+          <div className="card-sub">Type scale, spacing, and component recipes from the live site</div>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        {Object.keys(fontSizes).length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Type scale</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <tbody>
+                {Object.entries(fontSizes).map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ fontSize: 11, color: 'var(--ink-4)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '4px 0', width: 60 }}>{k}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)', padding: '4px 0' }}>{v}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {Object.keys(fontWeights).length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 11, color: 'var(--ink-4)' }}>
+                Weights: {Object.entries(fontWeights).map(([k, v]) => `${k} ${v}`).join(' · ')}
+              </div>
+            )}
+          </div>
+        )}
+        {Object.keys(stacks).length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Font stacks</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {Object.entries(stacks).map(([role, fams]) => (
+                <div key={role} style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                  <span style={{ textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: 10, color: 'var(--ink-4)', marginRight: 6, fontWeight: 600 }}>{role}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)' }}>{(Array.isArray(fams) ? fams : []).join(', ')}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {Object.keys(sp).length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Spacing</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <tbody>
+                {Object.entries(sp).map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ fontSize: 11, color: 'var(--ink-4)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '4px 0', width: 110 }}>{k}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)', padding: '4px 0' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {(ui.buttonPrimary || ui.buttonSecondary) && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="tiny">Button recipes</div>
+            {renderButton(ui.buttonPrimary, 'Primary')}
+            {renderButton(ui.buttonSecondary, 'Secondary')}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const MarketingSnapshotCard = ({ kit }) => {
+  const has = kit.metaTitle || kit.metaDescription || kit.ogTitle || kit.ogDescription || (kit.twitterCard && Object.keys(kit.twitterCard).length);
+  if (!has) return null;
+  const tw = kit.twitterCard || {};
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Marketing snapshot</div>
+          <div className="card-sub">How the brand presents itself in search and on social</div>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        {(kit.metaTitle || kit.metaDescription) && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>Search engines see</div>
+            {kit.metaTitle && <div style={{ fontSize: 14, color: '#1A0DAB', marginBottom: 4 }}>{kit.metaTitle}</div>}
+            {kit.metaDescription && <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>{kit.metaDescription}</div>}
+          </div>
+        )}
+        {(kit.ogTitle || kit.ogDescription) && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>OpenGraph (Facebook, LinkedIn)</div>
+            {kit.ogImageUrl && (
+              <div style={{ marginBottom: 6, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line-2)', maxHeight: 90 }}>
+                <img src={kit.ogImageUrl} alt="OG preview" style={{ width: '100%', height: 90, objectFit: 'cover' }}/>
+              </div>
+            )}
+            {kit.ogTitle && <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)', marginBottom: 2 }}>{kit.ogTitle}</div>}
+            {kit.ogDescription && <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>{kit.ogDescription}</div>}
+          </div>
+        )}
+        {(tw.title || tw.description) && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>Twitter card{tw.card ? ` · ${tw.card}` : ''}</div>
+            {tw.title && <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)', marginBottom: 2 }}>{tw.title}</div>}
+            {tw.description && <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>{tw.description}</div>}
+          </div>
+        )}
+        {kit.language && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>Language</div>
+            <div style={{ fontSize: 13, color: 'var(--ink-2)' }}>{kit.language}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const EnrichmentSummaryFooter = ({ kit }) => {
+  if (!kit.enrichedAt && kit.enrichmentStatus === 'never') return null;
+  const conf = kit.confidenceScores || {};
+  const overall = typeof conf.overall === 'number' ? Math.round(conf.overall * 100) : null;
+  const ds = kit.designSystem || {};
+  return (
+    <div style={{
+      marginTop: 8, marginBottom: 24, padding: '12px 16px',
+      border: '1px dashed var(--line)', borderRadius: 8,
+      background: 'var(--surface)',
+      fontSize: 11, color: 'var(--ink-4)',
+      display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'center',
+    }}>
+      <span><strong style={{ color: 'var(--ink-3)' }}>Last enriched:</strong> {kit.enrichedAt ? new Date(kit.enrichedAt).toLocaleString() : '—'}</span>
+      {kit.enrichmentUrl && <span><strong style={{ color: 'var(--ink-3)' }}>From:</strong> {kit.enrichmentUrl}</span>}
+      {overall !== null && <span><strong style={{ color: 'var(--ink-3)' }}>Confidence:</strong> {overall}%</span>}
+      {ds.framework && <span><strong style={{ color: 'var(--ink-3)' }}>Stack:</strong> {ds.framework}{ds.componentLibrary ? ` / ${ds.componentLibrary}` : ''}</span>}
+      {kit.enrichmentCreditsUsed != null && <span><strong style={{ color: 'var(--ink-3)' }}>Credits:</strong> {kit.enrichmentCreditsUsed}</span>}
+      {kit.enrichmentScrapeId && <span style={{ fontFamily: 'var(--font-mono)', opacity: 0.7 }}>{kit.enrichmentScrapeId}</span>}
+    </div>
+  );
+};
+
 // ---- Main ---------------------------------------------------------------
 
 const BrandKitView = () => {
@@ -884,35 +1239,15 @@ const BrandKitView = () => {
           </div>
         </div>
 
-        <div className="card">
-          <div className="card-head">
-            <div><div className="card-title">Palette</div><div className="card-sub">{palette.length} colors</div></div>
-          </div>
-          {palette.length === 0 ? (
-            <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No palette colors set. Upload a guidelines PDF and we'll extract them.</div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {palette.map((c, i) => {
-                const dark = ['#1B1F1C', '#5E6A52', '#000000'].includes(c.hex);
-                return (
-                  <div key={`${c.hex}_${i}`} style={{
-                    position: 'relative',
-                    background: c.hex,
-                    borderRadius: 10,
-                    border: '1px solid var(--line)',
-                    padding: '44px 14px 14px',
-                    color: dark ? '#FBF6ED' : '#1B1F1C',
-                  }}>
-                    <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, letterSpacing: '-0.01em' }}>{c.name}</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>{c.hex}</div>
-                    {c.role && <div style={{ position: 'absolute', top: 10, left: 14, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.55, fontWeight: 500 }}>{c.role}</div>}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <PaletteCard kit={kit} palette={palette} />
       </div>
+
+      {/* Positioning & strategy — Firecrawl-enriched: positioning_statement,
+          industry, brand_pillars, value_props, key_differentiators,
+          product_categories, personality. Renders only when at least one
+          field is present so unenriched brands aren't padded with empty
+          state. */}
+      <PositioningCard kit={kit} />
 
       {/* Typography + Logos */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
@@ -957,6 +1292,13 @@ const BrandKitView = () => {
           onSave={saveField}
         />
       </div>
+
+      {/* Design tokens — type scale, spacing, button recipes, color scheme.
+          Engineering-/design-grade detail derived from the live site. */}
+      <DesignTokensCard kit={kit} />
+
+      {/* How the brand presents itself — page meta + OG/Twitter copy. */}
+      <MarketingSnapshotCard kit={kit} />
 
       {/* Do / Don't */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
@@ -1032,6 +1374,9 @@ const BrandKitView = () => {
           )}
         </div>
       )}
+
+      {/* Footer with enrichment provenance + confidence + Firecrawl trail */}
+      <EnrichmentSummaryFooter kit={kit} />
     </div></div>
   );
 };

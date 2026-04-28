@@ -389,6 +389,60 @@ function buildKitUpdate(fc: FirecrawlResponse, sourceUrl: string) {
     update.photography = candidates.map((c) => ({ ...c, palette: fallbackPalette }));
   }
 
+  // ---- Page metadata (data.metadata) ---------------------------------
+  // The previous build dropped this entire block. Some of these are
+  // higher-quality copy than the extract LLM produces (the brand wrote
+  // them themselves) so we promote them to first-class columns.
+  const metadata = pickObj(fc?.data, ["metadata"]) ?? {};
+  const metaTitle = pickStr(metadata, ["title"]);
+  if (metaTitle) update.meta_title = metaTitle;
+  const metaDesc = pickStr(metadata, ["description"]);
+  if (metaDesc) update.meta_description = metaDesc;
+  const ogTitle = pickStr(metadata, ["ogTitle"]) ?? pickStr(metadata, ["og:title"]);
+  if (ogTitle) update.og_title = ogTitle;
+  const ogDesc = pickStr(metadata, ["ogDescription"]) ?? pickStr(metadata, ["og:description"]);
+  if (ogDesc) update.og_description = ogDesc;
+  const lang = pickStr(metadata, ["language"]);
+  if (lang) update.language = lang;
+
+  const twitter: Record<string, unknown> = {};
+  for (const [src, dst] of [
+    ["twitter:card", "card"],
+    ["twitter:title", "title"],
+    ["twitter:description", "description"],
+    ["twitter:image", "image"],
+  ] as const) {
+    const v = pickStr(metadata, [src]);
+    if (v) twitter[dst] = v;
+  }
+  if (Object.keys(twitter).length) update.twitter_card = twitter;
+
+  // Telemetry breadcrumbs: useful for cost dashboards + Firecrawl support.
+  const credits = (metadata as Record<string, unknown>).creditsUsed;
+  if (typeof credits === "number") update.enrichment_credits_used = credits;
+  const scrapeId = pickStr(metadata, ["scrapeId"]);
+  if (scrapeId) update.enrichment_scrape_id = scrapeId;
+
+  // ---- Branding subfields we weren't promoting -----------------------
+  const fontStacks = pickObj(branding, ["typography", "fontStacks"]);
+  if (fontStacks) update.font_stacks = fontStacks;
+
+  const confidence = pickObj(branding, ["confidence"]);
+  if (confidence) update.confidence_scores = confidence;
+
+  const designSystem = pickObj(branding, ["designSystem"]);
+  if (designSystem) update.design_system = designSystem;
+
+  // Combine logo + button reasoning under one llm_reasoning column.
+  const llmReasoning: Record<string, unknown> = {};
+  const logoReasoning = pickObj(branding, ["__llm_logo_reasoning"]);
+  if (logoReasoning) llmReasoning.logo = logoReasoning;
+  const buttonReasoning = pickObj(branding, ["__llm_button_reasoning"]);
+  if (buttonReasoning) llmReasoning.buttons = buttonReasoning;
+  const llmMeta = pickObj(branding, ["__llm_metadata"]);
+  if (llmMeta) llmReasoning.meta = llmMeta;
+  if (Object.keys(llmReasoning).length) update.llm_reasoning = llmReasoning;
+
   return update;
 }
 
