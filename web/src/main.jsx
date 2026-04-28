@@ -1,5 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { Analytics } from '@vercel/analytics/react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import { App } from './App.jsx';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import { PasswordResetPage } from './components/PasswordResetPage.jsx';
@@ -26,6 +28,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary>
     <LightboxProvider>
       {isRecovery ? <PasswordResetPage /> : <App />}
+      <Analytics />
+      <SpeedInsights />
     </LightboxProvider>
   </ErrorBoundary>
 );
