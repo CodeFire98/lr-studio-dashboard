@@ -19,7 +19,7 @@ const DATE_WINDOWS = [
   { key: 'quarter', label: 'Past 90 days', cutoffMs: 90 * 86400000 },
 ];
 
-const LibraryView = () => {
+const LibraryView = ({ auth }) => {
   const [assets, setAssets] = useState([]);
   const [thumbs, setThumbs] = useState({});
   const [loading, setLoading] = useState(true);
@@ -29,15 +29,28 @@ const LibraryView = () => {
   const [taskId, setTaskId] = useState('all');
   const [q, setQ] = useState('');
 
+  // Brand users with multi-brand membership should only see creatives from
+  // the currently-selected brand. Agency users still see everything across
+  // accounts they manage. Mirrors the tasks scoping in App.jsx.
+  const activeAccountId = auth?.account?.id || null;
+  const isAgency = !!auth?.isAgency;
+
   useEffect(() => {
+    if (auth?.requiresBrandSelection) { setAssets([]); setLoading(false); return; }
     let cancelled = false;
     setLoading(true);
     loadLibraryAssets({ kind: 'deliverable' })
-      .then((rows) => { if (!cancelled) setAssets(rows); })
+      .then((rows) => {
+        if (cancelled) return;
+        const scoped = isAgency || !activeAccountId
+          ? rows
+          : rows.filter((a) => a.accountId === activeAccountId);
+        setAssets(scoped);
+      })
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [activeAccountId, isAgency, auth?.requiresBrandSelection]);
 
   // Sign image URLs lazily.
   useEffect(() => {

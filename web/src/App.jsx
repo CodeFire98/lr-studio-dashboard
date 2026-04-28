@@ -392,7 +392,7 @@ const App = () => {
     if (!auth) return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
     if (route.view === "tasks" && route.id) return <TaskDetailView taskId={route.id} tasks={tasks} updateTask={updateTask} setRoute={setRoute} mode={mode}/>;
     if (route.view === "tasks") return <TasksView setRoute={setRoute} tasks={tasks} mode={mode}/>;
-    if (route.view === "library") return <LibraryView/>;
+    if (route.view === "library") return <LibraryView auth={auth}/>;
     if (route.view === "performance") return <PerformanceView/>;
     if (route.view === "team") return <TeamView overrideAccountId={impersonation?.client?.id} />;
     if (route.view === "brand") return <BrandKitView/>;

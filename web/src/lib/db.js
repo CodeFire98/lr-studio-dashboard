@@ -548,6 +548,7 @@ export async function loadLibraryAssets({ kind = 'deliverable' } = {}) {
       ...mapped,
       taskId: row.task_id,
       taskTitle: row.task?.title || 'Untitled task',
+      accountId: row.task?.account?.id || null,
       accountName: row.task?.account?.name || null,
     };
   });
