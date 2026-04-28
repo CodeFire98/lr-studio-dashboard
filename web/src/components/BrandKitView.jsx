@@ -1231,11 +1231,6 @@ function composeBrandSummary(kit) {
 const HeroCard = ({ kit }) => {
   const lightbox = useLightbox();
   const summary = composeBrandSummary(kit);
-  const palette = Array.isArray(kit.palette) ? kit.palette : [];
-  const swatches = palette
-    .map((c) => (typeof c === 'string' ? { hex: c } : c))
-    .filter((c) => c && c.hex)
-    .slice(0, 6);
 
   return (
     <div className="card" style={{ marginBottom: 24, padding: 28 }}>
@@ -1294,30 +1289,6 @@ const HeroCard = ({ kit }) => {
         </div>
       </div>
 
-      {/* Palette strip — at-a-glance visual identity */}
-      {swatches.length > 0 && (
-        <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid var(--line-2)' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${swatches.length}, 1fr)`, gap: 8, height: 64 }}>
-            {swatches.map((c, i) => {
-              const dark = ['#000000', '#151515', '#1B1F1C', '#3B2A20'].includes((c.hex || '').toUpperCase());
-              return (
-                <div key={`${c.hex}_${i}`} style={{
-                  background: c.hex,
-                  borderRadius: 8,
-                  border: '1px solid var(--line)',
-                  position: 'relative',
-                  display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-start',
-                  padding: 10,
-                  color: dark ? '#FBF6ED' : '#1B1F1C',
-                  fontFamily: 'var(--font-mono)', fontSize: 11, opacity: 0.85,
-                }}>
-                  {c.hex}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

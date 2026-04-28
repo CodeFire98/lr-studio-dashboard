@@ -256,8 +256,8 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
             Tell us about <em>your brand</em>
           </h2>
           <p className="login-modal-sub">
-            Six quick questions. Everything except the name is optional — you can refine
-            anything later in <strong>Brand Intelligence</strong>.
+            A few quick questions. Drop your website and we'll fill in the rest —
+            then refine anything in <strong>Brand Intelligence</strong>.
           </p>
         </div>
 
@@ -276,29 +276,79 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
             />
           </label>
 
-          {/* 2. Tagline */}
+          {/* 2. Website */}
           <label className="auth-field">
-            <span>2 · In one line, what do you do?</span>
-            <input
-              type="text"
-              value={tagline}
-              onChange={(e) => setTagline(e.target.value)}
-              placeholder="Plant-based protein bars for endurance athletes"
-              maxLength={120}
-            />
-            <span className="onboarding-hint">{120 - tagline.length} characters left</span>
-          </label>
-
-          {/* 3. Online presence — also the fetch-brand entry point */}
-          <div className="auth-field">
-            <span>3 · Where can we see you online?</span>
+            <span>2 · What's your website?</span>
             <input
               type="url"
               value={websiteUrl}
               onChange={(e) => setWebsiteUrl(e.target.value)}
               placeholder="https://yourbrand.com"
-              style={{ marginBottom: 8 }}
             />
+          </label>
+
+          {/* Auto-fill banner — magic moment. Sits between website and the
+              fields it pre-populates so the cause→effect is obvious. */}
+          <div style={{
+            padding: '18px 18px',
+            borderRadius: 14,
+            background: 'linear-gradient(135deg, var(--accent-tint), var(--surface))',
+            border: '1.5px solid var(--accent)',
+            boxShadow: '0 4px 18px -8px rgba(232, 85, 61, 0.35)',
+            display: 'flex', flexDirection: 'column', gap: 12,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{
+                  width: 38, height: 38, borderRadius: 10, display: 'grid', placeItems: 'center',
+                  background: 'var(--accent)', color: 'var(--accent-contrast)',
+                  flexShrink: 0,
+                }}>
+                  <Icon name="sparkles" size={18}/>
+                </span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <strong style={{ fontSize: 15, color: 'var(--ink)' }}>Skip the typing — let us fill the rest</strong>
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                    We'll read your website, find your socials, palette, voice, and logo. Powered by L+R Brand Intelligence.
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary btn-lg"
+                onClick={handleFetchBrand}
+                disabled={busy || fetching || !websiteUrl.trim()}
+                style={{
+                  minWidth: 150,
+                  ...(fetching ? { animation: 'lr-button-pulse 1.4s ease-in-out infinite' } : null),
+                }}
+              >
+                {fetching
+                  ? <><Icon name="refresh" size={13}/> Fetching…</>
+                  : fetchSuccess
+                    ? <><Icon name="check" size={13}/> Fetched</>
+                    : <><Icon name="sparkles" size={13}/> Fetch brand</>}
+              </button>
+            </div>
+            {fetching && (
+              <div style={{
+                fontSize: 12, color: 'var(--ink-2)',
+                padding: '4px 0',
+              }}>
+                {FETCH_STAGES[fetchStage]}
+              </div>
+            )}
+            {fetchSuccess && !fetching && (
+              <div style={{ fontSize: 12, color: 'var(--good)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Icon name="check" size={11}/>
+                Pre-filled what we found. Review and tweak below.
+              </div>
+            )}
+          </div>
+
+          {/* 3. Socials — auto-fill drops these in if Fetch found them. */}
+          <div className="auth-field">
+            <span>3 · Your other channels</span>
             <div className="onboarding-socials">
               {SOCIAL_PLATFORMS.map((p) => (
                 <input
@@ -311,71 +361,24 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
                 />
               ))}
             </div>
-
-            {/* Fetch brand — magic moment. Takes the URLs above and runs
-                the enrich-brand-kit edge function, then back-fills every
-                form field from the response. */}
-            <div style={{
-              marginTop: 12,
-              padding: 14,
-              borderRadius: 10,
-              background: 'linear-gradient(135deg, var(--accent-tint), var(--surface))',
-              border: '1px solid var(--accent-soft)',
-              display: 'flex', flexDirection: 'column', gap: 10,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{
-                    width: 30, height: 30, borderRadius: 8, display: 'grid', placeItems: 'center',
-                    background: 'var(--accent)', color: 'var(--accent-contrast)',
-                  }}>
-                    <Icon name="sparkles" size={14}/>
-                  </span>
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <strong style={{ fontSize: 14, color: 'var(--ink)' }}>Auto-fill from your website</strong>
-                    <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>Powered by L+R Brand Intelligence</span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={handleFetchBrand}
-                  disabled={busy || fetching || !websiteUrl.trim()}
-                  style={{ minWidth: 130 }}
-                >
-                  {fetching
-                    ? <><Icon name="refresh" size={12}/> Fetching…</>
-                    : fetchSuccess
-                      ? <><Icon name="check" size={12}/> Fetched</>
-                      : <><Icon name="sparkles" size={12}/> Fetch brand</>}
-                </button>
-              </div>
-              {fetching && (
-                <div style={{
-                  fontSize: 12, color: 'var(--ink-2)',
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '4px 0',
-                }}>
-                  <span style={{
-                    width: 8, height: 8, borderRadius: '50%',
-                    background: 'var(--accent)',
-                    animation: 'lr-pulse 1.2s ease-in-out infinite',
-                  }}/>
-                  <span>{FETCH_STAGES[fetchStage]}</span>
-                </div>
-              )}
-              {fetchSuccess && !fetching && (
-                <div style={{ fontSize: 12, color: 'var(--good)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Icon name="check" size={11}/>
-                  We pre-filled what we could. Review and tweak below — full kit available in Brand Intelligence after.
-                </div>
-              )}
-            </div>
           </div>
 
-          {/* 4. Audience */}
+          {/* 4. Tagline */}
           <label className="auth-field">
-            <span>4 · Who are you talking to?</span>
+            <span>4 · In one line, what do you do?</span>
+            <input
+              type="text"
+              value={tagline}
+              onChange={(e) => setTagline(e.target.value)}
+              placeholder="Plant-based protein bars for endurance athletes"
+              maxLength={120}
+            />
+            <span className="onboarding-hint">{120 - tagline.length} characters left</span>
+          </label>
+
+          {/* 5. Audience */}
+          <label className="auth-field">
+            <span>5 · Who are you talking to?</span>
             <textarea
               value={audience}
               onChange={(e) => setAudience(e.target.value)}
@@ -385,10 +388,10 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
             />
           </label>
 
-          {/* 5. Voice */}
+          {/* 6. Voice */}
           <div className="auth-field">
             <span>
-              5 · How should you sound?
+              6 · How should you sound?
               <span className="onboarding-hint" style={{ marginLeft: 8 }}>
                 Pick up to 3 ({voiceTags.length}/3)
               </span>
@@ -421,9 +424,11 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
             />
           </div>
 
-          {/* 6. Visual identity */}
+          {/* 7. Logo. Colors are still captured by Fetch brand and saved on
+              submit, but we don't ask the user to type hex codes — most
+              people don't have them memorized. */}
           <div className="auth-field">
-            <span>6 · Logo &amp; brand colors</span>
+            <span>7 · Logo</span>
             <div className="onboarding-logo-row">
               <div
                 className="onboarding-logo-preview"
@@ -461,18 +466,6 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
                 <span className="onboarding-hint">PNG, JPG, SVG · up to 4MB</span>
               </div>
             </div>
-            <div className="onboarding-colors" style={{ marginTop: 10 }}>
-              <ColorField
-                label="Primary"
-                value={primaryColor}
-                onChange={setPrimaryColor}
-              />
-              <ColorField
-                label="Accent"
-                value={accentColor}
-                onChange={setAccentColor}
-              />
-            </div>
           </div>
 
           {err && <div className="auth-err">{err}</div>}
@@ -498,47 +491,6 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
         </form>
       </div>
     </div>
-  );
-};
-
-const ColorField = ({ label, value, onChange }) => {
-  const pickerRef = useRef(null);
-  const isValid = !value || HEX_RE.test(value.trim());
-  const swatch = isValid && value ? (value.startsWith('#') ? value : `#${value}`) : '#E8E8E8';
-  return (
-    <label className="onboarding-color">
-      <span className="onboarding-color-label">{label}</span>
-      <span className="onboarding-color-row">
-        <span
-          className="onboarding-color-swatch"
-          style={{ background: swatch, cursor: 'pointer', position: 'relative' }}
-          onClick={() => pickerRef.current?.click()}
-          title="Pick a color"
-        >
-          <input
-            ref={pickerRef}
-            type="color"
-            value={swatch}
-            onChange={(e) => onChange(e.target.value)}
-            style={{
-              position: 'absolute', inset: 0,
-              width: '100%', height: '100%',
-              opacity: 0, cursor: 'pointer',
-              border: 'none', padding: 0,
-            }}
-            tabIndex={-1}
-          />
-        </span>
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="#FF6A3D"
-          maxLength={7}
-          spellCheck={false}
-        />
-      </span>
-    </label>
   );
 };
 

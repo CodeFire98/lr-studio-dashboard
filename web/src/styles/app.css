@@ -1366,6 +1366,13 @@ input, textarea { font: inherit; color: inherit; }
   50%      { transform: scale(1.5); opacity: 0.55; }
 }
 
+/* Halo ring breathing out from a button while a long-running action is in
+   flight (e.g. "Fetching…"). Doesn't change layout — pure box-shadow. */
+@keyframes lr-button-pulse {
+  0%, 100% { box-shadow: 0 0 0 0   rgba(232, 85, 61, 0.55); }
+  50%      { box-shadow: 0 0 0 10px rgba(232, 85, 61, 0);    }
+}
+
 /* ========== Library grid ========== */
 .lib-grid {
   display: grid;
