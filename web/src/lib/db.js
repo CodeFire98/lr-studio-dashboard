@@ -963,6 +963,115 @@ export async function uploadBrandLogo({ accountId, file }) {
   return { url: data.publicUrl, path };
 }
 
+// ---- Logo variants (brand_kits.logos JSONB array) -----------------------
+// Each entry is { id, url, label, path }. Designers grab variants for
+// specific contexts (mono on dark, wordmark only, icon-only, etc.).
+// Uploads use the same brand-logos bucket; we just don't promote the
+// variant to logo_url so the primary logo stays untouched.
+
+export async function addBrandLogoVariant({ accountId, file, label }) {
+  if (!accountId) throw new Error('addBrandLogoVariant: accountId required');
+  if (!file)      throw new Error('addBrandLogoVariant: file required');
+  const { url, path } = await uploadBrandLogo({ accountId, file });
+  // Read current logos, append, write back. Server-side merge would be
+  // safer but we don't have an RPC for jsonb array append yet.
+  const { data: row, error: readErr } = await supabase
+    .from('brand_kits')
+    .select('logos')
+    .eq('account_id', accountId)
+    .single();
+  if (readErr) throw readErr;
+  const current = Array.isArray(row?.logos) ? row.logos : [];
+  const next = [
+    ...current,
+    {
+      id: `lv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      url,
+      path,
+      label: (label || 'Logo variant').trim(),
+    },
+  ];
+  const { data: updated, error: writeErr } = await supabase
+    .from('brand_kits')
+    .update({ logos: next })
+    .eq('account_id', accountId)
+    .select(BRAND_KIT_SELECT)
+    .single();
+  if (writeErr) throw writeErr;
+  return mapBrandKitRow(updated);
+}
+
+export async function removeBrandLogoVariant({ accountId, variantId }) {
+  if (!accountId) throw new Error('removeBrandLogoVariant: accountId required');
+  if (!variantId) throw new Error('removeBrandLogoVariant: variantId required');
+  const { data: row, error: readErr } = await supabase
+    .from('brand_kits')
+    .select('logos')
+    .eq('account_id', accountId)
+    .single();
+  if (readErr) throw readErr;
+  const current = Array.isArray(row?.logos) ? row.logos : [];
+  const target = current.find((l) => l.id === variantId);
+  const next = current.filter((l) => l.id !== variantId);
+  const { data: updated, error: writeErr } = await supabase
+    .from('brand_kits')
+    .update({ logos: next })
+    .eq('account_id', accountId)
+    .select(BRAND_KIT_SELECT)
+    .single();
+  if (writeErr) throw writeErr;
+  // Best-effort delete the storage file too. Failure is non-fatal — we'd
+  // rather leave a stray blob than block the UI.
+  if (target?.path) {
+    try { await supabase.storage.from('brand-logos').remove([target.path]); } catch (_) {}
+  }
+  return mapBrandKitRow(updated);
+}
+
+export async function updateBrandLogoVariant({ accountId, variantId, label }) {
+  if (!accountId) throw new Error('updateBrandLogoVariant: accountId required');
+  if (!variantId) throw new Error('updateBrandLogoVariant: variantId required');
+  const { data: row, error: readErr } = await supabase
+    .from('brand_kits')
+    .select('logos')
+    .eq('account_id', accountId)
+    .single();
+  if (readErr) throw readErr;
+  const current = Array.isArray(row?.logos) ? row.logos : [];
+  const next = current.map((l) => (l.id === variantId ? { ...l, label: (label || '').trim() || l.label } : l));
+  const { data: updated, error: writeErr } = await supabase
+    .from('brand_kits')
+    .update({ logos: next })
+    .eq('account_id', accountId)
+    .select(BRAND_KIT_SELECT)
+    .single();
+  if (writeErr) throw writeErr;
+  return mapBrandKitRow(updated);
+}
+
+// ---- Re-enrich brand kit (calls the deployed enrich-brand-kit edge fn) -
+
+export async function triggerBrandKitEnrichment({ accountId, websiteUrl }) {
+  if (!accountId) throw new Error('triggerBrandKitEnrichment: accountId required');
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('You must be signed in');
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const res = await fetch(`${supabaseUrl}/functions/v1/enrich-brand-kit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({
+      brand_id: accountId,
+      ...(websiteUrl ? { website_url: websiteUrl } : {}),
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body?.error || `Enrichment failed (HTTP ${res.status})`);
+  return body;
+}
+
 // ---- Brand reference assets ---------------------------------------------
 // Public 'brand-assets' bucket — anything the brand uploads as visual
 // reference for the agency (mood images, past creatives, packaging shots,

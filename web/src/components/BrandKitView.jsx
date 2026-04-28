@@ -15,6 +15,10 @@ import {
   uploadBrandAsset,
   listBrandAssets,
   deleteBrandAsset,
+  addBrandLogoVariant,
+  removeBrandLogoVariant,
+  updateBrandLogoVariant,
+  triggerBrandKitEnrichment,
 } from '../lib/db.js';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
@@ -308,89 +312,252 @@ const renderUrl = (v) => {
 // Uploads to the public 'brand-logos' bucket and persists the resulting
 // URL to brand_kits.logo_url. Single primary logo per brand for now;
 // secondary/mono variants will land when we expose the multi-logo array.
-const BrandLogoCard = ({ accountId, logoUrl, onSave }) => {
-  const fileInputRef = useRef(null);
-  const [uploading, setUploading] = useState(false);
+// LogoMarksCard — primary brand mark + multiple variants (mono, reverse,
+// wordmark, icon-only, etc.). Each variant has a free-form label so the
+// designer can call it whatever makes sense ("Wordmark on dark", "Icon for
+// favicons", "Black mono"). Click any variant → full-size lightbox with
+// Download. Stored in brand_kits.logos JSONB; primary logo stays in
+// brand_kits.logo_url so the rest of the app keeps working.
+const LogoMarksCard = ({ accountId, logoUrl, variants, onSave, onVariantsChange, backgroundHint }) => {
+  const primaryFileRef = useRef(null);
+  const variantFileRef = useRef(null);
+  const [uploadingPrimary, setUploadingPrimary] = useState(false);
+  const [uploadingVariant, setUploadingVariant] = useState(false);
   const [err, setErr] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [draftLabel, setDraftLabel] = useState('');
+  const lightbox = useLightbox();
 
-  const handleFile = async (e) => {
+  const handlePrimaryFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 4 * 1024 * 1024) { setErr('Logo must be under 4MB.'); return; }
-    setErr(''); setUploading(true);
+    setErr(''); setUploadingPrimary(true);
     try {
       const { url } = await uploadBrandLogo({ accountId, file });
       await onSave('logo_url', url);
     } catch (ex) {
       setErr(ex?.message || 'Logo upload failed.');
     } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      setUploadingPrimary(false);
+      if (primaryFileRef.current) primaryFileRef.current.value = '';
     }
   };
 
-  const remove = async () => {
+  const removePrimary = async () => {
     setErr('');
     try { await onSave('logo_url', null); }
     catch (ex) { setErr(ex?.message || 'Could not remove the logo.'); }
   };
 
+  const handleVariantFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) { setErr('Logo variant must be under 4MB.'); return; }
+    const label = window.prompt('Label this variant (e.g. "Wordmark on dark", "Mono icon", "Reverse")', '');
+    if (label === null) {
+      if (variantFileRef.current) variantFileRef.current.value = '';
+      return;
+    }
+    setErr(''); setUploadingVariant(true);
+    try {
+      const next = await addBrandLogoVariant({ accountId, file, label: label || 'Logo variant' });
+      onVariantsChange(next);
+    } catch (ex) {
+      setErr(ex?.message || 'Variant upload failed.');
+    } finally {
+      setUploadingVariant(false);
+      if (variantFileRef.current) variantFileRef.current.value = '';
+    }
+  };
+
+  const removeVariant = async (variantId) => {
+    setErr('');
+    try {
+      const next = await removeBrandLogoVariant({ accountId, variantId });
+      onVariantsChange(next);
+    } catch (ex) {
+      setErr(ex?.message || 'Could not remove variant.');
+    }
+  };
+
+  const saveLabel = async (variantId) => {
+    setErr('');
+    try {
+      const next = await updateBrandLogoVariant({ accountId, variantId, label: draftLabel });
+      onVariantsChange(next);
+      setEditingId(null);
+    } catch (ex) {
+      setErr(ex?.message || 'Could not rename variant.');
+    }
+  };
+
+  const openInLightbox = (url, label) => {
+    lightbox.open({
+      src: url,
+      mimeType: 'image/*',
+      name: label || 'Logo',
+      alt: label || 'Logo',
+      downloadUrl: url,
+    });
+  };
+
+  // Pick a tile background that contrasts: when the brand has a dark
+  // background we render variants on light, and vice-versa, so transparent
+  // marks remain visible on hover.
+  const isDark = (typeof backgroundHint === 'string' && /^#0|^#1|^#2/.test(backgroundHint)) || backgroundHint === 'dark';
+  const tileBg = isDark ? 'var(--surface)' : 'var(--surface-2)';
+
   return (
     <div className="card">
       <div className="card-head">
-        <div><div className="card-title">Logo</div><div className="card-sub">Primary brand mark</div></div>
+        <div>
+          <div className="card-title">Logo &amp; marks</div>
+          <div className="card-sub">Click any mark to view full size and download</div>
+        </div>
       </div>
-      <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-        <div
+
+      {/* Primary logo */}
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', paddingBottom: 16, borderBottom: '1px solid var(--line-2)' }}>
+        <button
+          type="button"
+          onClick={() => logoUrl && openInLightbox(logoUrl, `${''} Primary logo`)}
           style={{
             width: 120, height: 120,
             borderRadius: 14,
             border: '1px solid var(--line)',
             background: logoUrl
-              ? `center / contain no-repeat url(${JSON.stringify(logoUrl)}), var(--surface-2)`
-              : 'var(--surface-2)',
+              ? `center / contain no-repeat url(${JSON.stringify(logoUrl)}), ${tileBg}`
+              : tileBg,
             display: 'grid', placeItems: 'center',
             color: 'var(--ink-4)',
             flexShrink: 0,
+            cursor: logoUrl ? 'zoom-in' : 'default',
+            padding: 0,
           }}
         >
           {!logoUrl && <Icon name="image" size={28}/>}
-        </div>
+        </button>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="tiny">Primary mark</div>
           <input
-            ref={fileInputRef}
+            ref={primaryFileRef}
             type="file"
             accept="image/png,image/jpeg,image/svg+xml,image/webp"
             style={{ display: 'none' }}
-            onChange={handleFile}
+            onChange={handlePrimaryFile}
           />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button
               type="button"
               className="btn btn-sm btn-primary"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
+              onClick={() => primaryFileRef.current?.click()}
+              disabled={uploadingPrimary}
             >
               <Icon name="upload" size={12}/>
-              {uploading ? 'Uploading…' : logoUrl ? 'Replace' : 'Upload logo'}
+              {uploadingPrimary ? 'Uploading…' : logoUrl ? 'Replace' : 'Upload logo'}
             </button>
             {logoUrl && (
               <button
                 type="button"
                 className="btn btn-sm btn-ghost"
-                onClick={remove}
-                disabled={uploading}
-              >
-                Remove
-              </button>
+                onClick={removePrimary}
+                disabled={uploadingPrimary}
+              >Remove</button>
             )}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--ink-4)' }}>
-            PNG, JPG, SVG, or WebP · up to 4MB. Stored in a public bucket so it loads anywhere.
-          </div>
-          {err && <div style={{ color: 'var(--accent-ink)', fontSize: 12 }}>{err}</div>}
         </div>
       </div>
+
+      {/* Variants */}
+      <div style={{ paddingTop: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div className="tiny">Variants{Array.isArray(variants) && variants.length > 0 ? ` · ${variants.length}` : ''}</div>
+          <input
+            ref={variantFileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/svg+xml,image/webp"
+            style={{ display: 'none' }}
+            onChange={handleVariantFile}
+          />
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => variantFileRef.current?.click()}
+            disabled={uploadingVariant}
+          >
+            <Icon name="plus" size={12}/>
+            {uploadingVariant ? 'Uploading…' : 'Add variant'}
+          </button>
+        </div>
+        {(!Array.isArray(variants) || variants.length === 0) ? (
+          <div style={{ fontSize: 13, color: 'var(--ink-4)', padding: '8px 0' }}>
+            Add wordmark, mono, reverse, or icon-only versions so designers can grab the right mark for any context.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+            {variants.map((v) => (
+              <div
+                key={v.id || v.url}
+                style={{
+                  border: '1px solid var(--line-2)',
+                  borderRadius: 10,
+                  overflow: 'hidden',
+                  background: tileBg,
+                  position: 'relative',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => openInLightbox(v.url, v.label)}
+                  style={{
+                    display: 'block', width: '100%',
+                    aspectRatio: '1/1',
+                    border: 0, padding: 16,
+                    background: `center / contain no-repeat url(${JSON.stringify(v.url)}), transparent`,
+                    cursor: 'zoom-in',
+                  }}
+                  aria-label={`Open ${v.label || 'logo variant'} full size`}
+                />
+                <div style={{
+                  padding: '8px 10px', borderTop: '1px solid var(--line-2)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  background: 'var(--surface)',
+                }}>
+                  {editingId === v.id ? (
+                    <>
+                      <input
+                        type="text"
+                        autoFocus
+                        value={draftLabel}
+                        onChange={(e) => setDraftLabel(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') saveLabel(v.id); if (e.key === 'Escape') setEditingId(null); }}
+                        onBlur={() => saveLabel(v.id)}
+                        style={{ flex: 1, padding: '2px 6px', border: '1px solid var(--line)', borderRadius: 4, fontSize: 12 }}
+                      />
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { setEditingId(v.id); setDraftLabel(v.label || ''); }}
+                      title="Rename"
+                      style={{ flex: 1, textAlign: 'left', background: 'transparent', border: 0, padding: 0, fontSize: 12, color: 'var(--ink-2)', cursor: 'text', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >{v.label || 'Untitled'}</button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeVariant(v.id)}
+                    title="Remove"
+                    style={{ background: 'transparent', border: 0, color: 'var(--ink-4)', cursor: 'pointer', padding: 4 }}
+                  ><Icon name="x" size={11}/></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {err && <div style={{ color: 'var(--accent-ink)', fontSize: 12, marginTop: 12 }}>{err}</div>}
     </div>
   );
 };
@@ -986,25 +1153,459 @@ const MarketingSnapshotCard = ({ kit }) => {
   );
 };
 
-const EnrichmentSummaryFooter = ({ kit }) => {
-  if (!kit.enrichedAt && kit.enrichmentStatus === 'never') return null;
+const EnrichmentSummaryFooter = ({ kit, onReenrich }) => {
+  if (!kit.enrichedAt && kit.enrichmentStatus === 'never') {
+    // Brand never enriched — show the action even before any provenance.
+    if (!kit.websiteUrl) return null;
+    return (
+      <div style={{
+        marginTop: 32, marginBottom: 24, padding: '14px 16px',
+        border: '1px dashed var(--line)', borderRadius: 8,
+        background: 'var(--surface)',
+        fontSize: 12, color: 'var(--ink-3)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+      }}>
+        <span>This brand has never been enriched. We can scan {kit.websiteUrl} to populate the kit.</span>
+        <button className="btn btn-sm btn-primary" onClick={onReenrich} disabled={kit._reenriching}>
+          <Icon name="refresh" size={12}/> {kit._reenriching ? 'Reading site…' : 'Enrich from website'}
+        </button>
+      </div>
+    );
+  }
   const conf = kit.confidenceScores || {};
   const overall = typeof conf.overall === 'number' ? Math.round(conf.overall * 100) : null;
   const ds = kit.designSystem || {};
   return (
     <div style={{
-      marginTop: 8, marginBottom: 24, padding: '12px 16px',
+      marginTop: 32, marginBottom: 24, padding: '14px 16px',
       border: '1px dashed var(--line)', borderRadius: 8,
       background: 'var(--surface)',
       fontSize: 11, color: 'var(--ink-4)',
-      display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'center',
+      display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'center', justifyContent: 'space-between',
     }}>
-      <span><strong style={{ color: 'var(--ink-3)' }}>Last enriched:</strong> {kit.enrichedAt ? new Date(kit.enrichedAt).toLocaleString() : '—'}</span>
-      {kit.enrichmentUrl && <span><strong style={{ color: 'var(--ink-3)' }}>From:</strong> {kit.enrichmentUrl}</span>}
-      {overall !== null && <span><strong style={{ color: 'var(--ink-3)' }}>Confidence:</strong> {overall}%</span>}
-      {ds.framework && <span><strong style={{ color: 'var(--ink-3)' }}>Stack:</strong> {ds.framework}{ds.componentLibrary ? ` / ${ds.componentLibrary}` : ''}</span>}
-      {kit.enrichmentCreditsUsed != null && <span><strong style={{ color: 'var(--ink-3)' }}>Credits:</strong> {kit.enrichmentCreditsUsed}</span>}
-      {kit.enrichmentScrapeId && <span style={{ fontFamily: 'var(--font-mono)', opacity: 0.7 }}>{kit.enrichmentScrapeId}</span>}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'center' }}>
+        <span><strong style={{ color: 'var(--ink-3)' }}>Last enriched:</strong> {kit.enrichedAt ? new Date(kit.enrichedAt).toLocaleString() : '—'}</span>
+        {kit.enrichmentUrl && <span><strong style={{ color: 'var(--ink-3)' }}>From:</strong> {kit.enrichmentUrl}</span>}
+        {overall !== null && <span><strong style={{ color: 'var(--ink-3)' }}>Confidence:</strong> {overall}%</span>}
+        {ds.framework && ds.framework !== 'custom' && (
+          <span><strong style={{ color: 'var(--ink-3)' }}>Stack:</strong> {ds.framework}{ds.componentLibrary ? ` / ${ds.componentLibrary}` : ''}</span>
+        )}
+      </div>
+      {(kit.websiteUrl || kit.enrichmentUrl) && (
+        <button
+          className="btn btn-sm"
+          onClick={onReenrich}
+          disabled={kit._reenriching}
+          title="Re-scan the website and refresh enrichment fields"
+        >
+          <Icon name="refresh" size={12}/> {kit._reenriching ? 'Re-enriching…' : 'Re-enrich'}
+        </button>
+      )}
+    </div>
+  );
+};
+
+// ---- Narrative section components -------------------------------------
+// These compose the seven-section flow we landed on: Hero → Brand →
+// Offering → Voice → Visual system → Presence → Library → footer.
+
+// Deterministic 1–3 sentence brand summary built from the enriched fields.
+// No LLM. Falls back to whatever subset is populated; returns null when
+// nothing meaningful is available so the hero hides the summary block.
+function composeBrandSummary(kit) {
+  const bits = [];
+  if (kit.positioningStatement) {
+    bits.push(kit.positioningStatement.replace(/\.$/, '') + '.');
+  } else if (kit.mission) {
+    bits.push(kit.mission.split(/\.\s/)[0].replace(/\.$/, '') + '.');
+  }
+  if (kit.audience) {
+    bits.push(`Made for ${kit.audience.replace(/^[A-Z]/, (c) => c.toLowerCase()).replace(/\.$/, '')}.`);
+  }
+  if (kit.toneVoice) {
+    bits.push(`Voice: ${kit.toneVoice.replace(/\.$/, '')}.`);
+  }
+  return bits.join(' ').trim() || null;
+}
+
+const HeroCard = ({ kit }) => {
+  const lightbox = useLightbox();
+  const summary = composeBrandSummary(kit);
+  const palette = Array.isArray(kit.palette) ? kit.palette : [];
+  const swatches = palette
+    .map((c) => (typeof c === 'string' ? { hex: c } : c))
+    .filter((c) => c && c.hex)
+    .slice(0, 6);
+
+  return (
+    <div className="card" style={{ marginBottom: 24, padding: 28 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 28, alignItems: 'center' }}>
+        {/* Logo */}
+        <button
+          type="button"
+          onClick={() => kit.logoUrl && lightbox.open({ src: kit.logoUrl, mimeType: 'image/*', name: `${kit.name || 'Brand'} primary logo`, downloadUrl: kit.logoUrl })}
+          style={{
+            width: 180, height: 180,
+            borderRadius: 18,
+            border: '1px solid var(--line)',
+            background: kit.logoUrl
+              ? `center / 70% no-repeat url(${JSON.stringify(kit.logoUrl)}), var(--surface-2)`
+              : 'var(--surface-2)',
+            display: 'grid', placeItems: 'center',
+            color: 'var(--ink-4)',
+            cursor: kit.logoUrl ? 'zoom-in' : 'default',
+            padding: 0,
+          }}
+        >
+          {!kit.logoUrl && <Icon name="image" size={32}/>}
+        </button>
+
+        {/* Identity */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h1 style={{ margin: 0, fontSize: 36, lineHeight: 1.05, letterSpacing: '-0.02em' }}>{kit.name || 'Untitled brand'}</h1>
+            {kit.industry && (
+              <span style={{
+                padding: '4px 10px', borderRadius: 999,
+                background: 'var(--surface-2)', color: 'var(--ink-2)',
+                border: '1px solid var(--line)',
+                fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600,
+              }}>{kit.industry}</span>
+            )}
+            {kit.colorScheme && (
+              <span style={{
+                padding: '4px 10px', borderRadius: 999,
+                background: 'var(--surface-2)', color: 'var(--ink-3)',
+                border: '1px solid var(--line)',
+                fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em',
+              }}>{kit.colorScheme} scheme</span>
+            )}
+          </div>
+          {kit.tagline && (
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink-2)', lineHeight: 1.3 }}>
+              “{kit.tagline}”
+            </div>
+          )}
+          {summary && (
+            <p style={{ margin: 0, fontSize: 15, lineHeight: 1.55, color: 'var(--ink-2)', maxWidth: 760 }}>
+              {summary}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Palette strip — at-a-glance visual identity */}
+      {swatches.length > 0 && (
+        <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid var(--line-2)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${swatches.length}, 1fr)`, gap: 8, height: 64 }}>
+            {swatches.map((c, i) => {
+              const dark = ['#000000', '#151515', '#1B1F1C', '#3B2A20'].includes((c.hex || '').toUpperCase());
+              return (
+                <div key={`${c.hex}_${i}`} style={{
+                  background: c.hex,
+                  borderRadius: 8,
+                  border: '1px solid var(--line)',
+                  position: 'relative',
+                  display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-start',
+                  padding: 10,
+                  color: dark ? '#FBF6ED' : '#1B1F1C',
+                  fontFamily: 'var(--font-mono)', fontSize: 11, opacity: 0.85,
+                }}>
+                  {c.hex}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const SectionHead = ({ title, sub, anchor }) => (
+  <div id={anchor} style={{ marginTop: 32, marginBottom: 12, display: 'flex', alignItems: 'baseline', gap: 12 }}>
+    <h2 style={{
+      margin: 0, fontFamily: 'var(--font-serif)', fontSize: 22,
+      letterSpacing: '-0.01em', color: 'var(--ink)',
+    }}>{title}</h2>
+    {sub && <span style={{ fontSize: 12, color: 'var(--ink-4)' }}>{sub}</span>}
+  </div>
+);
+
+const BrandStoryCard = ({ kit, saveField }) => {
+  const has = kit.mission || kit.audience || (Array.isArray(kit.brandPillars) && kit.brandPillars.length);
+  if (!has) return null;
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">The brand</div>
+          <div className="card-sub">Why it exists, who it's for, what it stands for</div>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 24 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {(kit.mission || saveField) && (
+            <div>
+              <div className="tiny" style={{ marginBottom: 6 }}>Mission</div>
+              <InlineText field="mission" value={kit.mission} multiline onSave={saveField}/>
+            </div>
+          )}
+          {(kit.audience || saveField) && (
+            <div>
+              <div className="tiny" style={{ marginBottom: 6 }}>Audience</div>
+              <InlineText field="audience" value={kit.audience} multiline onSave={saveField}/>
+            </div>
+          )}
+        </div>
+        {Array.isArray(kit.brandPillars) && kit.brandPillars.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Brand pillars</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {kit.brandPillars.map((p, i) => (
+                <div key={i} style={{
+                  padding: '10px 14px',
+                  background: 'var(--accent-tint)',
+                  border: '1px solid var(--accent-soft)',
+                  borderRadius: 10,
+                  fontSize: 14, fontWeight: 500, color: 'var(--accent-ink)',
+                }}>{p}</div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const OfferingCard = ({ kit }) => {
+  const has = (
+    (Array.isArray(kit.valueProps) && kit.valueProps.length) ||
+    (Array.isArray(kit.keyDifferentiators) && kit.keyDifferentiators.length) ||
+    (Array.isArray(kit.productCategories) && kit.productCategories.length)
+  );
+  if (!has) return null;
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">What they offer</div>
+          <div className="card-sub">Hooks copywriters reach for when writing ads, captions, and scripts</div>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        {Array.isArray(kit.valueProps) && kit.valueProps.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Value propositions</div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {kit.valueProps.map((v, i) => (
+                <li key={i} style={{ fontSize: 14, color: 'var(--ink-2)', lineHeight: 1.5 }}>— {v}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {Array.isArray(kit.keyDifferentiators) && kit.keyDifferentiators.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Key differentiators</div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {kit.keyDifferentiators.map((v, i) => (
+                <li key={i} style={{ fontSize: 14, color: 'var(--ink-2)', lineHeight: 1.5 }}>— {v}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+      {Array.isArray(kit.productCategories) && kit.productCategories.length > 0 && (
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line-2)' }}>
+          <div className="tiny" style={{ marginBottom: 8 }}>Product categories</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {kit.productCategories.map((p, i) => <Chip key={i}>{p}</Chip>)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// VoiceCard — combined voice/messaging guide. Tone descriptor, voice tags,
+// personality summary, do/don't, and "their actual words" samples (pulled
+// from mission + meta_description — concrete, designer-ready copy).
+const VoiceCard = ({ kit, saveField }) => {
+  const samples = [];
+  if (kit.mission) samples.push({ label: 'Mission', text: kit.mission });
+  if (kit.metaDescription && kit.metaDescription !== kit.mission) {
+    samples.push({ label: 'Site description', text: kit.metaDescription });
+  }
+  if (kit.ogDescription && kit.ogDescription !== kit.metaDescription) {
+    samples.push({ label: 'Social description', text: kit.ogDescription });
+  }
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Voice &amp; messaging</div>
+          <div className="card-sub">How the brand sounds — for copywriters, captions, scripts</div>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>Tone of voice</div>
+            <InlineText field="tone_voice" value={kit.toneVoice} multiline onSave={saveField}/>
+          </div>
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>Voice tags</div>
+            {Array.isArray(kit.voiceTags) && kit.voiceTags.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                {kit.voiceTags.map((v) => <Chip key={v}>{v}</Chip>)}
+              </div>
+            )}
+            <InlineList field="voice_tags" value={kit.voiceTags} onSave={saveField} hideDisplay/>
+          </div>
+          {kit.personality && Object.keys(kit.personality).length > 0 && (
+            <div style={{ paddingTop: 6, borderTop: '1px solid var(--line-2)', marginTop: 4 }}>
+              <div className="tiny" style={{ marginBottom: 8 }}>Personality</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, fontSize: 13, color: 'var(--ink-3)' }}>
+                {kit.personality.tone && <span><strong style={{ color: 'var(--ink-2)' }}>Tone:</strong> {kit.personality.tone}</span>}
+                {kit.personality.energy && <span><strong style={{ color: 'var(--ink-2)' }}>Energy:</strong> {kit.personality.energy}</span>}
+                {kit.personality.targetAudience && <span><strong style={{ color: 'var(--ink-2)' }}>Audience:</strong> {kit.personality.targetAudience}</span>}
+              </div>
+            </div>
+          )}
+        </div>
+        {samples.length > 0 && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 8 }}>How they actually write</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {samples.map((s, i) => (
+                <div key={i} style={{
+                  padding: 14,
+                  background: 'var(--surface-2)',
+                  borderRadius: 10,
+                  borderLeft: '3px solid var(--accent-soft)',
+                }}>
+                  <div className="tiny" style={{ marginBottom: 4 }}>{s.label}</div>
+                  <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--ink-2)' }}>{s.text}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Do / Don't — full-width row at the bottom of the card */}
+      <div style={{ marginTop: 20, paddingTop: 20, borderTop: '1px solid var(--line-2)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--good-soft)', color: 'var(--good)', display: 'grid', placeItems: 'center' }}>
+              <Icon name="check" size={12}/>
+            </span>
+            <div className="card-title" style={{ fontSize: 14, color: 'var(--good)' }}>Do say</div>
+          </div>
+          <InlineList field="dos" value={kit.dos} onSave={saveField}/>
+        </div>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--accent-soft)', color: 'var(--accent-ink)', display: 'grid', placeItems: 'center' }}>
+              <Icon name="x" size={12}/>
+            </span>
+            <div className="card-title" style={{ fontSize: 14, color: 'var(--accent-ink)' }}>Don't say</div>
+          </div>
+          <InlineList field="donts" value={kit.donts} onSave={saveField}/>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// TypographyCard — live type samples in the brand's actual fonts.
+const TypographyCard = ({ kit }) => {
+  const stacks = kit.fontStacks || {};
+  const families = (kit.typeScale && kit.typeScale.fontFamilies) || {};
+  const headingFamily = families.heading || stacks.heading?.[0] || families.primary || stacks.body?.[0];
+  const bodyFamily = families.primary || stacks.body?.[0];
+  const fonts = Array.isArray(kit.fonts) ? kit.fonts : [];
+  if (!headingFamily && !bodyFamily && fonts.length === 0) return null;
+
+  const heading = headingFamily ? `"${headingFamily}", Georgia, serif` : 'inherit';
+  const body = bodyFamily ? `"${bodyFamily}", -apple-system, sans-serif` : 'inherit';
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <div className="card-title">Typography</div>
+          <div className="card-sub">{[headingFamily, bodyFamily].filter(Boolean).join(' / ')}</div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {headingFamily && (
+          <div style={{ paddingBottom: 12, borderBottom: '1px solid var(--line-2)' }}>
+            <div className="tiny" style={{ marginBottom: 6 }}>Headlines · {headingFamily}</div>
+            <div style={{ fontFamily: heading, fontSize: 38, lineHeight: 1.1, letterSpacing: '-0.02em', color: 'var(--ink)' }}>
+              {kit.tagline || 'The quick brown fox jumps over the lazy dog'}
+            </div>
+          </div>
+        )}
+        {bodyFamily && (
+          <div>
+            <div className="tiny" style={{ marginBottom: 6 }}>Body · {bodyFamily}</div>
+            <div style={{ fontFamily: body, fontSize: 16, lineHeight: 1.55, color: 'var(--ink-2)' }}>
+              {kit.metaDescription || kit.mission || 'Type a paragraph. The body face carries voice and rhythm — it should read effortlessly at length, not just at headline scale.'}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// CollapsibleEngineering — wraps DesignTokensCard so the engineering-grade
+// detail (button recipes, spacing, font weights, font stacks) is one click
+// away rather than always-open. Default closed for designers who don't
+// need the spec view.
+const CollapsibleEngineering = ({ kit }) => {
+  const [open, setOpen] = useState(false);
+  // Mirror the visibility check inside DesignTokensCard so we hide the
+  // toggle when there's truly nothing to show.
+  const ts = kit.typeScale || {};
+  const sp = kit.spacingTokens || {};
+  const ui = kit.uiComponents || {};
+  const stacks = kit.fontStacks || {};
+  const has = (
+    Object.keys(ts.fontSizes || {}).length ||
+    Object.keys(ts.fontWeights || {}).length ||
+    Object.keys(sp).length ||
+    Object.keys(ui).length ||
+    Object.keys(stacks).length
+  );
+  if (!has) return null;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: '100%', textAlign: 'left',
+          padding: '12px 16px', borderRadius: 8,
+          border: '1px solid var(--line)',
+          background: open ? 'var(--surface)' : 'var(--surface-2)',
+          cursor: 'pointer',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          fontSize: 13, color: 'var(--ink-2)',
+        }}
+      >
+        <span>
+          <strong>Engineering reference</strong>
+          <span style={{ color: 'var(--ink-4)', marginLeft: 8 }}>type scale, spacing, button recipes, font stacks</span>
+        </span>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={14}/>
+      </button>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          <DesignTokensCard kit={kit} />
+        </div>
+      )}
     </div>
   );
 };
@@ -1024,6 +1625,8 @@ const BrandKitView = () => {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [creating, setCreating] = useState(false);
+  const [reenriching, setReenriching] = useState(false);
+  const [reenrichErr, setReenrichErr] = useState('');
 
   useEffect(() => {
     if (!accountId) { setLoading(false); return; }
@@ -1056,6 +1659,20 @@ const BrandKitView = () => {
       setErr(e.message || 'Could not create brand intelligence.');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleReenrich = async () => {
+    if (!accountId) return;
+    setReenriching(true); setReenrichErr('');
+    try {
+      await triggerBrandKitEnrichment({ accountId, websiteUrl: kit?.websiteUrl });
+      const row = await loadBrandKit(accountId);
+      setKit(row);
+    } catch (e) {
+      setReenrichErr(e?.message || 'Re-enrichment failed.');
+    } finally {
+      setReenriching(false);
     }
   };
 
@@ -1127,7 +1744,7 @@ const BrandKitView = () => {
         <div className="titles">
           <div className="tiny" style={{ marginBottom: 8 }}>Knowledge base</div>
           <h1>Brand Intelligence</h1>
-          <div className="sub">Everything L+R references when we make work for {brandName}. Keep this fresh — it's the first place we look.</div>
+          <div className="sub">Everything L+R references when we make work for {brandName}. Built for the designer or copywriter who's about to make something.</div>
         </div>
         <div className="actions">
           <button className="btn" onClick={() => exportBrandKit(kit)}>
@@ -1136,39 +1753,48 @@ const BrandKitView = () => {
         </div>
       </div>
 
-      {/* AI summary */}
-      <div className="card" style={{ marginBottom: 32, background: 'linear-gradient(135deg, var(--accent-tint), var(--surface))', borderColor: 'var(--accent-soft)' }}>
-        <div className="card-head">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{
-              width: 28, height: 28, borderRadius: 8, display: 'grid', placeItems: 'center',
-              background: 'var(--accent)', color: 'var(--accent-contrast)',
-            }}><Icon name="sparkles" size={14}/></span>
-            <div>
-              <div className="card-title" style={{ fontSize: 22 }}>How L+R understands your brand</div>
-              <div className="card-sub">Inferred from your kit, past briefs, and delivered work</div>
-            </div>
-          </div>
-        </div>
-        <InlineText
-          field="ai_summary"
-          value={kit.aiSummary}
-          multiline
-          display={(v) => (
-            <p style={{ fontSize: 16, lineHeight: 1.6, color: 'var(--ink-2)', margin: 0, maxWidth: 760 }}>
-              {v || <span style={{ color: 'var(--ink-4)' }}>Add a short summary of what L+R should remember about your brand.</span>}
-            </p>
-          )}
-          onSave={saveField}
-        />
-      </div>
+      {/* 1. HERO — logo + name + tagline + positioning + palette strip */}
+      <HeroCard kit={kit} />
 
-      {/* Online presence — website + socials. First place the agency looks. */}
+      {/* 2. THE BRAND — mission, audience, pillars */}
+      <SectionHead title="The brand" sub="why it exists, who it's for"/>
+      <BrandStoryCard kit={kit} saveField={saveField} />
+
+      {/* 3. WHAT THEY OFFER — value props, differentiators, categories */}
+      {(kit.valueProps?.length || kit.keyDifferentiators?.length || kit.productCategories?.length) ? (
+        <>
+          <SectionHead title="What they offer" sub="hooks for ads, captions, scripts"/>
+          <OfferingCard kit={kit} />
+        </>
+      ) : null}
+
+      {/* 4. VOICE & MESSAGING — tone, voice tags, samples, do/don't */}
+      <SectionHead title="Voice &amp; messaging" sub="how the brand sounds"/>
+      <VoiceCard kit={kit} saveField={saveField} />
+
+      {/* 5. VISUAL SYSTEM — palette + typography + logos + collapsible eng */}
+      <SectionHead title="Visual system" sub="palette, type, marks, tokens"/>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        <PaletteCard kit={kit} palette={palette} />
+        <TypographyCard kit={kit} />
+      </div>
+      <LogoMarksCard
+        accountId={accountId}
+        logoUrl={kit.logoUrl}
+        variants={logos}
+        onSave={saveField}
+        onVariantsChange={(updated) => setKit(updated)}
+        backgroundHint={kit.backgroundColor}
+      />
+      <CollapsibleEngineering kit={kit} />
+
+      {/* 6. PRESENCE — website + socials + search/OG/Twitter previews */}
+      <SectionHead title="How they show up" sub="search, social, channels"/>
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-head">
           <div>
             <div className="card-title">Online presence</div>
-            <div className="card-sub">Where the team can see how your brand shows up today</div>
+            <div className="card-sub">Website + social handles</div>
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 24 }}>
@@ -1187,149 +1813,16 @@ const BrandKitView = () => {
           </div>
         </div>
       </div>
-
-      {/* Identity + palette */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16, marginBottom: 16 }}>
-        <div className="card">
-          <div className="card-head">
-            <div><div className="card-title">Identity</div><div className="card-sub">Mission, audience, and what you stand for</div></div>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-            <div>
-              <div className="tiny" style={{ marginBottom: 6 }}>Tagline</div>
-              <InlineText
-                field="tagline"
-                value={kit.tagline}
-                display={(v) => (
-                  <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, letterSpacing: '-0.01em', lineHeight: 1.15, fontStyle: 'italic' }}>
-                    {v ? `"${v}"` : <span style={{ color: 'var(--ink-4)', fontStyle: 'normal', fontSize: 14 }}>No tagline yet.</span>}
-                  </div>
-                )}
-                onSave={saveField}
-              />
-            </div>
-            <div>
-              <div className="tiny" style={{ marginBottom: 6 }}>Mission</div>
-              <InlineText field="mission" value={kit.mission} multiline onSave={saveField}/>
-            </div>
-            <div>
-              <div className="tiny" style={{ marginBottom: 6 }}>Audience</div>
-              <InlineText field="audience" value={kit.audience} multiline onSave={saveField}/>
-            </div>
-            <div>
-              <div className="tiny" style={{ marginBottom: 6 }}>Tone of voice</div>
-              <InlineText field="tone_voice" value={kit.toneVoice} multiline onSave={saveField}/>
-            </div>
-            <div>
-              <div className="tiny" style={{ marginBottom: 8 }}>Voice tags</div>
-              {Array.isArray(kit.voiceTags) && kit.voiceTags.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-                  {kit.voiceTags.map((v) => (
-                    <span key={v} style={{
-                      padding: '5px 10px', borderRadius: 999,
-                      background: 'var(--surface-2)', color: 'var(--ink-2)',
-                      border: '1px solid var(--line)',
-                      fontSize: 12, fontWeight: 500,
-                    }}>{v}</span>
-                  ))}
-                </div>
-              )}
-              <InlineList field="voice_tags" value={kit.voiceTags} onSave={saveField} hideDisplay/>
-            </div>
-          </div>
-        </div>
-
-        <PaletteCard kit={kit} palette={palette} />
-      </div>
-
-      {/* Positioning & strategy — Firecrawl-enriched: positioning_statement,
-          industry, brand_pillars, value_props, key_differentiators,
-          product_categories, personality. Renders only when at least one
-          field is present so unenriched brands aren't padded with empty
-          state. */}
-      <PositioningCard kit={kit} />
-
-      {/* Typography + Logos */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        <div className="card">
-          <div className="card-head">
-            <div><div className="card-title">Typography</div><div className="card-sub">Display + UI pairing</div></div>
-          </div>
-          {fonts.length === 0 ? (
-            <div style={{ fontSize: 13, color: 'var(--ink-4)' }}>No fonts set.</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {fonts.map((f, i) => {
-                const isDisplay = f.role?.includes('Display');
-                const fallback = isDisplay ? 'var(--font-serif)' : 'var(--font-sans)';
-                const stack = `"${f.family}", ${fallback}`;
-                return (
-                  <div key={`${f.family}_${i}`} style={{ padding: '14px 0', borderTop: i === 0 ? 'none' : '1px solid var(--line-2)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-                      <div style={{ fontFamily: stack, fontSize: 22, letterSpacing: '-0.01em' }}>{f.family}</div>
-                      <div className="tiny">{f.role}</div>
-                    </div>
-                    <div style={{
-                      fontFamily: stack,
-                      fontSize: isDisplay ? 36 : 18,
-                      lineHeight: 1.15,
-                      letterSpacing: isDisplay ? '-0.02em' : '0',
-                      fontStyle: isDisplay ? 'italic' : 'normal',
-                      color: 'var(--ink)',
-                    }}>
-                      {f.sample}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <BrandLogoCard
-          accountId={accountId}
-          logoUrl={kit.logoUrl}
-          onSave={saveField}
-        />
-      </div>
-
-      {/* Design tokens — type scale, spacing, button recipes, color scheme.
-          Engineering-/design-grade detail derived from the live site. */}
-      <DesignTokensCard kit={kit} />
-
-      {/* How the brand presents itself — page meta + OG/Twitter copy. */}
       <MarketingSnapshotCard kit={kit} />
 
-      {/* Do / Don't */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        <div className="card">
-          <div className="card-head">
-            <div><div className="card-title" style={{ color: 'var(--good)' }}>Do</div></div>
-            <span style={{ width: 26, height: 26, borderRadius: '50%', background: 'var(--good-soft)', color: 'var(--good)', display: 'grid', placeItems: 'center' }}>
-              <Icon name="check" size={14}/>
-            </span>
-          </div>
-          <InlineList field="dos" value={kit.dos} onSave={saveField}/>
-        </div>
-        <div className="card">
-          <div className="card-head">
-            <div><div className="card-title" style={{ color: 'var(--accent-ink)' }}>Don't</div></div>
-            <span style={{ width: 26, height: 26, borderRadius: '50%', background: 'var(--accent-soft)', color: 'var(--accent-ink)', display: 'grid', placeItems: 'center' }}>
-              <Icon name="x" size={14}/>
-            </span>
-          </div>
-          <InlineList field="donts" value={kit.donts} onSave={saveField}/>
-        </div>
-      </div>
-
-      {/* References & assets — brand-uploaded visual library */}
+      {/* 7. CREATIVE LIBRARY — references + photography (+ past creatives when ready) */}
+      <SectionHead title="Creative library" sub="references designers grab from"/>
       <ReferencesCard accountId={accountId}/>
 
-      {/* Photography */}
       {photography.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-head">
-            <div><div className="card-title">Product photography</div><div className="card-sub">Approved library · {photography.length} shots</div></div>
+            <div><div className="card-title">Product photography</div><div className="card-sub">Approved library · {photography.length} shots · click to enlarge</div></div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8 }}>
             {photography.map((p, i) => (
@@ -1341,7 +1834,6 @@ const BrandKitView = () => {
         </div>
       )}
 
-      {/* Inspiration + Past creatives */}
       {(inspiration.length > 0 || pastCreatives.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
           {inspiration.length > 0 && (
@@ -1375,8 +1867,14 @@ const BrandKitView = () => {
         </div>
       )}
 
-      {/* Footer with enrichment provenance + confidence + Firecrawl trail */}
-      <EnrichmentSummaryFooter kit={kit} />
+      {reenrichErr && (
+        <div style={{ marginTop: 16, padding: '10px 14px', background: 'var(--accent-soft)', color: 'var(--accent-ink)', borderRadius: 8, fontSize: 12 }}>
+          {reenrichErr}
+        </div>
+      )}
+
+      {/* Footer — provenance + Re-enrich button */}
+      <EnrichmentSummaryFooter kit={{ ...kit, _reenriching: reenriching }} onReenrich={handleReenrich} />
     </div></div>
   );
 };
