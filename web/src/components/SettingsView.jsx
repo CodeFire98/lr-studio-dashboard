@@ -57,8 +57,15 @@ const SettingsView = ({ auth, mode }) => {
     if (!account?.id) return;
     setDeleting(true); setDeleteErr('');
     try {
-      const { error } = await supabase.from('accounts').delete().eq('id', account.id);
+      // Use the SECURITY DEFINER RPC — direct deletes hit RLS and silently
+      // affect zero rows. The RPC enforces owner + brand-type guards and
+      // cascades cleanup of every child row.
+      const { error } = await supabase.rpc('delete_brand_account', { p_account_id: account.id });
       if (error) throw error;
+      // Tell the auth layer to skip its first-time-user auto-create on the
+      // next session refresh and show the brand picker instead. Cleared
+      // when the user picks or creates a brand from the picker.
+      try { localStorage.setItem('lr_brand_just_deleted', '1'); } catch {}
       await signOut();
       // Hard reload so nothing stale (tasks, cached auth, routes) hangs around.
       window.location.reload();

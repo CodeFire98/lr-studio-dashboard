@@ -61,10 +61,13 @@ const BrandSelectView = ({ auth, onSelected }) => {
             <span className="dot" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }} />
             Signed in as {auth?.email}
           </div>
-          <h1 style={{ fontSize: 26, fontWeight: 600, marginBottom: 6 }}>Choose a brand</h1>
+          <h1 style={{ fontSize: 26, fontWeight: 600, marginBottom: 6 }}>
+            {memberships.length === 0 ? 'Create your next brand' : 'Choose a brand'}
+          </h1>
           <p style={{ color: 'var(--ink-3)', fontSize: 14, margin: 0 }}>
-            You're part of {memberships.length} brand workspaces. Pick one to continue —
-            you can switch anytime from the sidebar.
+            {memberships.length === 0
+              ? "You don't have an active workspace right now. Create a new brand below to get started."
+              : `You're part of ${memberships.length} brand ${memberships.length === 1 ? 'workspace' : 'workspaces'}. Pick one to continue — you can switch anytime from the sidebar.`}
           </p>
         </div>
 

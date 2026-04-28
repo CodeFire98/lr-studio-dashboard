@@ -70,8 +70,18 @@ function hydrateProfile(user, profileRow, membershipRows, activeAccountId) {
     }
   }
 
+  // After a brand is deleted from Settings, force the picker on next sign-in
+  // even if exactly one (or zero) brands remain — so the user explicitly
+  // picks/creates instead of being silently dropped into whatever's left.
+  // Flag is set by SettingsView.deleteWorkspace and cleared by setActiveBrand.
+  let justDeleted = false;
+  try { justDeleted = !!localStorage.getItem('lr_brand_just_deleted'); } catch {}
+  if (!isAgency && justDeleted) {
+    activeMembership = null;
+  }
+
   const requiresBrandSelection =
-    !isAgency && !activeMembership && memberships.length > 1;
+    !isAgency && !activeMembership && (memberships.length > 1 || justDeleted);
 
   const account = activeMembership?.account || null;
   const activeRole = activeMembership?.role || null;
@@ -165,13 +175,16 @@ async function _doRefresh() {
   // If a brand user has no account yet (e.g. signed up with email confirmation,
   // or signed up via Google OAuth), create their brand workspace now.
   // BUT skip this if there's a pending invite — the invite flow (accept_invitation)
-  // handles account assignment on its own.
+  // handles account assignment on its own. Also skip if the user just deleted
+  // their last brand: they should land on the picker (with a Create CTA), not
+  // get a silent throwaway brand recreated under them.
   const hasPendingInvite = !!localStorage.getItem('lr_pending_invite');
+  const justDeletedBrand = !!localStorage.getItem('lr_brand_just_deleted');
   // Auto-create only for first-time brand users with NO memberships at all.
   // A user with 2+ memberships pending a brand pick will also have no active
   // account, but they already own brands — we must not create another one.
   const hasAnyMembership = (_cachedAuth?.memberships || []).length > 0;
-  if (_cachedAuth && !_cachedAuth.isAgency && !hasAnyMembership && !hasPendingInvite) {
+  if (_cachedAuth && !_cachedAuth.isAgency && !hasAnyMembership && !hasPendingInvite && !justDeletedBrand) {
     const pendingName = localStorage.getItem('lr_pending_brand_name');
     const brandName = pendingName || _cachedAuth.name || _cachedAuth.email?.split('@')[0] || 'My Brand';
     try {
@@ -316,6 +329,10 @@ async function setActiveBrand(accountId) {
   try {
     if (accountId) localStorage.setItem(activeBrandKey(userId), accountId);
     else localStorage.removeItem(activeBrandKey(userId));
+    // Once the user has explicitly picked (or created) a brand, the
+    // "just deleted" gate is satisfied — clear it so future page loads
+    // don't keep forcing the picker.
+    if (accountId) localStorage.removeItem('lr_brand_just_deleted');
   } catch {}
   // Re-hydrate from the current session so `account`, `role`, and the
   // `requiresBrandSelection` flag reflect the new pick.
