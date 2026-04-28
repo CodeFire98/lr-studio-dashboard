@@ -221,6 +221,15 @@ export async function loadTaskById(id) {
   return data ? mapTaskRow(data) : null;
 }
 
+// Format a Date as a YYYY-MM-DD string using local-time components, so a date
+// the user picked in their timezone isn't shifted by toISOString()'s UTC conversion.
+function toLocalIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 // Convert a "M D" style chip deadline back to an ISO date (guessing the year).
 function chipDeadlineToIso(chip) {
   if (!chip) return null;
@@ -234,23 +243,23 @@ function chipDeadlineToIso(chip) {
   const lower = raw.toLowerCase();
   if (lower.includes('asap') || lower.includes('24') || lower.includes('48')) {
     const d = new Date(today); d.setDate(d.getDate() + 2);
-    return d.toISOString().slice(0, 10);
+    return toLocalIsoDate(d);
   }
   if (lower === 'this week') {
     const d = new Date(today); d.setDate(d.getDate() + (7 - d.getDay()));
-    return d.toISOString().slice(0, 10);
+    return toLocalIsoDate(d);
   }
   if (lower === 'next week') {
     const d = new Date(today); d.setDate(d.getDate() + (14 - d.getDay()));
-    return d.toISOString().slice(0, 10);
+    return toLocalIsoDate(d);
   }
   if (lower === 'in 2 weeks') {
     const d = new Date(today); d.setDate(d.getDate() + 14);
-    return d.toISOString().slice(0, 10);
+    return toLocalIsoDate(d);
   }
   if (lower === 'in 1 month') {
     const d = new Date(today); d.setMonth(d.getMonth() + 1);
-    return d.toISOString().slice(0, 10);
+    return toLocalIsoDate(d);
   }
 
   // Try parsing as an absolute date like "May 15"
@@ -259,7 +268,7 @@ function chipDeadlineToIso(chip) {
   if (parsed.getTime() + 30 * 86400000 < now.getTime()) {
     parsed.setFullYear(now.getFullYear() + 1);
   }
-  return parsed.toISOString().slice(0, 10);
+  return toLocalIsoDate(parsed);
 }
 
 export async function submitTask({ accountId, userId, text, chips, titleHint }) {
@@ -325,7 +334,9 @@ export async function updateTaskField({ taskId, chipKey, oldValue, newValue, act
   const dbValue = chipKey === 'deadline' ? chipDeadlineToIso({ value: newValue }) : newValue;
   const patch = { [col]: dbValue || null };
 
-  // Update the task row.
+  // Update the task row. The log_task_activity trigger emits a 'field_edited'
+  // activity row for every changed chip column (count / deadline / format /
+  // platform / objective), so no client-side activity write is needed.
   const { data, error } = await supabase
     .from('tasks')
     .update(patch)
@@ -333,14 +344,6 @@ export async function updateTaskField({ taskId, chipKey, oldValue, newValue, act
     .select(TASK_SELECT)
     .single();
   if (error) throw error;
-
-  // Insert an activity row for the edit.
-  await supabase.from('activity').insert({
-    task_id: taskId,
-    actor_id: actorId,
-    action: 'field_edited',
-    payload: { field: chipKey, from: oldValue || null, to: newValue || null },
-  });
 
   return mapTaskRow(data);
 }
