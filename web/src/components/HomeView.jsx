@@ -500,10 +500,15 @@ const HomeView = ({ setRoute, pushTask, requireAuth, auth }) => {
         <p className="home-sub" style={{fontSize: 13, color: "rgb(154, 152, 154)"}}>Describe your creative need in plain language. Attach references if you have them. We'll parse the brief and get a creative lead on it within 24 hours.</p>
 
         <div style={{display: "flex", justifyContent: "flex-end", marginBottom: 10}}>
-          <button className="btn btn-sm">
+          <a
+            className="btn btn-sm"
+            href="https://cal.linkrunner.io/team/demos/lragency"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             <Icon name="calendar" size={13} />
             Schedule a call
-          </button>
+          </a>
         </div>
 
         <div className="composer">
