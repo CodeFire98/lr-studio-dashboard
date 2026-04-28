@@ -6,7 +6,13 @@
    "Skip for now" still flips the completion marker so we don't re-prompt. */
 import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
-import { completeBrandOnboarding, skipBrandOnboarding, uploadBrandLogo } from '../lib/db.js';
+import {
+  completeBrandOnboarding,
+  skipBrandOnboarding,
+  uploadBrandLogo,
+  triggerBrandKitEnrichment,
+  loadBrandKit,
+} from '../lib/db.js';
 
 const VOICE_TAGS = [
   'Playful', 'Premium', 'Bold', 'Warm', 'Editorial',
@@ -44,13 +50,23 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
   );
   const [customVoice, setCustomVoice] = useState('');
   const [primaryColor, setPrimaryColor] = useState(kit?.primaryColor || '');
-  const [accentColor, setAccentColor] = useState(kit?.palette?.[0] || '');
+  const [accentColor, setAccentColor] = useState(() => {
+    const p = kit?.palette?.[0];
+    return (p && typeof p === 'object' ? p.hex : p) || '';
+  });
   const [logoUrl, setLogoUrl] = useState(kit?.logoUrl || '');
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [skipping, setSkipping] = useState(false);
   const [err, setErr] = useState('');
+  // Fetch-brand state. The modal can call the deployed enrich-brand-kit
+  // edge function to auto-populate every field from the brand's website +
+  // socials, then we re-load the kit and seed the form. Multi-stage
+  // progress ticker keeps the user oriented during the ~15-25s call.
+  const [fetching, setFetching] = useState(false);
+  const [fetchStage, setFetchStage] = useState(0);
+  const [fetchSuccess, setFetchSuccess] = useState(false);
 
   // Re-seed local state if the modal is reopened against a different brand.
   useEffect(() => {
@@ -67,10 +83,24 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
     setVoiceTags(Array.isArray(kit?.voiceTags) ? kit.voiceTags.slice(0, 3) : []);
     setCustomVoice('');
     setPrimaryColor(kit?.primaryColor || '');
-    setAccentColor(kit?.palette?.[0] || '');
+    {
+      const p = kit?.palette?.[0];
+      setAccentColor((p && typeof p === 'object' ? p.hex : p) || '');
+    }
     setLogoUrl(kit?.logoUrl || '');
     setErr('');
   }, [open, kit?.id, accountName]);
+
+  // Cycle the progress ticker every ~3.5s while fetching. Defined here
+  // BEFORE the early `!open` return so the hook order stays stable across
+  // open/close transitions.
+  useEffect(() => {
+    if (!fetching) return;
+    const t = setInterval(() => {
+      setFetchStage((s) => Math.min(s + 1, 4));
+    }, 3500);
+    return () => clearInterval(t);
+  }, [fetching]);
 
   if (!open) return null;
 
@@ -118,6 +148,69 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
     setSkipping(true);
     try { await onSkip?.(); }
     catch (ex) { setErr(ex?.message || 'Could not skip.'); setSkipping(false); }
+  };
+
+  const FETCH_STAGES = [
+    'Reading your website…',
+    'Extracting palette and typography…',
+    'Finding voice and positioning…',
+    'Pulling product photography…',
+    'Composing your brand book…',
+  ];
+
+  const handleFetchBrand = async () => {
+    if (!accountId) { setErr('Brand account is missing — try reopening the modal.'); return; }
+    if (!websiteUrl.trim()) { setErr('Add a website URL to fetch from.'); return; }
+    setErr(''); setFetchSuccess(false); setFetchStage(0); setFetching(true);
+    try {
+      // Persist any social links the user typed so the enrichment merges
+      // them into social_links instead of overwriting on the server side.
+      // The edge function already preserves existing values.
+      await triggerBrandKitEnrichment({ accountId, websiteUrl: websiteUrl.trim() });
+      const fresh = await loadBrandKit(accountId);
+      // Seed every modal field from the freshly-enriched kit. Existing
+      // user input wins where present so we don't blow away anything they
+      // typed before clicking Fetch brand.
+      if (fresh) {
+        if (!tagline.trim() && fresh.tagline) setTagline(fresh.tagline);
+        if (!audience.trim() && fresh.audience) setAudience(fresh.audience);
+        if (!primaryColor.trim() && fresh.primaryColor) setPrimaryColor(fresh.primaryColor);
+        const fetchedAccent = fresh.accentColor
+          || (Array.isArray(fresh.palette) && fresh.palette[1] && fresh.palette[1].hex)
+          || (Array.isArray(fresh.palette) && fresh.palette[0] && fresh.palette[0].hex);
+        if (!accentColor.trim() && fetchedAccent) setAccentColor(fetchedAccent);
+        if (!logoUrl.trim() && fresh.logoUrl) setLogoUrl(fresh.logoUrl);
+        // Voice tags: take up to 3 from fetched if user hasn't picked any.
+        if (voiceTags.length === 0 && Array.isArray(fresh.voiceTags) && fresh.voiceTags.length) {
+          // Map fetched lowercase tags to the chip vocabulary where possible
+          // (otherwise drop into customVoice).
+          const wanted = fresh.voiceTags.slice(0, 3).map((t) => String(t).toLowerCase());
+          const matched = VOICE_TAGS.filter((vt) => wanted.includes(vt.toLowerCase())).slice(0, 3);
+          if (matched.length > 0) setVoiceTags(matched);
+          // Anything not matched goes into the freeform "Other" line so
+          // the user can see what was extracted.
+          const unmatched = fresh.voiceTags
+            .filter((t) => !VOICE_TAGS.some((vt) => vt.toLowerCase() === String(t).toLowerCase()))
+            .slice(0, 2)
+            .join(', ');
+          if (unmatched && !customVoice.trim()) setCustomVoice(unmatched);
+        }
+        // Merge socials (don't overwrite anything the user typed).
+        if (fresh.socialLinks && typeof fresh.socialLinks === 'object') {
+          setSocialLinks((prev) => ({
+            instagram: prev.instagram?.trim() ? prev.instagram : (fresh.socialLinks.instagram || ''),
+            tiktok:    prev.tiktok?.trim()    ? prev.tiktok    : (fresh.socialLinks.tiktok    || ''),
+            linkedin:  prev.linkedin?.trim()  ? prev.linkedin  : (fresh.socialLinks.linkedin  || ''),
+          }));
+        }
+      }
+      setFetchSuccess(true);
+    } catch (ex) {
+      setErr(ex?.message || 'Could not fetch brand info from the website.');
+    } finally {
+      setFetching(false);
+      setFetchStage(0);
+    }
   };
 
   const handleLogoFile = async (e) => {
@@ -196,7 +289,7 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
             <span className="onboarding-hint">{120 - tagline.length} characters left</span>
           </label>
 
-          {/* 3. Online presence */}
+          {/* 3. Online presence — also the fetch-brand entry point */}
           <div className="auth-field">
             <span>3 · Where can we see you online?</span>
             <input
@@ -217,6 +310,66 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
                   aria-label={p.label}
                 />
               ))}
+            </div>
+
+            {/* Fetch brand — magic moment. Takes the URLs above and runs
+                the enrich-brand-kit edge function, then back-fills every
+                form field from the response. */}
+            <div style={{
+              marginTop: 12,
+              padding: 14,
+              borderRadius: 10,
+              background: 'linear-gradient(135deg, var(--accent-tint), var(--surface))',
+              border: '1px solid var(--accent-soft)',
+              display: 'flex', flexDirection: 'column', gap: 10,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{
+                    width: 30, height: 30, borderRadius: 8, display: 'grid', placeItems: 'center',
+                    background: 'var(--accent)', color: 'var(--accent-contrast)',
+                  }}>
+                    <Icon name="sparkles" size={14}/>
+                  </span>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <strong style={{ fontSize: 14, color: 'var(--ink)' }}>Auto-fill from your website</strong>
+                    <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>Powered by L+R Brand Intelligence</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleFetchBrand}
+                  disabled={busy || fetching || !websiteUrl.trim()}
+                  style={{ minWidth: 130 }}
+                >
+                  {fetching
+                    ? <><Icon name="refresh" size={12}/> Fetching…</>
+                    : fetchSuccess
+                      ? <><Icon name="check" size={12}/> Fetched</>
+                      : <><Icon name="sparkles" size={12}/> Fetch brand</>}
+                </button>
+              </div>
+              {fetching && (
+                <div style={{
+                  fontSize: 12, color: 'var(--ink-2)',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '4px 0',
+                }}>
+                  <span style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: 'var(--accent)',
+                    animation: 'lr-pulse 1.2s ease-in-out infinite',
+                  }}/>
+                  <span>{FETCH_STAGES[fetchStage]}</span>
+                </div>
+              )}
+              {fetchSuccess && !fetching && (
+                <div style={{ fontSize: 12, color: 'var(--good)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Icon name="check" size={11}/>
+                  We pre-filled what we could. Review and tweak below — full kit available in Brand Intelligence after.
+                </div>
+              )}
             </div>
           </div>
 

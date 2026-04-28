@@ -1757,8 +1757,12 @@ const BrandKitView = () => {
       <HeroCard kit={kit} />
 
       {/* 2. THE BRAND — mission, audience, pillars */}
-      <SectionHead title="The brand" sub="why it exists, who it's for"/>
-      <BrandStoryCard kit={kit} saveField={saveField} />
+      {(kit.mission || kit.audience || (Array.isArray(kit.brandPillars) && kit.brandPillars.length)) ? (
+        <>
+          <SectionHead title="The brand" sub="why it exists, who it's for"/>
+          <BrandStoryCard kit={kit} saveField={saveField} />
+        </>
+      ) : null}
 
       {/* 3. WHAT THEY OFFER — value props, differentiators, categories */}
       {(kit.valueProps?.length || kit.keyDifferentiators?.length || kit.productCategories?.length) ? (
@@ -1768,16 +1772,26 @@ const BrandKitView = () => {
         </>
       ) : null}
 
-      {/* 4. VOICE & MESSAGING — tone, voice tags, samples, do/don't */}
-      <SectionHead title="Voice &amp; messaging" sub="how the brand sounds"/>
-      <VoiceCard kit={kit} saveField={saveField} />
+      {/* 4. VOICE & MESSAGING — tone, voice tags, samples, do/don't.
+          Always renders because Do say / Don't say are useful interactive
+          fields even before fetch — the user can write rules directly. */}
+      {(kit.toneVoice || (kit.voiceTags?.length) || (kit.dos?.length) || (kit.donts?.length) || (kit.personality && Object.keys(kit.personality).length) || kit.mission || kit.metaDescription) ? (
+        <>
+          <SectionHead title="Voice &amp; messaging" sub="how the brand sounds"/>
+          <VoiceCard kit={kit} saveField={saveField} />
+        </>
+      ) : null}
 
-      {/* 5. VISUAL SYSTEM — palette + typography + logos + collapsible eng */}
+      {/* 5. VISUAL SYSTEM — palette + typography + logos + collapsible eng.
+          Logo & marks always renders (entry point for upload), so the
+          section always has at least one card. */}
       <SectionHead title="Visual system" sub="palette, type, marks, tokens"/>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        <PaletteCard kit={kit} palette={palette} />
-        <TypographyCard kit={kit} />
-      </div>
+      {((palette && palette.length) || (kit.fonts && kit.fonts.length)) ? (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+          {palette && palette.length > 0 && <PaletteCard kit={kit} palette={palette} />}
+          {kit.fonts && kit.fonts.length > 0 && <TypographyCard kit={kit} />}
+        </div>
+      ) : null}
       <LogoMarksCard
         accountId={accountId}
         logoUrl={kit.logoUrl}
@@ -1789,33 +1803,40 @@ const BrandKitView = () => {
       <CollapsibleEngineering kit={kit} />
 
       {/* 6. PRESENCE — website + socials + search/OG/Twitter previews */}
-      <SectionHead title="How they show up" sub="search, social, channels"/>
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-head">
-          <div>
-            <div className="card-title">Online presence</div>
-            <div className="card-sub">Website + social handles</div>
+      {(kit.websiteUrl || (kit.socialLinks && Object.values(kit.socialLinks).some((v) => v))) ? (
+        <>
+          <SectionHead title="How they show up" sub="search, social, channels"/>
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-head">
+              <div>
+                <div className="card-title">Online presence</div>
+                <div className="card-sub">Website + social handles</div>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 24 }}>
+              <div>
+                <div className="tiny" style={{ marginBottom: 6 }}>Website</div>
+                <InlineText
+                  field="website_url"
+                  value={kit.websiteUrl}
+                  display={renderUrl}
+                  onSave={saveField}
+                />
+              </div>
+              <div>
+                <div className="tiny" style={{ marginBottom: 6 }}>Social</div>
+                <InlineSocials value={kit.socialLinks} onSave={saveField}/>
+              </div>
+            </div>
           </div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 24 }}>
-          <div>
-            <div className="tiny" style={{ marginBottom: 6 }}>Website</div>
-            <InlineText
-              field="website_url"
-              value={kit.websiteUrl}
-              display={renderUrl}
-              onSave={saveField}
-            />
-          </div>
-          <div>
-            <div className="tiny" style={{ marginBottom: 6 }}>Social</div>
-            <InlineSocials value={kit.socialLinks} onSave={saveField}/>
-          </div>
-        </div>
-      </div>
-      <MarketingSnapshotCard kit={kit} />
+          <MarketingSnapshotCard kit={kit} />
+        </>
+      ) : null}
 
-      {/* 7. CREATIVE LIBRARY — references + photography (+ past creatives when ready) */}
+      {/* 7. CREATIVE LIBRARY — references + photography (+ past creatives
+          when ready). Header only renders when at least one inner block
+          will appear; ReferencesCard handles its own empty state, so we
+          treat it as always-present once we know we want this section. */}
       <SectionHead title="Creative library" sub="references designers grab from"/>
       <ReferencesCard accountId={accountId}/>
 

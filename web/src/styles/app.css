@@ -1359,6 +1359,13 @@ input, textarea { font: inherit; color: inherit; }
 .modal .modal-actions { display: flex; gap: 8px; margin-top: var(--space-6); justify-content: flex-end; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
+/* Onboarding "Fetch brand" progress pulse — used by the dot next to the
+   stage ticker. Soft scale + opacity breathing, infinite. */
+@keyframes lr-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.5); opacity: 0.55; }
+}
+
 /* ========== Library grid ========== */
 .lib-grid {
   display: grid;
