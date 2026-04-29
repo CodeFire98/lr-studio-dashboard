@@ -246,7 +246,7 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
           <div className="login-modal-brand">
             <span className="dot" />
             <span>L+R</span>
-            <span className="wordmark-tail">Studio</span>
+            <span className="wordmark-tail">Agency</span>
           </div>
           <div className="login-modal-reason">
             <Icon name="sparkles" size={13} />

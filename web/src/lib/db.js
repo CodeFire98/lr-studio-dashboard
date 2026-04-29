@@ -46,7 +46,7 @@ function personFromProfile(p) {
       id: 'u_unassigned',
       name: 'Unassigned',
       initials: 'L+',
-      role: 'L+R Studio',
+      role: 'L+R Agency',
       avatarColor: '#2B2B2E',
     };
   }
@@ -54,7 +54,7 @@ function personFromProfile(p) {
     id: p.id,
     name: p.display_name || 'L+R Team',
     initials: p.initials || 'L+',
-    role: p.is_agency ? 'L+R Studio' : 'Brand',
+    role: p.is_agency ? 'L+R Agency' : 'Brand',
     avatarColor: p.avatar_color || '#2B2B2E',
     email: p.email,
   };

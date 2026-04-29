@@ -1,7 +1,7 @@
 /* eslint-disable */
 /* Settings — workspace-level controls.
    Workspace section: rename the current workspace (brand side only — the
-     agency name is fixed as "L+R Studio").
+     agency name is fixed as "L+R Agency").
    Danger zone: delete workspace (brand-only). Requires typing the workspace
      name to confirm. On success, sign out and reload the app. */
 import React, { useEffect, useState } from 'react';
@@ -102,7 +102,7 @@ const SettingsView = ({ auth, mode }) => {
             <div className="card-title">Workspace</div>
             <div className="card-sub">
               {isAdminWorkspace
-                ? 'The agency workspace name is fixed as "L+R Studio".'
+                ? 'The agency workspace name is fixed as "L+R Agency".'
                 : 'Rename your brand workspace. Changes show up on every brief and delivery.'}
             </div>
           </div>

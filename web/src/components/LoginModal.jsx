@@ -166,7 +166,7 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
           <div className="login-modal-brand">
             <span className="dot" />
             <span>L+R</span>
-            <span className="wordmark-tail">Studio</span>
+            <span className="wordmark-tail">Agency</span>
           </div>
           {reason && (
             <div className="login-modal-reason">

@@ -66,7 +66,7 @@ const PasswordResetPage = () => {
         boxShadow: 'var(--shadow-md)',
       }}>
         <div style={{fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--accent-ink)', marginBottom: 8}}>
-          L+R Studio
+          L+R Agency
         </div>
         <h1 style={{
           fontFamily: 'var(--font-serif)', fontSize: 36, lineHeight: 1.1, margin: '0 0 10px',
@@ -89,7 +89,7 @@ const PasswordResetPage = () => {
               Password updated. You can now head back into the app.
             </div>
             <button onClick={backToApp} className="btn btn-primary btn-lg auth-submit">
-              Go to L+R Studio
+              Go to L+R Agency
             </button>
           </div>
         ) : (

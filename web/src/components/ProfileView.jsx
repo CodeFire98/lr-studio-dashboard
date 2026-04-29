@@ -146,7 +146,7 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
   };
 
   const workspaceLine = auth.isAgency
-    ? 'L+R Studio'
+    ? 'L+R Agency'
     : `Brand · ${auth.account?.name || 'Workspace'}`;
 
   return (

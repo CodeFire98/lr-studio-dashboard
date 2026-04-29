@@ -88,7 +88,7 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
     catch (e) { console.error('create brand failed', e); }
   };
   const planLine = mode === "admin"
-    ? "L+R Studio · Admin"
+    ? "L+R Agency · Admin"
     : (auth?.account?.name || (auth?.email ? auth.email : ""));
 
   return (
@@ -96,11 +96,11 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
       <div className="sidebar-brand">
         <span className="dot" />
         <span>L+R</span>
-        <span className="wordmark-tail">Studio</span>
+        <span className="wordmark-tail">Agency</span>
       </div>
 
       <div className="nav-section-label">
-        {isGuest ? "Welcome" : mode === "admin" ? "Studio" : "Workspace"}
+        {isGuest ? "Welcome" : mode === "admin" ? "Agency" : "Workspace"}
       </div>
       <nav className="nav">
         {items.map((n) => (

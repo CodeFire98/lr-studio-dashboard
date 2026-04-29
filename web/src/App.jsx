@@ -452,13 +452,13 @@ const App = () => {
         )}
         {auth && mode === "admin" && (
           <div className="admin-banner">
-            <span className="dot"/>Admin · L+R Studio view
+            <span className="dot"/>Admin · L+R Agency view
             <span className="muted">· You're replying as {auth.name || MOCK.people.admin.name}</span>
           </div>
         )}
         {impersonation && mode !== "admin" && (
           <div className="admin-banner impersonation">
-            <span className="dot"/>Viewing <strong style={{margin: "0 4px"}}>{impersonation.client.name}</strong> as L+R Studio
+            <span className="dot"/>Viewing <strong style={{margin: "0 4px"}}>{impersonation.client.name}</strong> as L+R Agency
             <span className="muted">· Shadowing the client workspace</span>
             <span className="spacer"/>
             <button className="btn btn-sm" onClick={exitClientView}>
