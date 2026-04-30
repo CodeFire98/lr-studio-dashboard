@@ -38,7 +38,7 @@ const DATE_WINDOWS = [
   { key: 'quarter', label: 'Past 90 days', cutoffMs: 90 * 86400000 },
 ];
 
-const LibraryView = ({ auth }) => {
+const LibraryView = ({ auth, accountId }) => {
   const [assets, setAssets] = useState([]);
   const [thumbs, setThumbs] = useState({});
   const [loading, setLoading] = useState(true);
@@ -47,28 +47,20 @@ const LibraryView = ({ auth }) => {
   const [dateKey, setDateKey] = useState('all');
   const [q, setQ] = useState('');
 
-  // Brand users with multi-brand membership should only see creatives from
-  // the currently-selected brand. Agency users still see everything across
-  // accounts they manage. Mirrors the tasks scoping in App.jsx.
-  const activeAccountId = auth?.account?.id || null;
-  const isAgency = !!auth?.isAgency;
-
+  // Library is always scoped to the active brand — `accountId` is the brand
+  // currently selected in the BrandPicker (or the brand owner's own brand).
+  // For agency users, this means switching brands changes which creatives
+  // show up here. RLS filters work alongside this for non-agency users.
   useEffect(() => {
     if (auth?.requiresBrandSelection) { setAssets([]); setLoading(false); return; }
     let cancelled = false;
     setLoading(true);
-    loadLibraryAssets({ kind: 'deliverable' })
-      .then((rows) => {
-        if (cancelled) return;
-        const scoped = isAgency || !activeAccountId
-          ? rows
-          : rows.filter((a) => a.accountId === activeAccountId);
-        setAssets(scoped);
-      })
+    loadLibraryAssets({ kind: 'deliverable', accountId })
+      .then((rows) => { if (!cancelled) setAssets(rows); })
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activeAccountId, isAgency, auth?.requiresBrandSelection]);
+  }, [accountId, auth?.requiresBrandSelection]);
 
   // Sign image URLs lazily.
   useEffect(() => {

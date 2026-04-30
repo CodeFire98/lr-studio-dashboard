@@ -18,6 +18,7 @@ import { TeamView } from './components/TeamView.jsx';
 import { BrandKitView } from './components/BrandKitView.jsx';
 import { ProfileView } from './components/ProfileView.jsx';
 import { CalendarView } from './components/CalendarView.jsx';
+import { PostPlanDetailView } from './components/PostPlanDetailView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import {
   AdminHome,
@@ -39,8 +40,15 @@ import {
   loadBrandOnboardingStatus,
   completeBrandOnboarding,
   skipBrandOnboarding,
+  loadPostPlans,
+  subscribeToPostPlans,
+  loadBrandAccounts,
+  loadPostPlanUnreadCounts,
+  subscribeToPostPlanActivity,
 } from './lib/db.js';
 import { supabase } from './lib/supabase';
+import { ALL_CLIENTS } from './components/BrandPicker.jsx';
+import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 
 function useTweaks() {
   const [tweaks, setTweaks] = useState(window.LR_TWEAKS || {
@@ -64,11 +72,15 @@ const App = () => {
   const [tweaksOpen, setTweaksOpen] = useState(false);
   const [auth, setAuth] = useState(() => readAuth());
   const [mode, setMode] = useState(() => localStorage.getItem("lr_mode") || "customer");
-  // When an admin opens a client's workspace, we stash the admin identity here
-  // and flip `mode` to "customer". Clicking "Return to L+R" restores it.
-  const [impersonation, setImpersonation] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem("lr_impersonation")) || null; } catch { return null; }
+  // Agency users navigate via a brand picker that scopes every surface to
+  // one client (or the "All clients" pseudo-brand for cross-client views).
+  // Persisted across reloads so users return to the brand they were on.
+  const [activeAdminBrandId, setActiveAdminBrandIdState] = useState(() => {
+    try { return localStorage.getItem("lr_admin_active_brand") || ALL_CLIENTS; }
+    catch { return ALL_CLIENTS; }
   });
+  // List of brand accounts for the picker dropdown (agency only).
+  const [brandAccounts, setBrandAccounts] = useState([]);
   const [route, setRoute] = useState(() => {
     // Social Calendar is the universal landing surface — strangers loading
     // the page cold, customers signing in, and admins alike all start here.
@@ -81,6 +93,13 @@ const App = () => {
   });
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  // Social Calendar — separate state so the brand can switch and we
+  // refetch a single brand's plans without disturbing the (cross-brand)
+  // task list that powers Tasks/Library.
+  const [postPlans, setPostPlans] = useState([]);
+  // Map<postPlanId, unreadCount> — drives the calendar red-dots and the
+  // sidebar Social-Calendar badge total.
+  const [unreadByPlan, setUnreadByPlan] = useState(() => new Map());
 
   // Login modal state — opened whenever a guest tries a gated action.
   const [loginOpen, setLoginOpen] = useState(false);
@@ -95,27 +114,16 @@ const App = () => {
   const [onboarding, setOnboarding] = useState({ open: false, kit: null, accountId: null });
 
   useEffect(() => { localStorage.setItem("lr_mode", mode); }, [mode]);
-  useEffect(() => {
-    if (impersonation) sessionStorage.setItem("lr_impersonation", JSON.stringify(impersonation));
-    else sessionStorage.removeItem("lr_impersonation");
-  }, [impersonation]);
 
-  // Admin enters a client's workspace (read-only brand view).
-  const enterClientView = (client) => {
-    setImpersonation({
-      adminAuth: auth,
-      adminMode: "admin",
-      client: { id: client.id, name: client.name },
-    });
-    setMode("customer");
-    setRoute({ view: "calendar" });
+  // Persist active brand whenever the agency picker changes it.
+  const setActiveAdminBrandId = (next) => {
+    setActiveAdminBrandIdState(next);
+    try {
+      if (next && next !== ALL_CLIENTS) localStorage.setItem("lr_admin_active_brand", next);
+      else localStorage.setItem("lr_admin_active_brand", ALL_CLIENTS);
+    } catch {}
   };
-  const exitClientView = () => {
-    if (!impersonation) return;
-    setMode(impersonation.adminMode || "admin");
-    setImpersonation(null);
-    setRoute({ view: "team" });
-  };
+
   useEffect(() => { localStorage.setItem("lr_route", JSON.stringify(route)); }, [route]);
 
   // Guest sandbox: only the empty Social Calendar and the Request page are
@@ -135,16 +143,13 @@ const App = () => {
     return () => window.removeEventListener("lr_auth_change", onAuth);
   }, []);
 
-  // Keep `mode` in sync with the authoritative `auth.workspace` whenever it
-  // changes — critical for invitees, whose workspace flips from 'customer'
-  // to 'admin' *after* sign-in when accept_invitation promotes their profile.
-  // Impersonation intentionally diverges mode from auth.workspace, so we
-  // respect that branch.
+  // Keep `mode` in sync with the authoritative `auth.workspace`. The
+  // routing layer no longer branches on `mode` (it uses `auth.isAgency` +
+  // active-brand instead), but a few legacy components still read it.
   useEffect(() => {
-    if (impersonation) return;
     if (!auth?.workspace) return;
     if (auth.workspace !== mode) setMode(auth.workspace);
-  }, [auth?.id, auth?.workspace, impersonation]);
+  }, [auth?.id, auth?.workspace]);
 
   // Invite acceptance: if the URL has ?invite=<token>, stash it and prompt sign-in.
   useEffect(() => {
@@ -217,13 +222,12 @@ const App = () => {
   }, [auth?.id, auth?.newlyJoinedAccountIds?.length]);
 
   // Brand-onboarding gate: when a brand owner lands on a brand they've
-  // never set up, show the welcome modal once. Skip for agency users,
-  // for invitees (members), and when an admin is shadowing a client.
+  // never set up, show the welcome modal once. Skip for agency users
+  // (they manage clients, not their own brand) and for invitees (members).
   useEffect(() => {
     if (!auth) { setOnboarding({ open: false, kit: null, accountId: null }); return; }
     if (auth.isAgency) return;
     if (auth.requiresBrandSelection) return;
-    if (impersonation) return;
     const accountId = auth.account?.id;
     if (!accountId) return;
     if (auth.activeRole !== 'owner') return;
@@ -236,7 +240,7 @@ const App = () => {
       })
       .catch((e) => console.warn('onboarding status check failed', e));
     return () => { cancelled = true; };
-  }, [auth?.id, auth?.account?.id, auth?.activeRole, auth?.isAgency, auth?.requiresBrandSelection, impersonation]);
+  }, [auth?.id, auth?.account?.id, auth?.activeRole, auth?.isAgency, auth?.requiresBrandSelection]);
 
   const handleOnboardingComplete = async ({ brandName, patch }) => {
     await completeBrandOnboarding({ accountId: onboarding.accountId, brandName, patch });
@@ -266,11 +270,25 @@ const App = () => {
     return () => window.removeEventListener("message", handler);
   }, []);
 
+  // ----- Active brand resolution ---------------------------------------
+  // For agency users, the active brand comes from the picker (or the
+  // "All clients" sentinel). For brand users, it's the brand they're
+  // signed into. `scopeAccountId` is null only for agency in All-clients
+  // mode — in every other case it's the brand whose calendar/tasks/etc
+  // we should be showing.
+  const isAllClientsMode = !!auth?.isAgency && (activeAdminBrandId === ALL_CLIENTS || !activeAdminBrandId);
+  const scopeAccountId = (() => {
+    if (auth?.isAgency) {
+      return isAllClientsMode ? null : activeAdminBrandId;
+    }
+    return auth?.account?.id || null;
+  })();
+  const calendarAccountId = scopeAccountId; // alias preserved for readability downstream
+  const calendarRoleIsAdmin = !!auth?.isAgency;
+
   // Load tasks from Supabase whenever we have an auth session; clear on sign-out.
-  // Brand users with multiple memberships see only the active brand's tasks —
-  // we filter client-side since RLS already limits the set to their accessible
-  // accounts. Agency users see everything (no filter).
-  const activeAccountId = auth?.account?.id || null;
+  // Filter by `scopeAccountId` — agency in All-clients mode sees everything;
+  // agency in a brand sees that brand's tasks; brand owners see their brand.
   useEffect(() => {
     if (!auth) { setTasks([]); return; }
     // If a brand user hasn't picked a brand yet, don't load anything.
@@ -280,24 +298,22 @@ const App = () => {
     loadTasks()
       .then((rows) => {
         if (cancelled) return;
-        const scoped = auth.isAgency || !activeAccountId
-          ? rows
-          : rows.filter((t) => t.accountId === activeAccountId);
+        const scoped = scopeAccountId
+          ? rows.filter((t) => t.accountId === scopeAccountId)
+          : rows;
         setTasks(scoped);
       })
       .catch((e) => { console.error('loadTasks failed', e); })
       .finally(() => { if (!cancelled) setTasksLoading(false); });
     return () => { cancelled = true; };
-  }, [auth?.id, activeAccountId, auth?.requiresBrandSelection, auth?.isAgency]);
+  }, [auth?.id, scopeAccountId, auth?.requiresBrandSelection]);
 
   // Realtime: stream inserts/updates/deletes into local state.
   useEffect(() => {
     if (!auth) return;
     if (auth.requiresBrandSelection) return;
     const unsubscribe = subscribeToTasks((evt) => {
-      // Brand users ignore events outside their active brand.
-      const isRelevant = (task) =>
-        auth.isAgency || !activeAccountId || task.accountId === activeAccountId;
+      const isRelevant = (task) => !scopeAccountId || task.accountId === scopeAccountId;
       if (evt.type === 'INSERT') {
         if (!isRelevant(evt.task)) return;
         setTasks((prev) => prev.some((t) => t.id === evt.task.id) ? prev : [evt.task, ...prev]);
@@ -309,11 +325,122 @@ const App = () => {
       }
     });
     return unsubscribe;
-  }, [auth?.id, activeAccountId, auth?.requiresBrandSelection, auth?.isAgency]);
+  }, [auth?.id, scopeAccountId, auth?.requiresBrandSelection]);
+
+  // Load the picker's brand list once per signed-in agency session.
+  useEffect(() => {
+    if (!auth?.isAgency) { setBrandAccounts([]); return; }
+    let cancelled = false;
+    loadBrandAccounts()
+      .then((rows) => { if (!cancelled) setBrandAccounts(rows); })
+      .catch((e) => console.warn('loadBrandAccounts failed', e));
+    return () => { cancelled = true; };
+  }, [auth?.id, auth?.isAgency]);
+
+  // Snap the route when the picker switches contexts so the user never
+  // sits on a route hidden in the new context. Routes legal in each:
+  //   All clients (agency) — home (Inbox), tasks, profile, settings, clients, members
+  //   In a brand          — calendar, tasks, brand, library, performance, team,
+  //                          profile, settings, clients (still reachable for agency)
+  useEffect(() => {
+    if (!auth?.isAgency) return;
+    const r = route.view;
+    const allClientsRoutes = new Set(['home', 'tasks', 'profile', 'settings', 'clients', 'members']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'tasks', 'brand', 'library', 'performance', 'team', 'profile', 'settings', 'clients', 'members']);
+    if (isAllClientsMode) {
+      if (!allClientsRoutes.has(r)) setRoute({ view: 'home' });
+    } else {
+      if (!inBrandRoutes.has(r)) setRoute({ view: 'calendar' });
+    }
+  }, [auth?.isAgency, isAllClientsMode, route.view]);
+
+  useEffect(() => {
+    if (!auth || !calendarAccountId) { setPostPlans([]); return; }
+    let cancelled = false;
+    loadPostPlans({ accountId: calendarAccountId })
+      .then((rows) => { if (!cancelled) setPostPlans(rows); })
+      .catch((e) => { console.error('loadPostPlans failed', e); });
+    return () => { cancelled = true; };
+  }, [auth?.id, calendarAccountId]);
+
+  useEffect(() => {
+    if (!auth || !calendarAccountId) return;
+    const unsubscribe = subscribeToPostPlans((evt) => {
+      if (evt.type === 'DELETE') {
+        setPostPlans((prev) => prev.filter((p) => p.id !== evt.id));
+        return;
+      }
+      const next = evt.postPlan;
+      if (!next) return;
+      setPostPlans((prev) => {
+        const idx = prev.findIndex((p) => p.id === next.id);
+        if (idx === -1) return [...prev, next];
+        const out = prev.slice();
+        out[idx] = next;
+        return out;
+      });
+    }, { accountId: calendarAccountId });
+    return unsubscribe;
+  }, [auth?.id, calendarAccountId]);
+
+  // Recompute "unread activity" counts whenever the post plan list
+  // changes, and re-tick on any new comment / attachment / plan edit via
+  // realtime. Counts unread comments + attachments + plan edits made by
+  // people other than the viewer since they last opened the plan.
+  useEffect(() => {
+    if (!auth?.id || postPlans.length === 0) {
+      setUnreadByPlan(new Map());
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      loadPostPlanUnreadCounts({ userId: auth.id, postPlans })
+        .then((counts) => { if (!cancelled) setUnreadByPlan(counts); })
+        .catch((e) => console.warn('loadPostPlanUnreadCounts failed', e));
+    };
+    refresh();
+    const unsub = subscribeToPostPlanActivity({ accountId: calendarAccountId }, refresh);
+    return () => { cancelled = true; unsub?.(); };
+  }, [auth?.id, calendarAccountId, postPlans.map((p) => `${p.id}:${p.updatedAt}`).join(',')]);
 
   // Optimistic local push used after a successful INSERT in HomeView.
   const pushTask = (p) =>
     setTasks((prev) => (prev.some((t) => t.id === p.id) ? prev : [p, ...prev]));
+
+  // Post-plan optimistic mutators. Realtime (subscribeToPostPlans /
+  // subscribeToPostPlanActivity) covers cross-tab sync, but same-tab
+  // edits inside PostPlanDetailView shouldn't have to wait for the
+  // round-trip — these update App-level state immediately so the
+  // calendar reflects the change as soon as the user navigates back.
+  const upsertPostPlan = (next) => {
+    if (!next?.id) return;
+    setPostPlans((prev) => {
+      const idx = prev.findIndex((p) => p.id === next.id);
+      if (idx === -1) return [...prev, next];
+      const out = prev.slice();
+      out[idx] = next;
+      return out;
+    });
+  };
+  const removePostPlanLocal = (planId) => {
+    if (!planId) return;
+    setPostPlans((prev) => prev.filter((p) => p.id !== planId));
+    setUnreadByPlan((prev) => {
+      if (!prev.has(planId)) return prev;
+      const next = new Map(prev);
+      next.delete(planId);
+      return next;
+    });
+  };
+  const clearUnreadForPlan = (planId) => {
+    if (!planId) return;
+    setUnreadByPlan((prev) => {
+      if (!prev.has(planId)) return prev;
+      const next = new Map(prev);
+      next.delete(planId);
+      return next;
+    });
+  };
 
   // Status changes persist to DB; other patches stay local (threads, etc. — Phase 4).
   const updateTask = (id, patch) => {
@@ -370,69 +497,154 @@ const App = () => {
     }
   };
 
+  // ----- Brand-picker handlers -----
+  // Brand owners switch via auth.setActiveBrand (rehydrates auth profile).
+  // Agency switches via local state — `auth.account` stays on the agency
+  // workspace; only `activeAdminBrandId` moves.
+  const handleSelectBrand = async (id) => {
+    if (!id) return;
+    if (auth?.isAgency) {
+      setActiveAdminBrandId(id);
+    } else {
+      try { await setActiveBrand(id); }
+      catch (e) { console.error('switch brand failed', e); }
+    }
+  };
+
+  const handleCreateBrand = async () => {
+    try {
+      const newId = await promptCreateBrand();
+      if (!newId) return null;
+      // Agency: refresh the picker list so the new brand shows up.
+      if (auth?.isAgency) {
+        try {
+          const rows = await loadBrandAccounts();
+          setBrandAccounts(rows);
+        } catch (e) { console.warn('refresh brand list failed', e); }
+      }
+      return newId;
+    } catch (e) {
+      console.error('create brand failed', e);
+      return null;
+    }
+  };
+
+  const handleManageClients = () => setRoute({ view: 'clients' });
+
   // ----- Breadcrumb for topbar -----
-  const customerHome = mode === "admin" ? "home" : "calendar";
+  const inAllClients = isAllClientsMode;
+  const homeRoute = inAllClients ? "home" : "calendar";
+  const homeLabel = inAllClients ? "Inbox" : "Social Calendar";
   const crumb = (() => {
     if (route.view === "profile") {
-      const homeLabel = mode === "admin" ? "Inbox" : "Social Calendar";
-      return <><a onClick={() => setRoute({view: customerHome})} style={{cursor: "pointer"}}>{homeLabel}</a><span className="crumb-sep">/</span><strong>Profile</strong></>;
-    }
-    if (mode === "admin") {
-      if (route.view === "home") return <><strong>Inbox</strong></>;
-      if (route.view === "tasks" && route.id) {
-        const p = tasks.find((x) => x.id === route.id);
-        return <><span>Tasks</span><span className="crumb-sep">/</span><strong>{p?.title || "Task"}</strong></>;
-      }
-      if (route.view === "tasks") return <><strong>All tasks</strong></>;
-      if (route.view === "calendar") return <><strong>Social Calendar</strong></>;
-      if (route.view === "library") return <><strong>Upload creatives</strong></>;
-      if (route.view === "team") return <><strong>Clients</strong></>;
-      if (route.view === "members") return <><strong>Team</strong></>;
-      return <strong>{route.view}</strong>;
+      return <><a onClick={() => setRoute({view: homeRoute})} style={{cursor: "pointer"}}>{homeLabel}</a><span className="crumb-sep">/</span><strong>Profile</strong></>;
     }
     if (route.view === "calendar") return <><strong>Social Calendar</strong></>;
-    if (route.view === "home") return <><span>{auth ? "Luma" : "Welcome"}</span><span className="crumb-sep">/</span><strong>Request</strong></>;
+    if (route.view === "plan") {
+      const p = postPlans.find((x) => x.id === route.id);
+      return <><a onClick={() => setRoute({view: "calendar"})} style={{cursor: "pointer"}}>Social Calendar</a><span className="crumb-sep">/</span><strong>{p?.concept || "Post plan"}</strong></>;
+    }
+    if (route.view === "home") {
+      if (inAllClients) return <><strong>Inbox</strong></>;
+      return <><span>{auth ? (auth.account?.name || "Workspace") : "Welcome"}</span><span className="crumb-sep">/</span><strong>Request</strong></>;
+    }
     if (route.view === "tasks" && route.id) {
       const p = tasks.find((x) => x.id === route.id);
       return <><a onClick={() => setRoute({view: "tasks"})} style={{cursor: "pointer"}}>Tasks</a><span className="crumb-sep">/</span><strong>{p?.title || "Task"}</strong></>;
     }
+    if (route.view === "tasks") return <><strong>{inAllClients ? "All tasks" : "Tasks"}</strong></>;
+    if (route.view === "library") return <><strong>Library</strong></>;
+    if (route.view === "clients") return <><strong>Clients</strong></>;
+    if (route.view === "members") return <><strong>L+R Team</strong></>;
+    if (route.view === "team") return <><strong>Team</strong></>;
+    if (route.view === "brand") return <><strong>Brand Intelligence</strong></>;
+    if (route.view === "settings") return <><strong>Settings</strong></>;
+    if (route.view === "performance") return <><strong>Performance</strong></>;
     return <><strong>{(route.view).replace(/^./, (c) => c.toUpperCase())}</strong></>;
   })();
 
   // ----- Render view -----
+  // Routing now branches on `auth.isAgency` + active-brand context, not
+  // the legacy `mode` flag. There's no separate "admin workspace" anymore;
+  // agency users either sit in "All clients" (Inbox + cross-client Tasks)
+  // or in a specific brand (the same surfaces a brand owner sees).
   const renderView = () => {
     if (route.view === "profile") {
       if (!auth) return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
       return <ProfileView setRoute={setRoute} mode={mode} onSignOut={handleSignOut}/>;
     }
-    if (auth && mode === "admin") {
-      if (route.view === "home") return <AdminHome tasks={tasks} setRoute={setRoute}/>;
+
+    // Agency-only management surfaces — reachable from the picker / profile menu.
+    if (auth?.isAgency && route.view === "clients") {
+      return <AdminClientsView onOpenClient={(c) => handleSelectBrand(c.id)}/>;
+    }
+    if (auth?.isAgency && route.view === "members") {
+      return <AdminTeamView auth={auth}/>;
+    }
+
+    // Cross-client "All clients" mode — only Inbox + Tasks make sense here.
+    if (auth?.isAgency && isAllClientsMode) {
       if (route.view === "tasks" && route.id) return <TaskDetailView taskId={route.id} tasks={tasks} updateTask={updateTask} setRoute={setRoute} mode={mode}/>;
       if (route.view === "tasks") return <TasksView setRoute={setRoute} tasks={tasks} mode={mode}/>;
-      if (route.view === "calendar") return <CalendarView tasks={tasks} setRoute={setRoute}/>;
-      if (route.view === "library") return <AdminUploadView tasks={tasks}/>;
-      if (route.view === "team") return <AdminClientsView onOpenClient={enterClientView}/>;
-      if (route.view === "members") return <AdminTeamView auth={auth}/>;
+      // Default for All-clients: AdminHome (the cross-client inbox).
+      return <AdminHome tasks={tasks} setRoute={setRoute}/>;
     }
-    // Customer + guest views:
+
+    // Calendar — visible to both signed-in users and guests (empty state).
+    if (route.view === "calendar") return (
+      <CalendarView
+        postPlans={auth ? postPlans : []}
+        accountId={auth ? calendarAccountId : null}
+        userId={auth?.id}
+        mode={calendarRoleIsAdmin ? 'admin' : 'customer'}
+        setRoute={setRoute}
+        unreadByPlan={unreadByPlan}
+        onPlanCreated={upsertPostPlan}
+      />
+    );
+
+    // Single post plan — full-page detail (replaces the old modal).
+    if (auth && route.view === "plan" && route.id) return (
+      <PostPlanDetailView
+        postPlanId={route.id}
+        postPlans={postPlans}
+        userId={auth?.id}
+        role={calendarRoleIsAdmin ? 'admin' : 'brand'}
+        setRoute={setRoute}
+        onPlanChanged={upsertPostPlan}
+        onPlanDeleted={removePostPlanLocal}
+        onPlanSeen={clearUnreadForPlan}
+      />
+    );
+
+    // Guest fallback: empty calendar.
+    if (!auth) return (
+      <CalendarView
+        postPlans={[]}
+        accountId={null}
+        userId={null}
+        mode="customer"
+        setRoute={setRoute}
+      />
+    );
+
+    // In-a-brand surfaces — same code path for agency-shadowing-a-brand
+    // and brand-owner-in-their-own-brand.
     if (route.view === "home") return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
-    // Guests can preview the empty Social Calendar — `tasks` is [] because
-    // the load effect short-circuits without auth, so CalendarView lands on
-    // its empty state. Everything else is auth-only and the snap-back
-    // effect bounces guests off those routes.
-    if (route.view === "calendar") return <CalendarView tasks={tasks} setRoute={setRoute}/>;
-    if (!auth) return <CalendarView tasks={tasks} setRoute={setRoute}/>;
     if (route.view === "tasks" && route.id) return <TaskDetailView taskId={route.id} tasks={tasks} updateTask={updateTask} setRoute={setRoute} mode={mode}/>;
     if (route.view === "tasks") return <TasksView setRoute={setRoute} tasks={tasks} mode={mode}/>;
-    if (route.view === "library") return <LibraryView auth={auth}/>;
-    if (route.view === "performance") return <PerformanceView/>;
-    if (route.view === "team") return <TeamView overrideAccountId={impersonation?.client?.id} />;
-    if (route.view === "brand") return <BrandKitView/>;
+    if (route.view === "library") return <LibraryView auth={auth} accountId={calendarAccountId}/>;
+    if (route.view === "performance") return <PerformanceView accountId={calendarAccountId}/>;
+    if (route.view === "team") return <TeamView overrideAccountId={auth?.isAgency ? calendarAccountId : null} />;
+    if (route.view === "brand") return <BrandKitView accountId={calendarAccountId}/>;
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;
     return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
   };
 
-  const onHome = route.view === "home" && mode !== "admin";
+  // The legacy "Home" surface is the brand-owner Request page. Agency users
+  // never see it (we hide Request from their nav and AllClients sends them
+  // to Inbox instead) so this only ever fires for guests + brand owners.
+  const onHome = route.view === "home" && !(auth?.isAgency && isAllClientsMode);
   const isGuest = !auth;
 
   // Brand-selection gate: show picker when a signed-in brand user belongs to
@@ -448,10 +660,23 @@ const App = () => {
     );
   }
 
+  // Agency banner copy. In a brand: "Working in X · L+R Agency". In the
+  // cross-client view: "All clients · L+R Agency". Brand owners never see it.
+  const agencyBanner = (() => {
+    if (!auth?.isAgency) return null;
+    if (isAllClientsMode) return { label: 'All clients' };
+    const brandName = (brandAccounts.find((b) => b.id === activeAdminBrandId)?.name) || 'Brand';
+    return { label: `Working in ${brandName}` };
+  })();
+
+  // Brand-owner "New brief" CTA. Hidden for agency (they don't submit briefs)
+  // and on the brand-owner Home view itself (the form lives there).
+  const showNewBriefCta = !!auth && !auth.isAgency && route.view !== "home";
+
   return (
     <div
       className="app"
-      data-screen-label={(isGuest ? "Guest/" : mode === "admin" ? "Admin/" : "Customer/") + route.view}
+      data-screen-label={(isGuest ? "Guest/" : auth.isAgency ? "Agency/" : "Brand/") + route.view}
       data-guest={isGuest ? "true" : "false"}
     >
       <Sidebar
@@ -465,6 +690,13 @@ const App = () => {
         auth={auth}
         onRequestLogin={() => requireAuth(null, null)}
         taskCount={tasks.length}
+        calendarUnreadCount={Array.from(unreadByPlan.values()).reduce((a, b) => a + b, 0)}
+        activeAdminBrandId={activeAdminBrandId}
+        brandAccounts={brandAccounts}
+        isAllClientsMode={isAllClientsMode}
+        onSelectBrand={handleSelectBrand}
+        onCreateBrand={handleCreateBrand}
+        onManageClients={handleManageClients}
       />
       <div className="main">
         {inviteBanner && (
@@ -478,20 +710,10 @@ const App = () => {
             <span className="dot"/>{inviteBanner.text}
           </div>
         )}
-        {auth && mode === "admin" && (
+        {agencyBanner && (
           <div className="admin-banner">
-            <span className="dot"/>Admin · L+R Agency view
-            <span className="muted">· You're replying as {auth.name || MOCK.people.admin.name}</span>
-          </div>
-        )}
-        {impersonation && mode !== "admin" && (
-          <div className="admin-banner impersonation">
-            <span className="dot"/>Viewing <strong style={{margin: "0 4px"}}>{impersonation.client.name}</strong> as L+R Agency
-            <span className="muted">· Shadowing the client workspace</span>
-            <span className="spacer"/>
-            <button className="btn btn-sm" onClick={exitClientView}>
-              <Icon name="chevron-left" size={12}/>Return to L+R
-            </button>
+            <span className="dot"/>{agencyBanner.label}
+            <span className="muted">· L+R Agency</span>
           </div>
         )}
         {!onHome && (
@@ -503,7 +725,7 @@ const App = () => {
                 <input placeholder="Search tasks, briefs, creatives" style={{border: 0, background: "transparent", outline: "none", width: 180, fontSize: 13}}/>
                 <kbd>⌘K</kbd>
               </div>
-              {auth && mode !== "admin" && (
+              {showNewBriefCta && (
                 <button className="btn btn-primary btn-sm" onClick={() => setRoute({view: "home"})}>
                   <Icon name="plus" size={13}/>New brief
                 </button>
