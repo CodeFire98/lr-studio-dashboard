@@ -70,16 +70,14 @@ const App = () => {
     try { return JSON.parse(sessionStorage.getItem("lr_impersonation")) || null; } catch { return null; }
   });
   const [route, setRoute] = useState(() => {
-    // First-time default depends on mode: customers land on the Social
-    // Calendar (the new home of the AI Social Media Manager workflow),
-    // while admins still land on their Inbox. Guests get bounced to the
-    // Request page by the snap-back effect below.
+    // Social Calendar is the universal landing surface — strangers loading
+    // the page cold, customers signing in, and admins alike all start here.
+    // Returning users with a saved route continue where they left off.
     try {
       const saved = JSON.parse(localStorage.getItem("lr_route"));
       if (saved && saved.view) return saved;
     } catch {}
-    const savedMode = localStorage.getItem("lr_mode") || "customer";
-    return savedMode === "admin" ? { view: "home" } : { view: "calendar" };
+    return { view: "calendar" };
   });
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -329,7 +327,9 @@ const App = () => {
     writeAuth(null);
     setAuth(null);
     setMode("customer");
-    setRoute({view: "home"});
+    // Land on the Social Calendar after sign-out — it's the public-facing
+    // surface guests can preview, and matches the universal landing rule.
+    setRoute({view: "calendar"});
   };
 
   // Unified entry for any "this action needs an account" moment.
@@ -357,8 +357,16 @@ const App = () => {
     const action = pendingAction;
     setPendingAction(null);
     if (typeof action === "function") {
-      // Defer so state has settled.
+      // Defer so state has settled. The action owns its own navigation
+      // (e.g. submitting a brief opens the task detail), so don't force
+      // calendar here.
       setTimeout(() => action(profile), 0);
+    } else {
+      // No pending action — drop a fresh sign-in onto the Social Calendar
+      // so the universal landing rule holds whether you're a customer or
+      // an admin. Returning users with a saved route already restored it
+      // before this fires; we only override on an explicit sign-in event.
+      setRoute({ view: "calendar" });
     }
   };
 
