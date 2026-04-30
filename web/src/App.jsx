@@ -4,7 +4,8 @@
    the Submit action in HomeView triggers a login modal when signed-out.
    Other views (Tasks, Brand Kit, etc.) also prompt login if a guest
    navigates to them — but the sidebar hides those routes for guests. */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './components/Icon.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TweaksPanel } from './components/TweaksPanel.jsx';
@@ -20,6 +21,7 @@ import { ProfileView } from './components/ProfileView.jsx';
 import { CalendarView } from './components/CalendarView.jsx';
 import { PostPlanDetailView } from './components/PostPlanDetailView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
+import { NotFoundView } from './components/NotFoundView.jsx';
 import {
   AdminHome,
   AdminUploadView,
@@ -49,6 +51,72 @@ import {
 import { supabase } from './lib/supabase';
 import { ALL_CLIENTS } from './components/BrandPicker.jsx';
 import { promptCreateBrand } from './components/CreateBrandModal.jsx';
+
+// ---------- URL ↔ route mapping (Phase 1 routing layer) ------------------
+// We keep the legacy `route = {view, id}` shape across the codebase so the
+// 55-ish `setRoute(...)` callsites in child components don't have to change.
+// This file is the only place that bridges the URL to that shape.
+//
+// Path scheme (Phase 1, no per-brand segment yet — that's Phase 2):
+//   /                    → calendar  (universal landing)
+//   /calendar            → calendar
+//   /tasks               → tasks list
+//   /tasks/:id           → task detail
+//   /plan/:id            → post plan detail
+//   /home                → home (Request page for brand owners; Inbox for agency)
+//   /library /brand /team /performance /profile /settings   → 1:1 with view names
+//   /clients /members    → agency-only management surfaces
+function parsePathToRoute(pathname) {
+  const path = pathname.replace(/\/+$/, '') || '/';
+  let m = path.match(/^\/tasks\/([^/]+)$/);
+  if (m) return { view: 'tasks', id: m[1] };
+  m = path.match(/^\/plan\/([^/]+)$/);
+  if (m) return { view: 'plan', id: m[1] };
+  if (path === '/' || path === '/calendar') return { view: 'calendar' };
+  if (path === '/tasks') return { view: 'tasks' };
+  if (path === '/library') return { view: 'library' };
+  if (path === '/brand') return { view: 'brand' };
+  if (path === '/team') return { view: 'team' };
+  if (path === '/performance') return { view: 'performance' };
+  if (path === '/clients') return { view: 'clients' };
+  if (path === '/members') return { view: 'members' };
+  if (path === '/home') return { view: 'home' };
+  if (path === '/profile') return { view: 'profile' };
+  if (path === '/settings') return { view: 'settings' };
+  // Unknown path → render the 404 view. We carry the bad pathname so the
+  // NotFoundView can show "we couldn't find anything at <path>".
+  return { view: 'not_found', path };
+}
+
+// Render UUIDs in URLs as their first 8 hex chars (git-short-SHA style):
+//   /plan/a3f9c2d8   instead of   /plan/a3f9c2d8-7e21-4b3a-9c01-1234567890ab
+// Same rule for tasks. Non-UUID values (already short, or future slugs) pass
+// through untouched, so the URL is short for new rows automatically.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function shortenId(id) {
+  if (!id) return id;
+  return UUID_RE.test(id) ? id.slice(0, 8) : id;
+}
+
+// Inverse: given a URL prefix (e.g. "a3f9c2d8") and the loaded items list,
+// return the full UUID. Falls through unchanged if it's already a full
+// UUID (old deep links keep working) or if we can't find a match (the
+// detail view will render its "not found" state).
+function findFullId(prefix, items) {
+  if (!prefix) return prefix;
+  if (prefix.length >= 36) return prefix; // full UUID already
+  const match = items?.find?.((i) => i?.id && i.id.startsWith(prefix));
+  return match?.id || prefix;
+}
+
+function viewToPath(next) {
+  if (!next || !next.view) return '/calendar';
+  const { view, id } = next;
+  if (view === 'tasks' && id) return `/tasks/${shortenId(id)}`;
+  if (view === 'plan' && id) return `/plan/${shortenId(id)}`;
+  if (view === 'calendar') return '/calendar';
+  return `/${view}`;
+}
 
 function useTweaks() {
   const [tweaks, setTweaks] = useState(window.LR_TWEAKS || {
@@ -81,16 +149,37 @@ const App = () => {
   });
   // List of brand accounts for the picker dropdown (agency only).
   const [brandAccounts, setBrandAccounts] = useState([]);
-  const [route, setRoute] = useState(() => {
-    // Social Calendar is the universal landing surface — strangers loading
-    // the page cold, customers signing in, and admins alike all start here.
-    // Returning users with a saved route continue where they left off.
-    try {
-      const saved = JSON.parse(localStorage.getItem("lr_route"));
-      if (saved && saved.view) return saved;
-    } catch {}
-    return { view: "calendar" };
-  });
+  // ----- URL-driven routing (Phase 1) ---------------------------------
+  // `route` is now derived from the URL on every render. `setRoute` keeps
+  // its legacy `{view, id}` signature so child components don't have to
+  // change — under the hood it just calls navigate(viewToPath(...)).
+  const location = useLocation();
+  const navigate = useNavigate();
+  const route = useMemo(() => parsePathToRoute(location.pathname), [location.pathname]);
+  const setRoute = useCallback((next) => {
+    navigate(viewToPath(next));
+  }, [navigate]);
+
+  // One-time migration: pre-Phase-1 users had their last view in
+  // `localStorage.lr_route`. On first load post-deploy, if they're sitting
+  // on `/` we hop them over to the saved view, then drop the key. After
+  // this has shipped and baked, the migration block can be deleted.
+  useEffect(() => {
+    if (location.pathname !== '/') {
+      // They navigated/refreshed on a real path — clear the legacy key
+      // since the URL is now authoritative.
+      try { localStorage.removeItem('lr_route'); } catch {}
+      return;
+    }
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('lr_route')); } catch {}
+    try { localStorage.removeItem('lr_route'); } catch {}
+    if (saved && saved.view && saved.view !== 'calendar') {
+      navigate(viewToPath(saved), { replace: true });
+    }
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
   // Social Calendar — separate state so the brand can switch and we
@@ -124,7 +213,7 @@ const App = () => {
     } catch {}
   };
 
-  useEffect(() => { localStorage.setItem("lr_route", JSON.stringify(route)); }, [route]);
+  // (Removed: localStorage.lr_route write — URL is now the source of truth.)
 
   // Guest sandbox: only the empty Social Calendar and the Request page are
   // accessible without an account. Anything else (Tasks, Library, etc.)
@@ -132,7 +221,7 @@ const App = () => {
   // half-broken to a signed-out user.
   useEffect(() => {
     if (auth) return;
-    const GUEST_ALLOWED = new Set(["calendar", "home"]);
+    const GUEST_ALLOWED = new Set(["calendar", "home", "not_found"]);
     if (!GUEST_ALLOWED.has(route.view)) setRoute({ view: "calendar" });
   }, [auth, route.view]);
 
@@ -345,8 +434,8 @@ const App = () => {
   useEffect(() => {
     if (!auth?.isAgency) return;
     const r = route.view;
-    const allClientsRoutes = new Set(['home', 'tasks', 'profile', 'settings', 'clients', 'members']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'tasks', 'brand', 'library', 'performance', 'team', 'profile', 'settings', 'clients', 'members']);
+    const allClientsRoutes = new Set(['home', 'tasks', 'profile', 'settings', 'clients', 'members', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'tasks', 'brand', 'library', 'performance', 'team', 'profile', 'settings', 'clients', 'members', 'not_found']);
     if (isAllClientsMode) {
       if (!allClientsRoutes.has(r)) setRoute({ view: 'home' });
     } else {
@@ -539,9 +628,11 @@ const App = () => {
     if (route.view === "profile") {
       return <><a onClick={() => setRoute({view: homeRoute})} style={{cursor: "pointer"}}>{homeLabel}</a><span className="crumb-sep">/</span><strong>Profile</strong></>;
     }
+    if (route.view === "not_found") return <><strong>Not found</strong></>;
     if (route.view === "calendar") return <><strong>Social Calendar</strong></>;
     if (route.view === "plan") {
-      const p = postPlans.find((x) => x.id === route.id);
+      const fullPlanId = findFullId(route.id, postPlans);
+      const p = postPlans.find((x) => x.id === fullPlanId);
       return <><a onClick={() => setRoute({view: "calendar"})} style={{cursor: "pointer"}}>Social Calendar</a><span className="crumb-sep">/</span><strong>{p?.concept || "Post plan"}</strong></>;
     }
     if (route.view === "home") {
@@ -549,7 +640,8 @@ const App = () => {
       return <><span>{auth ? (auth.account?.name || "Workspace") : "Welcome"}</span><span className="crumb-sep">/</span><strong>Request</strong></>;
     }
     if (route.view === "tasks" && route.id) {
-      const p = tasks.find((x) => x.id === route.id);
+      const fullTaskId = findFullId(route.id, tasks);
+      const p = tasks.find((x) => x.id === fullTaskId);
       return <><a onClick={() => setRoute({view: "tasks"})} style={{cursor: "pointer"}}>Tasks</a><span className="crumb-sep">/</span><strong>{p?.title || "Task"}</strong></>;
     }
     if (route.view === "tasks") return <><strong>{inAllClients ? "All tasks" : "Tasks"}</strong></>;
@@ -569,6 +661,13 @@ const App = () => {
   // agency users either sit in "All clients" (Inbox + cross-client Tasks)
   // or in a specific brand (the same surfaces a brand owner sees).
   const renderView = () => {
+    // 404 takes priority over every other branch. parsePathToRoute sets
+    // this for any URL that doesn't match a known view; it's also legal
+    // for guests and for both agency contexts (see snap-effect sets above).
+    if (route.view === "not_found") {
+      return <NotFoundView setRoute={setRoute} pathname={route.path} />;
+    }
+
     if (route.view === "profile") {
       if (!auth) return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
       return <ProfileView setRoute={setRoute} mode={mode} onSignOut={handleSignOut}/>;
@@ -584,7 +683,7 @@ const App = () => {
 
     // Cross-client "All clients" mode — only Inbox + Tasks make sense here.
     if (auth?.isAgency && isAllClientsMode) {
-      if (route.view === "tasks" && route.id) return <TaskDetailView taskId={route.id} tasks={tasks} updateTask={updateTask} setRoute={setRoute} mode={mode}/>;
+      if (route.view === "tasks" && route.id) return <TaskDetailView taskId={findFullId(route.id, tasks)} tasks={tasks} updateTask={updateTask} setRoute={setRoute} mode={mode}/>;
       if (route.view === "tasks") return <TasksView setRoute={setRoute} tasks={tasks} mode={mode}/>;
       // Default for All-clients: AdminHome (the cross-client inbox).
       return <AdminHome tasks={tasks} setRoute={setRoute}/>;
@@ -606,7 +705,7 @@ const App = () => {
     // Single post plan — full-page detail (replaces the old modal).
     if (auth && route.view === "plan" && route.id) return (
       <PostPlanDetailView
-        postPlanId={route.id}
+        postPlanId={findFullId(route.id, postPlans)}
         postPlans={postPlans}
         userId={auth?.id}
         role={calendarRoleIsAdmin ? 'admin' : 'brand'}
