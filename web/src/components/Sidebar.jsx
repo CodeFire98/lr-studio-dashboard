@@ -43,11 +43,14 @@ const GUEST_NAV = [
   { key: "home", label: "Request", icon: "send" },
 ];
 
+// Admin nav order — Clients first (the daily entry point: pick a brand to
+// work on), then the per-brand workflow surfaces (Inbox → Social Calendar →
+// All tasks), then the agency-internal Team management pinned at the bottom.
 const buildAdminNav = (taskCount) => [
-  { key: "home", label: "Inbox", icon: "home" },
-  { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
-  { key: "calendar", label: "Social Calendar", icon: "calendar" },
   { key: "team", label: "Clients", icon: "team" },
+  { key: "home", label: "Inbox", icon: "home" },
+  { key: "calendar", label: "Social Calendar", icon: "calendar" },
+  { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
   { key: "members", label: "Team", icon: "team" },
 ];
 

@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-04-29 (initial creation)
+**Last updated:** 2026-04-29 (admin sidebar reorder)
 
 ---
 
@@ -11,6 +11,10 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-04-29 — Admin sidebar reorder
+- `Sidebar.buildAdminNav` now orders items: Clients → Inbox → Social Calendar → All tasks → Team. Clients moves to the top (it's the daily entry point — pick a brand first); Team is pinned at the bottom (agency-internal, accessed less often). No functional change beyond order.
+- Sections touched: none — Routes/Views table doesn't enumerate sidebar order.
 
 ### 2026-04-29 — Reference doc created
 - Initial creation of this file. Captures the codebase as of commit `b9c9982`.
