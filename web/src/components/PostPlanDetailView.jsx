@@ -557,7 +557,7 @@ const PostPlanDetailView = ({
         label: `${s.actor?.name || 'Someone'} ${verb}`,
       });
     }
-    return items.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    return items.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
   }, [plan?.createdAt, plan?.creator, comments, attachments, statusLog]);
 
   // ---- Loading / not-found --------------------------------------------
