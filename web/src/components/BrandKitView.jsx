@@ -1583,14 +1583,13 @@ const CollapsibleEngineering = ({ kit }) => {
 
 // ---- Main ---------------------------------------------------------------
 
-const BrandKitView = () => {
+const BrandKitView = ({ accountId: accountIdProp }) => {
   const auth = readAuth() || {};
-  // Impersonation: if an admin is shadowing a client, read that client's kit.
-  let accountId = auth.account?.id || null;
-  try {
-    const impersonation = JSON.parse(sessionStorage.getItem('lr_impersonation'));
-    if (impersonation?.client?.id) accountId = impersonation.client.id;
-  } catch {}
+  // Agency users now resolve the active brand via App's BrandPicker and
+  // it lands here as `accountIdProp` (null when in All-clients mode).
+  // Brand users still fall back to their own account on auth — keeps the
+  // component usable if it's ever mounted without the prop.
+  const accountId = accountIdProp ?? (auth.isAgency ? null : auth.account?.id || null);
 
   const [kit, setKit] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1670,7 +1669,11 @@ const BrandKitView = () => {
     return (
       <div className="view"><div className="view-inner">
         <div className="page-head"><div className="titles"><h1>Brand Intelligence</h1>
-          <div className="sub">Sign in with a brand workspace to see your brand intelligence.</div>
+          <div className="sub">
+            {auth.isAgency
+              ? 'Pick a brand from the sidebar to see its brand intelligence.'
+              : 'Sign in with a brand workspace to see your brand intelligence.'}
+          </div>
         </div></div>
       </div></div>
     );

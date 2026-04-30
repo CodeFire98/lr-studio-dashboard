@@ -1,72 +1,87 @@
 /* eslint-disable */
-/* Sidebar — slim, icon + label, logo top, user bottom.
-   Has TWO modes:
-   - Guest (auth=null): shows ONLY the Home nav item, and a "Log In" button
-     in the bottom-left (where the user pill normally lives).
-   - Signed-in: full navigation + user popover w/ profile, theme, sign out. */
+/* Sidebar — three modes:
+   - Guest: a teaser nav + Log In button.
+   - Brand owner: per-brand workflow nav scoped to their active brand.
+   - Agency: same per-brand nav when working in a brand, OR Inbox + All-tasks
+     when the brand picker is set to "All clients."
+
+   The L+R Agency wordmark stays at the top regardless. The BrandPicker
+   sits below it once signed in and drives every other surface's scope. */
 import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import MOCK from '../lib/mockData.js';
-import { setActiveBrand, readAuth } from '../lib/auth.js';
-import { promptCreateBrand } from './CreateBrandModal.jsx';
+import { BrandPicker } from './BrandPicker.jsx';
 
-// Customer nav. Social Calendar leads (it's the working surface for the
-// AI Social Media Manager service); Request (was "Home") is deprioritized
-// because most customers prefer talking to a human creative lead, so it
-// lives near the bottom and is on its way out. The icon is `send` instead
-// of `home` now that it's no longer the landing page. Settings was removed
-// — still reachable from the profile menu (Account settings).
-//
-// Performance and Team are pinned to the bottom of the sidebar (just
-// above the profile pill) — they're reference surfaces, not daily
-// working surfaces, so they don't deserve top-of-fold real estate.
-const buildNav = (taskCount) => ({
-  primary: [
-    { key: "calendar", label: "Social Calendar", icon: "calendar" },
+// -------- Nav configurations -------------------------------------------
+
+// Brand-owner / agency-in-a-brand nav. Same items either way; the only
+// differences are "Request" hides for agency users, and agency users see
+// an extra "L+R Team" entry below "Brand team" so the two team surfaces
+// aren't confused with each other.
+const buildBrandNav = ({ taskCount, calendarUnreadCount, isAgency }) => {
+  const primary = [
+    { key: "calendar", label: "Social Calendar", icon: "calendar", badge: calendarUnreadCount || undefined },
     { key: "tasks", label: "Tasks", icon: "folder", badge: taskCount || undefined },
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
-    { key: "home", label: "Request", icon: "send" },
-  ],
-  secondary: [
+  ];
+  if (!isAgency) {
+    primary.push({ key: "home", label: "Request", icon: "send" });
+  }
+  const secondary = [
     { key: "performance", label: "Performance", icon: "chart" },
-    { key: "team", label: "Team", icon: "team" },
+    { key: "team", label: "Brand team", icon: "team" },
+  ];
+  if (isAgency) {
+    secondary.push({ key: "members", label: "L+R Team", icon: "team" });
+  }
+  return { primary, secondary };
+};
+
+// Agency "All clients" nav — only the cross-client surfaces.
+const buildAllClientsNav = (taskCount) => ({
+  primary: [
+    { key: "home", label: "Inbox", icon: "home" },
+    { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
   ],
+  secondary: [],
 });
 
-// Guests see a teaser of the workspace — the empty Social Calendar (so they
-// can preview the AI Social Media Manager surface) and Request (the only
-// thing they can actually do without an account).
 const GUEST_NAV = [
   { key: "calendar", label: "Social Calendar", icon: "calendar" },
   { key: "home", label: "Request", icon: "send" },
 ];
 
-// Admin nav order — Clients first (the daily entry point: pick a brand to
-// work on), then the per-brand workflow surfaces (Inbox → Social Calendar →
-// All tasks), then the agency-internal Team management pinned at the bottom.
-const buildAdminNav = (taskCount) => [
-  { key: "team", label: "Clients", icon: "team" },
-  { key: "home", label: "Inbox", icon: "home" },
-  { key: "calendar", label: "Social Calendar", icon: "calendar" },
-  { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
-  { key: "members", label: "Team", icon: "team" },
-];
+// -------- Component ----------------------------------------------------
 
-const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks, auth, onRequestLogin, taskCount = 0 }) => {
+const Sidebar = ({
+  route, setRoute,
+  mode, setMode,
+  onSignOut, tweaks, setTweaks,
+  auth, onRequestLogin,
+  taskCount = 0,
+  calendarUnreadCount = 0,
+  // BrandPicker props
+  activeAdminBrandId,
+  brandAccounts,
+  isAllClientsMode,
+  onSelectBrand,
+  onCreateBrand,
+  onManageClients,
+}) => {
   const isGuest = !auth;
-  // Customer mode splits the nav into two groups: the primary working
-  // surfaces at the top and the bottom-pinned reference views (Performance,
-  // Team) just above the profile pill. Guest and admin keep a single flat
-  // list since neither has the same daily-vs-reference distinction.
-  const navConfig = isGuest
-    ? { primary: GUEST_NAV, secondary: [] }
-    : mode === "admin"
-      ? { primary: buildAdminNav(taskCount), secondary: [] }
-      : buildNav(taskCount);
+  const isAgency = !!auth?.isAgency;
+
+  // Pick the right nav config for the current context.
+  const navConfig = (() => {
+    if (isGuest) return { primary: GUEST_NAV, secondary: [] };
+    if (isAgency && isAllClientsMode) return buildAllClientsNav(taskCount);
+    return buildBrandNav({ taskCount, calendarUnreadCount, isAgency });
+  })();
   const primaryItems = navConfig.primary;
   const secondaryItems = navConfig.secondary;
+
   const [menuOpen, setMenuOpen] = useState(false);
   const wrapRef = useRef(null);
 
@@ -85,7 +100,7 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
   }, [menuOpen]);
 
   // Resolve displayed user (only used when signed in)
-  const persona = mode === "admin" ? MOCK.people.admin : MOCK.people.you;
+  const persona = isAgency ? MOCK.people.admin : MOCK.people.you;
   const user = !auth ? null : {
     id: auth.id || persona.id,
     name: auth.name || persona.name,
@@ -94,31 +109,10 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
     email: auth.email || persona.email,
     role: auth.title || auth.role || persona.role,
   };
-  // Brand users with multiple brand memberships see a switcher in the menu.
-  const memberships = auth?.memberships || [];
-  const otherMemberships = memberships.filter(
-    (m) => m.account.id !== auth?.account?.id
-  );
-  const canSwitchBrands = !auth?.isAgency && memberships.length > 1;
-  // Any non-agency signed-in user can spin up an additional brand workspace.
-  // Even users with a single membership see this — the section just shows
-  // the current brand + a "Create new brand" action.
-  const canCreateBrand = !!auth && !auth.isAgency;
-  const handleBrandSwitch = async (accountId) => {
-    setMenuOpen(false);
-    try {
-      await setActiveBrand(accountId);
-    } catch (e) {
-      console.error('brand switch failed', e);
-    }
-  };
-  const handleCreateBrand = async () => {
-    setMenuOpen(false);
-    try { await promptCreateBrand(); }
-    catch (e) { console.error('create brand failed', e); }
-  };
-  const planLine = mode === "admin"
-    ? "L+R Agency · Admin"
+
+  // Subtitle line under the user pill — different for agency vs brand.
+  const planLine = isAgency
+    ? "L+R Agency"
     : (auth?.account?.name || (auth?.email ? auth.email : ""));
 
   return (
@@ -129,9 +123,20 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
         <span className="wordmark-tail">Agency</span>
       </div>
 
-      <div className="nav-section-label">
-        {isGuest ? "Welcome" : mode === "admin" ? "Agency" : "Workspace"}
-      </div>
+      {/* Brand picker — drives the scope of every surface below. Only
+          visible when signed in; guests don't have brand context. */}
+      {!isGuest && (
+        <BrandPicker
+          isAgency={isAgency}
+          activeAdminBrandId={activeAdminBrandId}
+          brandAccounts={brandAccounts}
+          auth={auth}
+          onSelectBrand={onSelectBrand}
+          onCreateBrand={onCreateBrand}
+          onManageClients={onManageClients}
+        />
+      )}
+
       <nav className="nav">
         {primaryItems.map((n) => (
           <button
@@ -160,9 +165,8 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
 
       <div className="sidebar-spacer" />
 
-      {/* Bottom-pinned secondary nav (customer mode only). Renders above
-          the profile pill so reference views stay one click away without
-          crowding the top of the sidebar. */}
+      {/* Bottom-pinned secondary nav (Performance, Team). Hidden in
+          All-clients mode — those surfaces are per-brand. */}
       {secondaryItems.length > 0 && (
         <nav className="nav nav-secondary">
           {secondaryItems.map((n) => (
@@ -242,65 +246,9 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
                 </button>
               </div>
 
-              {(canSwitchBrands || canCreateBrand) && (
-                <>
-                  <div className="user-menu-sep"/>
-                  <div className="user-menu-group">
-                    <div
-                      style={{
-                        padding: '6px 12px 4px',
-                        fontSize: 11,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.04em',
-                        color: 'var(--ink-3)',
-                      }}
-                    >
-                      {canSwitchBrands ? 'Switch brand' : 'Brands'}
-                    </div>
-                    {auth?.account && (
-                      <div
-                        className="user-menu-item"
-                        style={{ cursor: 'default', opacity: 0.85 }}
-                      >
-                        <Icon name="check" size={14}/>
-                        <span style={{ flex: 1 }}>{auth.account.name}</span>
-                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Current</span>
-                      </div>
-                    )}
-                    {otherMemberships.map((m) => (
-                      <button
-                        key={m.account.id}
-                        className="user-menu-item"
-                        onClick={() => handleBrandSwitch(m.account.id)}
-                      >
-                        <span
-                          style={{
-                            width: 14,
-                            height: 14,
-                            borderRadius: 4,
-                            background: m.account.accentColor || 'var(--surface-2)',
-                            flexShrink: 0,
-                          }}
-                        />
-                        <span style={{ flex: 1 }}>{m.account.name}</span>
-                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                          {m.role === 'owner' ? 'Owner' : 'Member'}
-                        </span>
-                      </button>
-                    ))}
-                    {canCreateBrand && (
-                      <button
-                        className="user-menu-item"
-                        onClick={handleCreateBrand}
-                      >
-                        <Icon name="plus" size={14}/>
-                        <span>Create new brand</span>
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
-
+              {/* Manage-clients lives in the BrandPicker dropdown; L+R
+                  Team is in the sidebar nav for agency users. Profile
+                  menu stays focused on personal account actions. */}
               <div className="user-menu-sep"/>
 
               <div className="user-menu-group">

@@ -530,8 +530,11 @@ export function mapAssetRow(row) {
 }
 
 // Library: every deliverable asset across tasks the viewer can see.
-// RLS filters by account for brand viewers; agency sees everything.
-export async function loadLibraryAssets({ kind = 'deliverable' } = {}) {
+// When `accountId` is supplied, results are scoped to that brand client-
+// side — necessary for agency users (whose RLS gives them every brand).
+// Brand users get the same filter applied on top of RLS, which is a no-op
+// since RLS already limits them to their accessible accounts.
+export async function loadLibraryAssets({ kind = 'deliverable', accountId = null } = {}) {
   const { data, error } = await supabase
     .from('assets')
     .select(`
@@ -542,7 +545,7 @@ export async function loadLibraryAssets({ kind = 'deliverable' } = {}) {
     .eq('kind', kind)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return (data || []).map((row) => {
+  const rows = (data || []).map((row) => {
     const mapped = mapAssetRow(row);
     return {
       ...mapped,
@@ -555,6 +558,7 @@ export async function loadLibraryAssets({ kind = 'deliverable' } = {}) {
       accountName: row.task?.account?.name || null,
     };
   });
+  return accountId ? rows.filter((r) => r.accountId === accountId) : rows;
 }
 
 export async function loadAssetsForTask(taskId) {
@@ -1335,6 +1339,444 @@ export function subscribeToTasks(onChange) {
           console.warn('realtime handler failed', e);
         }
       }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// =====================================================================
+// Social Calendar — post_plans
+// =====================================================================
+// One row per content concept the agency plans for a brand. May target
+// multiple platforms (instagram / linkedin / x) with copy variants per
+// platform. The brand reviews and approves via the two-way "needs
+// feedback" status split.
+
+const POST_PLAN_SELECT = `
+  *,
+  account:accounts(id, name, type, accent_color),
+  creator:profiles!created_by(id, display_name, initials, avatar_color, is_agency)
+`;
+
+export function mapPostPlanRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    accountName: row.account?.name || null,
+    scheduledAt: row.scheduled_at,
+    platforms: Array.isArray(row.platforms) ? row.platforms : [],
+    concept: row.concept || '',
+    copyVariants: row.copy_variants && typeof row.copy_variants === 'object' ? row.copy_variants : {},
+    status: row.status,
+    createdBy: row.created_by,
+    creator: personFromProfile(row.creator),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    approvedAt: row.approved_at,
+    postedAt: row.posted_at,
+  };
+}
+
+export async function loadPostPlans({ accountId } = {}) {
+  let query = supabase
+    .from('post_plans')
+    .select(POST_PLAN_SELECT)
+    .order('scheduled_at', { ascending: true });
+  if (accountId) query = query.eq('account_id', accountId);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapPostPlanRow);
+}
+
+export async function loadPostPlanById(id) {
+  const { data, error } = await supabase
+    .from('post_plans')
+    .select(POST_PLAN_SELECT)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapPostPlanRow(data) : null;
+}
+
+export async function createPostPlan({
+  accountId,
+  scheduledAt,
+  platforms,
+  concept,
+  copyVariants,
+  status,
+  userId,
+}) {
+  if (!accountId) throw new Error('createPostPlan: accountId is required');
+  if (!scheduledAt) throw new Error('createPostPlan: scheduledAt is required');
+  const payload = {
+    account_id: accountId,
+    scheduled_at: scheduledAt,
+    platforms: Array.isArray(platforms) ? platforms : [],
+    concept: concept || '',
+    copy_variants: copyVariants && typeof copyVariants === 'object' ? copyVariants : {},
+    status: status || 'not_started',
+    created_by: userId ?? null,
+  };
+  const { data, error } = await supabase
+    .from('post_plans')
+    .insert(payload)
+    .select(POST_PLAN_SELECT)
+    .single();
+  if (error) throw error;
+  return mapPostPlanRow(data);
+}
+
+// Map UI-shape patches to DB columns. Accepts a partial; ignores keys we
+// don't know about so callers can pass `{ status: '...' }` or full
+// edit-modal patches without ceremony.
+function postPlanPatchToColumns(patch) {
+  const out = {};
+  if (patch == null) return out;
+  if (patch.scheduledAt !== undefined)  out.scheduled_at = patch.scheduledAt;
+  if (patch.platforms !== undefined)    out.platforms = patch.platforms;
+  if (patch.concept !== undefined)      out.concept = patch.concept;
+  if (patch.copyVariants !== undefined) out.copy_variants = patch.copyVariants;
+  if (patch.status !== undefined)       out.status = patch.status;
+  return out;
+}
+
+export async function updatePostPlan(id, patch) {
+  const cols = postPlanPatchToColumns(patch);
+  if (Object.keys(cols).length === 0) {
+    return loadPostPlanById(id);
+  }
+  const { data, error } = await supabase
+    .from('post_plans')
+    .update(cols)
+    .eq('id', id)
+    .select(POST_PLAN_SELECT)
+    .single();
+  if (error) throw error;
+  return mapPostPlanRow(data);
+}
+
+export async function updatePostPlanStatus(id, status) {
+  return updatePostPlan(id, { status });
+}
+
+export async function deletePostPlan(id) {
+  const { error } = await supabase.from('post_plans').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export function subscribeToPostPlans(onChange, { accountId } = {}) {
+  const channelName = accountId
+    ? `lr_post_plans_${accountId}`
+    : 'lr_post_plans_stream';
+  // Filter at the realtime layer when scoping to a single brand — saves
+  // the client a round-trip + refetch for events outside its scope.
+  const filter = accountId
+    ? { event: '*', schema: 'public', table: 'post_plans', filter: `account_id=eq.${accountId}` }
+    : { event: '*', schema: 'public', table: 'post_plans' };
+  const channel = supabase
+    .channel(channelName)
+    .on('postgres_changes', filter, async (payload) => {
+      try {
+        if (payload.eventType === 'DELETE') {
+          onChange({ type: 'DELETE', id: payload.old.id });
+          return;
+        }
+        const { data } = await supabase
+          .from('post_plans')
+          .select(POST_PLAN_SELECT)
+          .eq('id', payload.new.id)
+          .maybeSingle();
+        if (data) onChange({ type: payload.eventType, postPlan: mapPostPlanRow(data) });
+      } catch (e) {
+        console.warn('post_plans realtime failed', e);
+      }
+    })
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// ---- Comments ----
+
+const POST_PLAN_COMMENT_SELECT = `
+  *,
+  author:profiles!author_id(id, display_name, initials, avatar_color, is_agency)
+`;
+
+export function mapPostPlanCommentRow(row, viewerUserId) {
+  if (!row) return null;
+  const author = personFromProfile(row.author);
+  const mine = viewerUserId && row.author_id === viewerUserId;
+  return {
+    id: row.id,
+    postPlanId: row.post_plan_id,
+    authorId: row.author_id,
+    from: mine ? 'me' : 'them',
+    who: author,
+    body: row.body,
+    time: formatRelative(row.created_at),
+    createdAt: row.created_at,
+  };
+}
+
+export async function loadPostPlanComments(postPlanId, viewerUserId) {
+  const { data, error } = await supabase
+    .from('post_plan_comments')
+    .select(POST_PLAN_COMMENT_SELECT)
+    .eq('post_plan_id', postPlanId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r) => mapPostPlanCommentRow(r, viewerUserId));
+}
+
+export async function addPostPlanComment({ postPlanId, body, authorId }) {
+  const { data, error } = await supabase
+    .from('post_plan_comments')
+    .insert({ post_plan_id: postPlanId, body, author_id: authorId })
+    .select(POST_PLAN_COMMENT_SELECT)
+    .single();
+  if (error) throw error;
+  return mapPostPlanCommentRow(data, authorId);
+}
+
+export function subscribeToPostPlanComments(postPlanId, viewerUserId, onChange) {
+  const channel = supabase
+    .channel(`lr_post_plan_comments_${postPlanId}`)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'post_plan_comments', filter: `post_plan_id=eq.${postPlanId}` },
+      async (payload) => {
+        try {
+          const { data } = await supabase
+            .from('post_plan_comments')
+            .select(POST_PLAN_COMMENT_SELECT)
+            .eq('id', payload.new.id)
+            .maybeSingle();
+          if (data) onChange({ type: 'INSERT', comment: mapPostPlanCommentRow(data, viewerUserId) });
+        } catch (e) {
+          console.warn('post_plan_comments realtime failed', e);
+        }
+      }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// ---- Attachments ----
+
+const POST_PLAN_ATTACHMENT_BUCKET = 'post-plan-attachments';
+
+const POST_PLAN_ATTACHMENT_SELECT = `
+  *,
+  uploader:profiles!uploaded_by(id, display_name, initials, avatar_color, is_agency)
+`;
+
+export function mapPostPlanAttachmentRow(row) {
+  if (!row) return null;
+  const { data: pub } = supabase.storage
+    .from(POST_PLAN_ATTACHMENT_BUCKET)
+    .getPublicUrl(row.storage_path);
+  return {
+    id: row.id,
+    postPlanId: row.post_plan_id,
+    kind: row.kind,
+    version: row.version,
+    storagePath: row.storage_path,
+    filename: row.filename,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    uploadedBy: row.uploaded_by,
+    uploader: personFromProfile(row.uploader),
+    createdAt: row.created_at,
+    url: pub?.publicUrl,
+  };
+}
+
+export async function loadPostPlanAttachments(postPlanId) {
+  if (!postPlanId) return [];
+  const { data, error } = await supabase
+    .from('post_plan_attachments')
+    .select(POST_PLAN_ATTACHMENT_SELECT)
+    .eq('post_plan_id', postPlanId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapPostPlanAttachmentRow);
+}
+
+export async function addPostPlanAttachment({
+  postPlanId,
+  accountId,
+  kind,           // 'reference' | 'final'
+  file,
+  uploadedBy,
+}) {
+  if (!postPlanId) throw new Error('addPostPlanAttachment: postPlanId is required');
+  if (!accountId)  throw new Error('addPostPlanAttachment: accountId is required');
+  if (!kind)       throw new Error('addPostPlanAttachment: kind is required');
+  if (!file)       throw new Error('addPostPlanAttachment: file is required');
+  if (!uploadedBy) throw new Error('addPostPlanAttachment: uploadedBy is required');
+
+  const safeName = (file.name || 'asset').replace(/[^\w.\-]+/g, '_');
+  const path = `${accountId}/${postPlanId}/${Date.now()}_${safeName}`;
+  const { error: upErr } = await supabase.storage
+    .from(POST_PLAN_ATTACHMENT_BUCKET)
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined,
+    });
+  if (upErr) throw upErr;
+
+  const { data, error } = await supabase
+    .from('post_plan_attachments')
+    .insert({
+      post_plan_id: postPlanId,
+      kind,
+      storage_path: path,
+      filename: file.name || safeName,
+      mime_type: file.type || null,
+      size_bytes: file.size || null,
+      uploaded_by: uploadedBy,
+    })
+    .select(POST_PLAN_ATTACHMENT_SELECT)
+    .single();
+  if (error) {
+    // Roll the storage object back so we don't orphan a file the row
+    // never got. Best-effort — surface the original DB error either way.
+    await supabase.storage.from(POST_PLAN_ATTACHMENT_BUCKET).remove([path]).catch(() => {});
+    throw error;
+  }
+  return mapPostPlanAttachmentRow(data);
+}
+
+export async function deletePostPlanAttachment(attachment) {
+  if (!attachment?.id) throw new Error('deletePostPlanAttachment: attachment is required');
+  // Storage first — if the DB row stays but the file is already gone we'd
+  // render a broken thumbnail; if the file stays but the row is gone the
+  // user would never see it again. The DB delete is the user-visible bit,
+  // so do storage first and let the row delete decide success.
+  if (attachment.storagePath) {
+    await supabase.storage
+      .from(POST_PLAN_ATTACHMENT_BUCKET)
+      .remove([attachment.storagePath])
+      .catch(() => {});
+  }
+  const { error } = await supabase
+    .from('post_plan_attachments')
+    .delete()
+    .eq('id', attachment.id);
+  if (error) throw error;
+}
+
+// =====================================================================
+// Post-plan unread tracking (post_plan_views)
+// =====================================================================
+// A comment counts as "unread" for user U if either there's no view row
+// for (U, plan), or the latest comment's created_at > view.last_seen_at.
+// We compute this client-side — the server returns view stamps + comment
+// timestamps and we diff them. This is the cheapest path for an MVP and
+// stays accurate as long as the realtime channel stays connected.
+
+export async function loadPostPlanViews(userId) {
+  if (!userId) return new Map();
+  const { data, error } = await supabase
+    .from('post_plan_views')
+    .select('post_plan_id, last_seen_at')
+    .eq('user_id', userId);
+  if (error) throw error;
+  const map = new Map();
+  for (const r of data || []) map.set(r.post_plan_id, r.last_seen_at);
+  return map;
+}
+
+// For a list of post plans visible to the user, compute "unread activity"
+// counts — anything that happened on the plan since the user last opened
+// it AND was done by someone else. Three sources:
+//   1. New comments (author != viewer)
+//   2. New attachments (uploader != viewer)
+//   3. Plan-level edits (post_plans.updated_at advanced) when the plan
+//      wasn't created by the viewer — credits one item for status flips,
+//      copy edits, schedule changes, etc.
+//
+// Returns Map<postPlanId, count>. The calendar uses count > 0 to show a
+// red dot; the sidebar adds counts up for its badge.
+export async function loadPostPlanUnreadCounts({ userId, postPlans }) {
+  if (!userId) return new Map();
+  if (!Array.isArray(postPlans) || postPlans.length === 0) return new Map();
+  const ids = postPlans.map((p) => p.id);
+  const [views, comments, attachments] = await Promise.all([
+    loadPostPlanViews(userId),
+    supabase
+      .from('post_plan_comments')
+      .select('post_plan_id, author_id, created_at')
+      .in('post_plan_id', ids)
+      .neq('author_id', userId)
+      .then(({ data, error }) => {
+        if (error) throw error;
+        return data || [];
+      }),
+    supabase
+      .from('post_plan_attachments')
+      .select('post_plan_id, uploaded_by, created_at')
+      .in('post_plan_id', ids)
+      .neq('uploaded_by', userId)
+      .then(({ data, error }) => {
+        if (error) throw error;
+        return data || [];
+      }),
+  ]);
+  const counts = new Map();
+  const bump = (id) => counts.set(id, (counts.get(id) || 0) + 1);
+  for (const c of comments) {
+    const seen = views.get(c.post_plan_id);
+    if (!seen || c.created_at > seen) bump(c.post_plan_id);
+  }
+  for (const a of attachments) {
+    const seen = views.get(a.post_plan_id);
+    if (!seen || a.created_at > seen) bump(a.post_plan_id);
+  }
+  for (const p of postPlans) {
+    // Skip plans the viewer created — their own initial save would
+    // otherwise show an unread on a freshly-spawned plan.
+    if (p.createdBy && p.createdBy === userId) continue;
+    const seen = views.get(p.id);
+    if (!seen || (p.updatedAt && p.updatedAt > seen)) bump(p.id);
+  }
+  return counts;
+}
+
+export async function markPostPlanSeen(postPlanId, userId) {
+  if (!postPlanId || !userId) return;
+  const { error } = await supabase
+    .from('post_plan_views')
+    .upsert(
+      { post_plan_id: postPlanId, user_id: userId, last_seen_at: new Date().toISOString() },
+      { onConflict: 'user_id,post_plan_id' }
+    );
+  if (error) console.warn('markPostPlanSeen failed', error);
+}
+
+// Realtime: any activity on a post plan (comment, attachment, or plan
+// edit) re-ticks the unread count. We listen broadly for the active
+// brand and let the caller refetch — volume is small per-brand.
+export function subscribeToPostPlanActivity({ accountId }, onChange) {
+  const channel = supabase
+    .channel(`lr_post_plan_activity_${accountId || 'all'}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'post_plan_comments' },
+      () => { onChange?.(); }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'post_plan_attachments' },
+      () => { onChange?.(); }
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'post_plans' },
+      () => { onChange?.(); }
     )
     .subscribe();
   return () => supabase.removeChannel(channel);
