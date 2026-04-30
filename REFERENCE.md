@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-04-30 (Social Calendar + Post Plans, BrandPicker replaces shadowing)
+**Last updated:** 2026-04-30 (Phase 1 router — real URLs, deep links, browser back/forward)
 
 ---
 
@@ -11,6 +11,15 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-04-30 — Phase 1 router (real URLs, no per-brand segment yet)
+- Added `react-router-dom@6`. `<App/>` now mounts inside `<BrowserRouter/>` ([main.jsx](web/src/main.jsx)). Every view has a real path: `/calendar`, `/tasks`, `/tasks/:id`, `/plan/:id`, `/library`, `/brand`, `/team`, `/performance`, `/profile`, `/settings`, `/clients`, `/members`, `/home`. `/` redirects to the saved or default view.
+- **No child component changes.** The legacy `route = {view, id}` shape is preserved by deriving it from `location.pathname` via `parsePathToRoute`, and `setRoute({view, id})` is now a thin adapter over `navigate(viewToPath(...))`. Sidebar's active-state logic (`route.view === n.key`) keeps working unchanged.
+- **Short URLs for tasks and post plans.** `/tasks/:id` and `/plan/:id` URLs now use the **first 8 hex chars of the row's UUID** (git-short-SHA style: `/plan/a3f9c2d8` instead of `/plan/a3f9c2d8-7e21-4b3a-9c01-1234567890ab`). `shortenId(uuid)` shortens for display in `viewToPath`; `findFullId(prefix, items)` resolves prefix → full UUID right before passing to `<TaskDetailView>` / `<PostPlanDetailView>`, so child components keep working with the full UUID. **Full-UUID URLs still resolve** (old deep links + bookmarks unchanged), and the same rule auto-applies to every new task/plan you create. No DB change, no migration.
+- **404 view for unknown URLs.** `parsePathToRoute` returns `{view: 'not_found', path}` for anything it doesn't recognise; `<NotFoundView>` renders a tasteful page with serif headline ("We don't think you meant *to come here.*"), the bad path in a code chip, and a "Take me to the Social Calendar" CTA. `not_found` is added to both the guest-allowed set and the agency context-snap legal sets so neither effect bounces the user away from the 404. ([NotFoundView.jsx](web/src/components/NotFoundView.jsx))
+- **`lr_route` localStorage retired as source of truth.** One-time migration on mount: if the user lands on `/` with a `lr_route` saved, we hop them to the matching path (`replace: true`) and remove the key. After bake, the migration block can be deleted.
+- Phase 2 (per-brand segments like `/c/:brandSlug/calendar`) is **not** in this PR. Brand scoping still flows through `BrandPicker` → `localStorage.lr_admin_active_brand`.
+- Sections touched: Recent changes log; LocalStorage keys (`lr_route` deprecated); Routes/Views (new path column + short-ID rule + 404); Known decisions (URL-driven routing rationale, short-ID rationale, 404 design); Pending work (Phase 2 still open).
 
 ### 2026-04-30 — Social Calendar + Post Plans, BrandPicker replaces shadowing
 - Merged in [PR #2](https://github.com/CodeFire98/lr-studio-dashboard/pull/2). Two interconnected features:
@@ -317,30 +326,35 @@ This prevents both invite races and silent re-creation after deletion.
 | `lr_pending_invite` | Invite token to redeem on next sign-in | URL `?invite=…` query string | After redemption |
 | `lr_pending_brand_name` | Brand name to use during auto-create | `signUpBrand` | After auto-create |
 | `lr_mode` | `'admin'` or `'customer'` | `useEffect` mirror of `mode` state | — |
-| `lr_route` | Last visited route | `useEffect` in App.jsx | — |
+| ~~`lr_route`~~ *(deprecated 2026-04-30)* | Was: last visited view, persisted across reloads. Replaced by the URL itself when Phase 1 router landed. One-time migration on first post-deploy load hops the user to the saved view, then drops the key. | Removed — App.jsx no longer writes it; existing values are migrated then deleted. | Migration block in App.jsx |
 | ~~`lr_impersonation`~~ *(deprecated)* | Was: admin → client view shadow | Removed 2026-04-30 in the BrandPicker rollout. Old code that read this is gone. | — |
 
 ---
 
 ## 8. Routes / Views
 
-State-based routing — `route.view` is a string. Sidebar renders different
-items per `mode`. View IDs:
+URL-driven routing via `react-router-dom@6`. `<BrowserRouter>` wraps `<App/>` in [main.jsx](web/src/main.jsx); inside App we derive `route = {view, id}` from `location.pathname` (`parsePathToRoute` in [App.jsx](web/src/App.jsx)). Child components still call `setRoute({view, id})` — that's a thin adapter over `navigate(viewToPath(...))`. Sidebar renders different items per `mode`. View / path / component table:
 
-| `route.view` | Component (customer mode) | Component (admin mode) | Purpose |
-|---|---|---|---|
-| `home` | `HomeView` | `AdminHome` | Submit brief composer / agency inbox |
-| `tasks` | `TasksView` | `TasksView` | List of briefs |
-| `tasks` + `id` | `TaskDetailView` | `TaskDetailView` | Single brief detail (chat, deliverables, activity) |
-| `library` | `LibraryView` | `AdminUploadView` | Customer: searchable grid of deliverables, scoped to active brand. Admin: upload creatives |
-| `performance` | `PerformanceView` | — | Metrics dashboard (placeholder) |
-| `team` | `TeamView` | `AdminClientsView` | Customer: invite teammates. Admin: client list |
-| `members` | — | `AdminTeamView` | Agency-only team management |
-| `brand` | `BrandKitView` | `BrandKitView` | Brand Intelligence — full kit view + Fetch Brand. Receives `accountId` from App. |
-| `calendar` | `CalendarView` | `CalendarView` | Social Calendar — month grid of post plans. Universal landing view (signed-in + guest). |
-| `plan` + `id` | `PostPlanDetailView` | `PostPlanDetailView` | Per-plan detail: per-platform copy, references + deliverables, conversation, status workflow, activity feed. |
-| `settings` | `SettingsView` | `SettingsView` | Workspace name, danger-zone delete |
-| `profile` | `ProfileView` | `ProfileView` | User profile |
+| `route.view` | URL path | Component (customer mode) | Component (admin mode) | Purpose |
+|---|---|---|---|---|
+| `calendar` | `/` or `/calendar` | `CalendarView` | `CalendarView` | Social Calendar — month grid of post plans. Universal landing view (signed-in + guest). |
+| `home` | `/home` | `HomeView` | `AdminHome` | Submit brief composer / agency inbox |
+| `tasks` | `/tasks` | `TasksView` | `TasksView` | List of briefs |
+| `tasks` + `id` | `/tasks/:shortId` | `TaskDetailView` | `TaskDetailView` | Single brief detail (chat, deliverables, activity). `:shortId` is the first 8 hex chars of the task's UUID; full UUIDs still resolve. |
+| `library` | `/library` | `LibraryView` | `AdminUploadView` | Customer: searchable grid of deliverables, scoped to active brand. Admin: upload creatives |
+| `performance` | `/performance` | `PerformanceView` | — | Metrics dashboard (placeholder) |
+| `team` | `/team` | `TeamView` | `AdminClientsView` | Customer: invite teammates. Admin: client list |
+| `members` | `/members` | — | `AdminTeamView` | Agency-only team management |
+| `brand` | `/brand` | `BrandKitView` | `BrandKitView` | Brand Intelligence — full kit view + Fetch Brand. Receives `accountId` from App. |
+| `plan` + `id` | `/plan/:shortId` | `PostPlanDetailView` | `PostPlanDetailView` | Per-plan detail: per-platform copy, references + deliverables, conversation, status workflow, activity feed. `:shortId` follows the same first-8-hex-chars rule as tasks. |
+| `clients` | `/clients` | — | `AdminClientsView` | Agency-only client list (reachable from BrandPicker). |
+| `settings` | `/settings` | `SettingsView` | `SettingsView` | Workspace name, danger-zone delete |
+| `profile` | `/profile` | `ProfileView` | `ProfileView` | User profile |
+| `not_found` | *(any unrecognised path)* | `NotFoundView` | `NotFoundView` | Tasteful 404 — serif headline + bad path chip + "Take me to Social Calendar" CTA. ([NotFoundView.jsx](web/src/components/NotFoundView.jsx)) |
+
+Unknown paths land on the 404 view (`view: 'not_found'`) — the bad pathname is preserved on the route object so `NotFoundView` can echo it back. `not_found` is in both the guest-allowed set and the agency context-snap legal sets, so neither effect bounces the user away. Vercel SPA fallback rewrites every path to `/index.html` ([web/vercel.json](web/vercel.json)) so deep links resolve on cold load.
+
+**Phase 2 (not done yet):** add a `/c/:brandSlug/...` segment so brand scope is part of the URL instead of `localStorage.lr_admin_active_brand`. See §14.
 
 ### First-paint defaults
 
@@ -547,7 +561,9 @@ Running log of "we considered X and chose Y because Z" — newest first.
 - **Date-only fields are formatted via `toLocalIsoDate(d)` in db.js, never `.toISOString().slice(0,10)`.** The latter shifts dates by one day for any user in a positive UTC offset (e.g. IST).
 - **Activity rows are written by triggers, not the client.** The `activity` table has SELECT-only RLS; client-side `INSERT` is silently rejected. This was the cause of the chip-edit-not-logged bug fixed in 0019.
 - **`window.prompt()` for first-time website URL on Fetch Brand.** Functional, not pretty. Swap for an inline modal when there's time.
-- **No router library.** Routing is `route.view` state in App.jsx, persisted to `localStorage.lr_route`. Each view has a `route.view` value; deep-link only via `?` query for invites.
+- **Phase 1 router: URL-driven routing via a thin adapter.** Migrated from React-state routing (`route.view` + `localStorage.lr_route`) to `react-router-dom@6` on 2026-04-30. Considered a full `<Routes>`/`<Route>` refactor (would have meant changing every `setRoute` callsite — 55 of them across 10 files), and instead chose a minimum-surgical pattern: `route` is derived from `location.pathname` via a tiny `parsePathToRoute` parser, and `setRoute({view, id})` is preserved as an adapter over `navigate(viewToPath(...))`. Net diff in child components: zero. Phase 2 (per-brand URL segments) will add real `<Route>` machinery once it pulls its weight.
+- **Short URLs use the first 8 hex chars of the row's UUID, not a separate slug column.** Considered (a) a `display_id` integer counter + migration, (b) a per-row `slug` column generated from the title, (c) shortening the existing UUID. Chose (c): zero DB change, full-UUID URLs still resolve as a fallback, the same rule auto-applies to every new task/plan, and collision math (8 hex chars = 16^8 = 4.3B; ~50% birthday-paradox at ~65k items) leaves enormous headroom for this product's lifetime. `shortenId(uuid)` shortens for the URL, `findFullId(prefix, items)` resolves on render — the rest of the codebase keeps using full UUIDs. Slugs from titles were rejected because edits to a title would break old links and Unicode/duplicate handling adds complexity.
+- **404 view uses the same visual language as the Performance hero.** Same radial gradient, serif headline with `<em>` accent treatment, and the existing `.btn-primary btn-lg` / `.btn-ghost btn-lg` button system. Friendly headline ("We don't think you meant *to come here.*") echoes the brand voice rather than going generic-error. The bad pathname is shown verbatim in a code chip so users know where they tried to go. `parsePathToRoute` returns `{view: 'not_found', path}` for any unknown URL; `not_found` is added to the guest-allowed set and both agency-context-snap legal sets so neither effect strips the user away from the 404.
 - **Single CSS file (~2500 lines).** All styles in `web/src/styles/app.css`. Inline styles used liberally for one-off card layouts.
 
 ---
@@ -556,7 +572,7 @@ Running log of "we considered X and chose Y because Z" — newest first.
 
 - **Multi-source URL discovery (`discover` / `check_agent` modes)**: deployed in `enrich-brand-kit` but no client wires call them yet. Designed to find socials from a seed URL via Firecrawl Agent.
 - **Past creatives image cache**: noted in session memory — IG image fetch + cache to Supabase Storage is deferred until the social asset pipeline is built. `kit.pastCreatives` entries without `imageUrl` are filtered out of the UI (`BrandKitView` line ~1710).
-- **Per-project URL paths**: requested but not implemented. Currently all brand workspaces sit at `/`; switching is via state. Real per-brand URLs would need a router refactor.
+- **Per-brand URL paths (Phase 2 of the routing work)**: not implemented. Phase 1 (2026-04-30) added real per-view URLs (`/calendar`, `/plan/:id`, etc.) but brand context is still scoped via `BrandPicker` + `localStorage.lr_admin_active_brand`. Phase 2 will add a `/c/:brandSlug/...` URL segment so agency users can deep-link to "this brand's calendar / this plan in this brand", make multiple tabs independent, and stop relying on localStorage for brand scope. Needs an additive `accounts.slug` migration (or fall back to UUIDs in URLs).
 - **Post plan → Library promotion**: subtitle on the Deliverables card promises "Pushed to Library when marked posted." Trigger isn't wired yet — needs a hook off `post_plans.status = 'posted'` that copies (or links) `post_plan_attachments` of `kind = 'final'` into `assets`.
 - **Post plan attachment versioning**: schema has `version int default 1` on `post_plan_attachments` but no UI to bump. Currently each upload is `version = 1` regardless. Revisit when an admin needs to re-deliver after a brand revision request.
 - **Status `scheduled` has no button**: `post_plans.status` enum includes `scheduled` (between approved and posted), but no UI surface flips into it. Either add a "Schedule" CTA on approved plans or remove the value from the enum.

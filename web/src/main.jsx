@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 import { App } from './App.jsx';
@@ -24,10 +25,18 @@ const hash = window.location.hash || '';
 const isRecovery =
   hash.includes('type=recovery') || window.location.pathname.endsWith('/reset-password');
 
+// BrowserRouter wraps App but NOT the recovery page — the recovery page
+// reads `window.location.hash` directly and doesn't need a router context.
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary>
     <LightboxProvider>
-      {isRecovery ? <PasswordResetPage /> : <App />}
+      {isRecovery ? (
+        <PasswordResetPage />
+      ) : (
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      )}
       <Analytics />
       <SpeedInsights />
     </LightboxProvider>
