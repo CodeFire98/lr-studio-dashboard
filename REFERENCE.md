@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-04-29 (admin sidebar reorder)
+**Last updated:** 2026-04-30 (Social Calendar + Post Plans, BrandPicker replaces shadowing)
 
 ---
 
@@ -11,6 +11,16 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-04-30 — Social Calendar + Post Plans, BrandPicker replaces shadowing
+- Merged in [PR #2](https://github.com/CodeFire98/lr-studio-dashboard/pull/2). Two interconnected features:
+  - **BrandPicker** sidebar dropdown replaces the old shadow-impersonation flow. Agency users now scope every per-brand surface (Calendar, Tasks, Library, Brand Intelligence) by picking a brand or "All clients" from the sidebar. `lr_impersonation` is dead; `lr_admin_active_brand` is the new persistence key.
+  - **Social Calendar / Post Plans** — the AI Social Media Manager working surface. Month grid, click-to-create, per-platform copy variants (IG / LinkedIn / X), references + deliverables uploads, threaded conversation, full status workflow with auto-logged transitions. "Any activity" unread tracking with red dots on chips and a count badge on the sidebar nav item; both clear instantly via optimistic mutators.
+- Migrations applied: `0021_post_plans`, `0022_post_plan_views_and_attachments_storage`, `0023_post_plan_status_log`.
+- New storage bucket: `post-plan-attachments` (public read, RLS keyed off `<accountId>/<postPlanId>/...` path).
+- New route: `plan` → `PostPlanDetailView`.
+- BrandKitView fix: agency now reads `accountId` as a prop instead of `auth.account.id`, fixing the agency-side blank Brand Intelligence page.
+- Sections touched: Glossary; Data model (new tables, bucket, migrations); LocalStorage keys; Routes/Views; Key feature flows (added Post Plans + BrandPicker + Unread tracking); Known decisions.
 
 ### 2026-04-29 — Admin sidebar reorder
 - `Sidebar.buildAdminNav` now orders items: Clients → Inbox → Social Calendar → All tasks → Team. Clients moves to the top (it's the daily entry point — pick a brand first); Team is pinned at the bottom (agency-internal, accessed less often). No functional change beyond order.
@@ -60,10 +70,12 @@ something looks confusingly named.
 | **Workspace** | UI-facing word for an account | (no separate code id) |
 | **Owner** | Can delete the account, manage members | `account_members.role = 'owner'` |
 | **Member** | Can read/edit but not delete or manage team | `account_members.role = 'member'` |
-| **Active brand** | The brand the user is currently viewing | `auth.account`, `localStorage[lr_active_brand_<userId>]` |
-| **Brand picker** | Modal for choosing a brand on login | `BrandSelectView`, gated by `auth.requiresBrandSelection` |
-| **Impersonation** | Agency staff opening a brand's workspace | `sessionStorage.lr_impersonation` |
-| **Brand Kit** / **Brand Intelligence** / **Kit** | Brand's design + voice profile | `brand_kits` table, `BrandKitView` route key `"brand"` |
+| **Active brand** | The brand the user is currently viewing | Brand users: `auth.account`, `localStorage[lr_active_brand_<userId>]`. Agency users: `App.activeAdminBrandId`, `localStorage.lr_admin_active_brand` |
+| **All clients** | Agency-only sentinel for the BrandPicker meaning "no brand selected" | `ALL_CLIENTS = '__all__'` in `BrandPicker.jsx`; `App.isAllClientsMode` |
+| **BrandPicker** | Sidebar dropdown that scopes every surface to one brand (or All clients for agency) | `BrandPicker.jsx`, mounted in `Sidebar` |
+| **Brand select view** | Login-time picker shown to brand users with 2+ memberships | `BrandSelectView`, gated by `auth.requiresBrandSelection` |
+| **Impersonation** *(deprecated)* | Old shadow flow where agency entered a brand's workspace via sessionStorage | ~~`sessionStorage.lr_impersonation`~~ — replaced by BrandPicker on 2026-04-30 |
+| **Brand Kit** / **Brand Intelligence** / **Kit** | Brand's design + voice profile | `brand_kits` table, `BrandKitView` route key `"brand"`, accepts `accountId` prop |
 | **Brief** / **Task** | A creative request | `tasks` table, `TasksView` / `TaskDetailView` |
 | **Chip** | A structured brief field (count/deadline/format/platform/objective) | `task.brief.chips`, `CHIP_TO_COLUMN` map in `db.js` |
 | **Enrichment** / **Fetch Brand** | Auto-fill a kit from the brand's website | `triggerBrandKitEnrichment`, `enrich-brand-kit` edge function |
@@ -71,7 +83,14 @@ something looks confusingly named.
 | **Auto-create-brand** | First-login provisioning of a brand workspace | `create_brand_account` RPC, called from `auth.js _doRefresh` |
 | **Brand-just-deleted gate** | Forces picker after delete instead of auto-create | `localStorage.lr_brand_just_deleted` |
 | **Library** | Searchable grid of delivered creatives | `LibraryView`, route `"library"` (admin renders `AdminUploadView`) |
-| **Activity** | Per-task event feed | `activity` table, rendered in `TaskDetailView` |
+| **Activity** *(task-side)* | Per-task event feed | `activity` table, rendered in `TaskDetailView` |
+| **Post plan** | A single content concept scheduled for one or more social platforms | `post_plans` table, `PostPlanDetailView`, route `"plan"` |
+| **Social Calendar** | Month-grid surface that shows post plans by date; default landing view | `CalendarView`, route `"calendar"` |
+| **References** *(post-plan-side)* | Brand-uploaded inspiration files for a post plan | `post_plan_attachments.kind = 'reference'`, brand-only upload |
+| **Deliverables** *(post-plan-side)* | Agency-uploaded final creatives for a post plan | `post_plan_attachments.kind = 'final'`, agency-only upload |
+| **Status log** | Per-row history of a post plan's status transitions | `post_plan_status_log`, written by `log_post_plan_status_change` AFTER UPDATE trigger |
+| **Unread activity** | Red dot on a calendar chip + badge count on sidebar — fires when comments, attachments, or plan edits by other users happened since the viewer's `last_seen_at` | `post_plan_views`, `loadPostPlanUnreadCounts` in `db.js` |
+| **Mark seen** | Stamp `post_plan_views.last_seen_at = now()` for the viewer | `markPostPlanSeen`, called on detail-view mount, on tab focus, and after every `persist()` |
 
 ---
 
@@ -129,7 +148,7 @@ l-r-studio-dashboard/
 ├── CLAUDE.md                  # Project rules for Claude Code (must read REFERENCE.md)
 ├── supabase/
 │   ├── config.toml            # project_id = "vmfwnfflhvskadkfnvds"
-│   ├── migrations/            # 0001 → 0020+ (numbered, applied in order)
+│   ├── migrations/            # 0001 → 0023+ (numbered, applied in order)
 │   └── functions/
 │       ├── _shared/           # cors helper
 │       └── enrich-brand-kit/  # the only edge function so far
@@ -170,6 +189,20 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 | `brand_kits` | Brand's design + voice profile | one per account; ~60 columns including `palette`, `fonts`, `tagline`, `mission`, `voice_tags`, `logos`, `enrichment_status`, `enriched_at` | Members + agency | Members + agency |
 | `invitations` | Pending team invites | `account_id`, `email`, `token`, `role`, `expires_at` | Inviter + invitee | Inviter |
 
+### Post plan tables (Social Calendar — added 2026-04-30)
+
+| Table | Purpose | Key columns | Who can SELECT | Who can write |
+|---|---|---|---|---|
+| `post_plans` | One content concept scheduled for one or more platforms | `account_id`, `scheduled_at`, `platforms` (text[]: `instagram`/`linkedin`/`x`), `concept`, `copy_variants` (jsonb, per-platform copy), `status`, `created_by`, `approved_at`, `posted_at` | Members + agency | Members + agency |
+| `post_plan_comments` | Threaded conversation per plan | `post_plan_id`, `author_id`, `body` | Anyone with read access to the parent plan | Author + agency |
+| `post_plan_attachments` | References (brand) + Deliverables (agency) | `post_plan_id`, `kind` (`reference`/`final`), `version`, `storage_path`, `filename`, `mime_type`, `size_bytes`, `uploaded_by` | Anyone with read access to the parent plan | Uploader (own rows); agency can delete any |
+| `post_plan_views` | Per-(user, plan) "last seen" stamp powering unread tracking | `user_id`, `post_plan_id`, `last_seen_at` (composite PK) | Self only | Self only |
+| `post_plan_status_log` | Auto-logged status transitions for the Activity feed | `post_plan_id`, `from_status`, `to_status`, `actor_id`, `created_at` | Anyone with read access to the parent plan | Trigger only (`log_post_plan_status_change` SECURITY DEFINER) |
+
+`post_plans.status` enum: `not_started`, `wip`, `needs_brand_feedback`, `needs_admin_revision`, `approved`, `scheduled`, `posted`, `delayed`. The `touch_post_plan_status_stamps` trigger auto-stamps `approved_at` / `posted_at` on first transition into those states.
+
+All four post-plan tables are in the `supabase_realtime` publication. Realtime drives cross-tab unread refresh and same-tab cross-user updates; same-tab same-user updates use optimistic mutators (`upsertPostPlan`, `removePostPlanLocal`, `clearUnreadForPlan` in `App.jsx`).
+
 ### Storage buckets
 
 | Bucket | Contents | Public? | Access policy |
@@ -177,6 +210,7 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 | `assets` | Task deliverables, WIPs, references | Private (signed URLs) | Members of the task's account |
 | `brand-assets` | Brand kit references (mood, packaging, etc.) | Public read | Members for write |
 | `brand-logos` | Brand logo + variants | Public read | Members for write |
+| `post-plan-attachments` | Post plan references + final deliverables | Public read | Members of the account; RLS keyed off path scheme `<accountId>/<postPlanId>/<ts>_<filename>` via `post_plan_attachment_account_id(name)` SQL helper |
 
 ### Activity event types
 
@@ -210,7 +244,12 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API**: `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0020_delete_brand_account_rpc.sql`.
+Most recent: `0023_post_plan_status_log.sql`.
+
+Recent batch (all post-plan-related):
+- `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
+- `0022_post_plan_views_and_attachments_storage` — `post_plan_views` table, `post-plan-attachments` storage bucket + storage RLS scoped via `post_plan_attachment_account_id(name)` helper.
+- `0023_post_plan_status_log` — `post_plan_status_log` + `log_post_plan_status_change` trigger.
 
 ---
 
@@ -230,20 +269,33 @@ Most recent: `0020_delete_brand_account_rpc.sql`.
 
 ### Brand resolution (the part that matters most)
 
-`hydrateProfile()` in `auth.js`:
+There are two parallel brand-resolution paths now — one for brand users (login-time picker), one for agency users (sidebar BrandPicker).
+
+**Brand users** — `hydrateProfile()` in `auth.js`:
 
 ```
-isAgency? → first agency membership wins, picker never shows
-else:
-  has localStorage.lr_active_brand_<userId> matching a membership? → use it
-  else exactly 1 membership? → auto-select
-  else (0 or 2+ memberships) → picker (BrandSelectView)
+has localStorage.lr_active_brand_<userId> matching a membership? → use it
+else exactly 1 membership? → auto-select
+else (0 or 2+ memberships) → picker (BrandSelectView)
 ```
 
-**`requiresBrandSelection = true`** when:
+`requiresBrandSelection = true` when:
 - Non-agency user
 - No active membership
 - 2+ memberships **OR** `localStorage.lr_brand_just_deleted` is set
+
+**Agency users** — `App.jsx`:
+
+```
+activeAdminBrandId state, hydrated from localStorage.lr_admin_active_brand,
+defaults to ALL_CLIENTS sentinel ('__all__').
+isAllClientsMode = isAgency && (activeAdminBrandId === ALL_CLIENTS || !activeAdminBrandId)
+scopeAccountId = isAllClientsMode ? null : activeAdminBrandId
+```
+
+The sidebar `<BrandPicker/>` is the only UI that mutates `activeAdminBrandId`. Every per-brand surface (CalendarView, BrandKitView, LibraryView, PerformanceView, TeamView, PostPlanDetailView) reads the resolved `scopeAccountId` (aliased as `calendarAccountId` for legibility) via props. In All-clients mode, those views fall back to a "Pick a brand from the sidebar" empty state.
+
+**Agency BrandSelectView is never shown.** The login-time picker is brand-only — agency members are auto-routed to All-clients mode on first sign-in regardless of how many memberships they have.
 
 ### Auto-create-brand guard
 
@@ -259,13 +311,14 @@ This prevents both invite races and silent re-creation after deletion.
 | Key | Purpose | Set by | Cleared by |
 |---|---|---|---|
 | `lr_auth` | Cached auth profile for instant first paint | `_doRefresh` | sign-out |
-| `lr_active_brand_<userId>` | Last-picked brand for this user on this device | `setActiveBrand` | sign-out (per-user) |
+| `lr_active_brand_<userId>` | Brand user's last-picked brand on this device | `setActiveBrand` | sign-out (per-user) |
+| `lr_admin_active_brand` | Agency user's active brand id (or `'__all__'` sentinel) | `App.setActiveAdminBrandId`, driven by `<BrandPicker/>` | — (persists across sessions) |
 | `lr_brand_just_deleted` | Forces picker on next login after deletion | `SettingsView.deleteWorkspace` | `setActiveBrand` |
 | `lr_pending_invite` | Invite token to redeem on next sign-in | URL `?invite=…` query string | After redemption |
 | `lr_pending_brand_name` | Brand name to use during auto-create | `signUpBrand` | After auto-create |
 | `lr_mode` | `'admin'` or `'customer'` | `useEffect` mirror of `mode` state | — |
 | `lr_route` | Last visited route | `useEffect` in App.jsx | — |
-| `lr_impersonation` (sessionStorage) | Admin → client view shadow | `enterClientView` | `exitClientView` |
+| ~~`lr_impersonation`~~ *(deprecated)* | Was: admin → client view shadow | Removed 2026-04-30 in the BrandPicker rollout. Old code that read this is gone. | — |
 
 ---
 
@@ -283,17 +336,17 @@ items per `mode`. View IDs:
 | `performance` | `PerformanceView` | — | Metrics dashboard (placeholder) |
 | `team` | `TeamView` | `AdminClientsView` | Customer: invite teammates. Admin: client list |
 | `members` | — | `AdminTeamView` | Agency-only team management |
-| `brand` | `BrandKitView` | `BrandKitView` | Brand Intelligence — full kit view + Fetch Brand |
-| `calendar` | `CalendarView` | `CalendarView` | Social calendar (default landing for customers) |
+| `brand` | `BrandKitView` | `BrandKitView` | Brand Intelligence — full kit view + Fetch Brand. Receives `accountId` from App. |
+| `calendar` | `CalendarView` | `CalendarView` | Social Calendar — month grid of post plans. Universal landing view (signed-in + guest). |
+| `plan` + `id` | `PostPlanDetailView` | `PostPlanDetailView` | Per-plan detail: per-platform copy, references + deliverables, conversation, status workflow, activity feed. |
 | `settings` | `SettingsView` | `SettingsView` | Workspace name, danger-zone delete |
 | `profile` | `ProfileView` | `ProfileView` | User profile |
 
 ### First-paint defaults
 
-- **Customer**: `view: "calendar"`
-- **Admin**: `view: "home"`
-- **Guest**: snapped back to `view: "home"` on every render
-- **After onboarding completes**: `view: "brand"` (so the user sees enriched data immediately)
+- **Everyone (signed-in + guest)**: `view: "calendar"` is the universal landing surface (Social Calendar). Returning users with a saved `lr_route` are restored to wherever they left off.
+- **After onboarding completes**: `view: "brand"` (so the user sees enriched Brand Intelligence immediately).
+- **After sign-in**: `view: "calendar"` is the default; if a `pendingAction` was stashed (e.g. unsubmitted brief), that action runs instead and owns its own navigation.
 
 ### Gates
 
@@ -340,6 +393,43 @@ All activity rows are written by SECURITY DEFINER triggers (RLS allows SELECT on
 
 ### Schedule a call
 HomeView "Schedule a call" button → external link to `https://cal.linkrunner.io/team/demos/lragency`, opens in new tab.
+
+### Brand scope switching (BrandPicker)
+1. Sidebar `<BrandPicker/>` is mounted under the L+R wordmark whenever the user is signed in.
+2. **Brand owners** see their brand memberships + "Create new brand". Selecting a brand calls `auth.setActiveBrand(accountId)` (the existing brand-side flow).
+3. **Agency users** see "All clients" sentinel + every brand account + "Add a client" + "Manage clients". Selecting a brand calls `App.setActiveAdminBrandId(id)`, which writes to `localStorage.lr_admin_active_brand` and updates `App.activeAdminBrandId` state.
+4. The `App.scopeAccountId` derivation feeds every per-brand surface as `calendarAccountId` (or `accountId` to BrandKitView). When the agency picker is on All-clients, the value is `null` and the surfaces fall back to "Pick a brand from the sidebar" empty states.
+5. The agency `Sidebar` swaps its nav based on `isAllClientsMode`: cross-client surfaces (Inbox, All tasks) when on All clients, per-brand surfaces (Calendar, Tasks, Library, Brand Intelligence, Performance, Brand team, L+R Team) when in a specific brand.
+
+### Create + edit a post plan
+1. **Agency only.** From `CalendarView`, click an empty day cell or "New post plan" → `createStubAndOpen` → `createPostPlan` writes a stub row (status `not_started`, no copy, no platforms) → `setRoute({view: 'plan', id})` opens `PostPlanDetailView`.
+2. The stub also lands in `App.postPlans` immediately via `onPlanCreated`/`upsertPostPlan` so the chip shows up on the calendar without waiting for realtime.
+3. In `PostPlanDetailView`: title is click-to-edit (pencil icon, Enter saves, Escape cancels). Schedule is a `<input type="datetime-local">` with on-blur persist (raw string draft state — typing through day → month → year → time doesn't lose focus).
+4. Toggle platforms (IG / LinkedIn / X) → per-platform copy variants surface as a row of pill tabs; active platform is the filled pill. Copy text saves on blur.
+5. Status workflow: agency clicks **Submit for review** → `needs_brand_feedback`. Brand clicks **Approve** (`approved`) or **Request changes** (`needs_admin_revision`, requires a comment). Agency can also flip to `delayed` or `posted` directly. Every transition calls `persist({status})` → `updatePostPlan` → trigger writes to `post_plan_status_log` → triggers also stamp `approved_at` / `posted_at` on first transition into those states.
+6. Conversation tab: `addPostPlanComment`. Inserts subscribe via `subscribeToPostPlanComments` for the open plan.
+7. Activity tab: synthesized feed showing creation, comments, attachments uploaded, and every status transition. Sorted newest-first.
+
+### Post plan attachments (References + Deliverables)
+- **References** card: brand-only upload. Shows the inspiration files the brand has shared. Both sides view, only brand uploads.
+- **Deliverables** card: agency-only upload. Final creatives. Both sides view, only agency uploads.
+- Storage: `post-plan-attachments` bucket, path `<accountId>/<postPlanId>/<ts>_<filename>`. Storage RLS extracts the leading account id via the `post_plan_attachment_account_id(name)` SQL helper.
+- Upload flow: `addPostPlanAttachment({postPlanId, accountId, kind, file, uploadedBy})` uploads to storage, then inserts the metadata row. If the row insert fails, the storage object is deleted to avoid orphaning.
+- Delete: storage first, then row (best-effort on storage so a stale orphan never blocks a row delete).
+
+### Unread activity tracking
+1. Every post-plan touchpoint (open, edit, comment, upload, status flip) writes `post_plan_views(user_id, post_plan_id, last_seen_at = now())` via `markPostPlanSeen`. Idempotent upsert on the composite PK.
+2. `loadPostPlanUnreadCounts({userId, postPlans})` returns `Map<postPlanId, count>` by counting:
+   - Comments authored by **others** with `created_at > last_seen_at`
+   - Attachments uploaded by **others** with `created_at > last_seen_at`
+   - Plan-level edits (`post_plans.updated_at > last_seen_at`)
+3. App.jsx subscribes to all three tables (`subscribeToPostPlanActivity`) — any new event triggers a refresh of the unread map.
+4. Same-tab edits update `App.unreadByPlan` directly via the `clearUnreadForPlan` callback (passed through to `PostPlanDetailView` as `onPlanSeen`) — no realtime roundtrip needed for the dot to clear when the viewer opens or edits a plan.
+5. Calendar chips show a red `<span>` dot at the right edge when the count is positive. Sidebar nav item shows a `badge-count` totalling all unread plans (`Array.from(unreadByPlan.values()).reduce(...)` in App.jsx).
+
+### Replicating live data in another env
+
+The post-plan tables and bucket are migration-driven (0021–0023). On a fresh project: `supabase db push` applies them in order, then the bucket and storage RLS land via 0022. No manual seed.
 
 ---
 
@@ -443,6 +533,13 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **BrandPicker replaces shadow-impersonation.** The old `lr_impersonation` sessionStorage flow was a UI-only shadow that left an "agency viewing X" banner across the screen. The new `BrandPicker` makes brand selection a first-class sidebar control for both brand owners and agency users — same control, different option list. Cleaner mental model, no banner, agency state persists across sessions via `localStorage.lr_admin_active_brand`.
+- **Same-tab edits use optimistic mutators, not realtime.** Realtime subscriptions are great for cross-tab and cross-user, but the same-tab same-user case (open plan → edit title → navigate back) was eating ~200ms before the calendar chip reflected the change. App.jsx now exposes `upsertPostPlan` / `removePostPlanLocal` / `clearUnreadForPlan` callbacks, passed down to detail and calendar views, that update App-level state synchronously. Realtime is the safety net.
+- **Post-plan status changes go through a log table, not the existing `activity` table.** `activity` is task-scoped and its triggers/types are tightly coupled to the brief flow. A standalone `post_plan_status_log` keeps post-plan history isolated, matches the pattern of `post_plan_attachments` / `post_plan_comments`, and makes RLS straightforward.
+- **`markPostPlanSeen` after every persist, not just on mount.** Originally it only fired on detail-view mount + tab focus. That left a gap where the viewer's own edit would re-bump `post_plans.updated_at` without re-stamping their `last_seen_at` — generating a phantom unread on their own action. Re-stamping inside `persist()` closes it.
+- **Activity feed sorted newest-first.** Matches Slack / Linear / Notion convention; matches the human "what just happened?" mental model when reopening a plan after a few hours.
+- **Datetime input persists on blur, not change.** A controlled `value={toDatetimeLocal(scheduledAt)}` re-rendered on every keystroke, kicking the cursor out of whichever date sub-field the user was typing into. Switched to a raw-string `scheduledDraft` state and on-blur persist — input keeps focus while typing through day → month → year → time. Same pattern as the title input.
+- **Agency-side BrandKitView reads `accountId` as a prop.** Was originally falling back to `auth.account.id` + a legacy impersonation lookup, which broke completely after the BrandPicker rollout. Now matches the same prop pattern as LibraryView / PerformanceView / TeamView.
 - **Library scoping is client-side, not server-side.** RLS already restricts to accessible accounts; an extra DB filter would just complicate the query without security gain. Mirrors the TasksView pattern in App.jsx.
 - **Brand deletion uses a SECURITY DEFINER RPC, not a DELETE policy.** Cleaner ownership/type guards in one place; matches the pattern of `remove_team_member` and `change_member_role`.
 - **Bot-wall detection is title-based, not content-based.** Real homepages don't have titles like "Something went wrong" — high-precision check, won't false-positive on a site that mentions "Cloudflare" in its footer.
@@ -460,6 +557,10 @@ Running log of "we considered X and chose Y because Z" — newest first.
 - **Multi-source URL discovery (`discover` / `check_agent` modes)**: deployed in `enrich-brand-kit` but no client wires call them yet. Designed to find socials from a seed URL via Firecrawl Agent.
 - **Past creatives image cache**: noted in session memory — IG image fetch + cache to Supabase Storage is deferred until the social asset pipeline is built. `kit.pastCreatives` entries without `imageUrl` are filtered out of the UI (`BrandKitView` line ~1710).
 - **Per-project URL paths**: requested but not implemented. Currently all brand workspaces sit at `/`; switching is via state. Real per-brand URLs would need a router refactor.
+- **Post plan → Library promotion**: subtitle on the Deliverables card promises "Pushed to Library when marked posted." Trigger isn't wired yet — needs a hook off `post_plans.status = 'posted'` that copies (or links) `post_plan_attachments` of `kind = 'final'` into `assets`.
+- **Post plan attachment versioning**: schema has `version int default 1` on `post_plan_attachments` but no UI to bump. Currently each upload is `version = 1` regardless. Revisit when an admin needs to re-deliver after a brand revision request.
+- **Status `scheduled` has no button**: `post_plans.status` enum includes `scheduled` (between approved and posted), but no UI surface flips into it. Either add a "Schedule" CTA on approved plans or remove the value from the enum.
+- **Realtime publication for `post_plan_views`**: not added in 0022. Doesn't break unread today (App.jsx refetches the view stamps on each refresh tick triggered by comment/attachment/plan events), but means cross-tab "I marked seen in tab A → clear dot in tab B" relies on the next refresh tick rather than firing on the views write itself. Add to publication if cross-tab unread feels laggy.
 - **Credential rotations** (see §12).
 
 ---
