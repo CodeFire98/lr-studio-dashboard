@@ -49,6 +49,7 @@ function hydrateProfile(user, profileRow, membershipRows, activeAccountId) {
       account: {
         id: m.accounts.id,
         name: m.accounts.name,
+        slug: m.accounts.slug,
         type: m.accounts.type,
         accentColor: m.accounts.accent_color || null,
       },
@@ -112,7 +113,7 @@ async function loadProfileFor(user) {
     supabase.from('profiles').select('*').eq('id', user.id).maybeSingle(),
     supabase
       .from('account_members')
-      .select('role, accounts(id, name, type, accent_color)')
+      .select('role, accounts(id, name, slug, type, accent_color)')
       .eq('user_id', user.id),
   ]);
 
