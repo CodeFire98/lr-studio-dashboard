@@ -11,32 +11,59 @@ import MOCK from '../lib/mockData.js';
 import { setActiveBrand, readAuth } from '../lib/auth.js';
 import { promptCreateBrand } from './CreateBrandModal.jsx';
 
-const buildNav = (taskCount) => [
-  { key: "home", label: "Home", icon: "home" },
-  { key: "tasks", label: "Tasks", icon: "folder", badge: taskCount || undefined },
-  { key: "brand", label: "Brand Intelligence", icon: "brand" },
-  { key: "library", label: "Library", icon: "library" },
-  { key: "calendar", label: "Calendar", icon: "calendar" },
-  { key: "performance", label: "Performance", icon: "chart" },
-  { key: "team", label: "Team", icon: "team" },
-  { key: "settings", label: "Settings", icon: "settings" },
-];
+// Customer nav. Social Calendar leads (it's the working surface for the
+// AI Social Media Manager service); Request (was "Home") is deprioritized
+// because most customers prefer talking to a human creative lead, so it
+// lives near the bottom and is on its way out. The icon is `send` instead
+// of `home` now that it's no longer the landing page. Settings was removed
+// — still reachable from the profile menu (Account settings).
+//
+// Performance and Team are pinned to the bottom of the sidebar (just
+// above the profile pill) — they're reference surfaces, not daily
+// working surfaces, so they don't deserve top-of-fold real estate.
+const buildNav = (taskCount) => ({
+  primary: [
+    { key: "calendar", label: "Social Calendar", icon: "calendar" },
+    { key: "tasks", label: "Tasks", icon: "folder", badge: taskCount || undefined },
+    { key: "brand", label: "Brand Intelligence", icon: "brand" },
+    { key: "library", label: "Library", icon: "library" },
+    { key: "home", label: "Request", icon: "send" },
+  ],
+  secondary: [
+    { key: "performance", label: "Performance", icon: "chart" },
+    { key: "team", label: "Team", icon: "team" },
+  ],
+});
 
+// Guests see a teaser of the workspace — the empty Social Calendar (so they
+// can preview the AI Social Media Manager surface) and Request (the only
+// thing they can actually do without an account).
 const GUEST_NAV = [
-  { key: "home", label: "Home", icon: "home" },
+  { key: "calendar", label: "Social Calendar", icon: "calendar" },
+  { key: "home", label: "Request", icon: "send" },
 ];
 
 const buildAdminNav = (taskCount) => [
   { key: "home", label: "Inbox", icon: "home" },
   { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
-  { key: "calendar", label: "Calendar", icon: "calendar" },
+  { key: "calendar", label: "Social Calendar", icon: "calendar" },
   { key: "team", label: "Clients", icon: "team" },
   { key: "members", label: "Team", icon: "team" },
 ];
 
 const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks, auth, onRequestLogin, taskCount = 0 }) => {
   const isGuest = !auth;
-  const items = isGuest ? GUEST_NAV : (mode === "admin" ? buildAdminNav(taskCount) : buildNav(taskCount));
+  // Customer mode splits the nav into two groups: the primary working
+  // surfaces at the top and the bottom-pinned reference views (Performance,
+  // Team) just above the profile pill. Guest and admin keep a single flat
+  // list since neither has the same daily-vs-reference distinction.
+  const navConfig = isGuest
+    ? { primary: GUEST_NAV, secondary: [] }
+    : mode === "admin"
+      ? { primary: buildAdminNav(taskCount), secondary: [] }
+      : buildNav(taskCount);
+  const primaryItems = navConfig.primary;
+  const secondaryItems = navConfig.secondary;
   const [menuOpen, setMenuOpen] = useState(false);
   const wrapRef = useRef(null);
 
@@ -103,7 +130,7 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
         {isGuest ? "Welcome" : mode === "admin" ? "Agency" : "Workspace"}
       </div>
       <nav className="nav">
-        {items.map((n) => (
+        {primaryItems.map((n) => (
           <button
             key={n.key}
             className={"nav-item " + (route.view === n.key ? "active" : "")}
@@ -129,6 +156,25 @@ const Sidebar = ({ route, setRoute, mode, setMode, onSignOut, tweaks, setTweaks,
       )}
 
       <div className="sidebar-spacer" />
+
+      {/* Bottom-pinned secondary nav (customer mode only). Renders above
+          the profile pill so reference views stay one click away without
+          crowding the top of the sidebar. */}
+      {secondaryItems.length > 0 && (
+        <nav className="nav nav-secondary">
+          {secondaryItems.map((n) => (
+            <button
+              key={n.key}
+              className={"nav-item " + (route.view === n.key ? "active" : "")}
+              onClick={() => setRoute({ view: n.key })}
+            >
+              <Icon name={n.icon} size={16} />
+              <span>{n.label}</span>
+              {n.badge && <span className="badge-count">{n.badge}</span>}
+            </button>
+          ))}
+        </nav>
+      )}
 
       {/* Bottom slot: Log In button (guest) or user popover (signed-in) */}
       {isGuest ? (

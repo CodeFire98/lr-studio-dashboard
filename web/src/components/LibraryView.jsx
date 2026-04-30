@@ -5,11 +5,30 @@ import { Icon } from './Icon.jsx';
 import { loadLibraryAssets, assetSignedUrl } from '../lib/db.js';
 import { useLightbox } from './Lightbox.jsx';
 
-const TYPE_FILTERS = [
-  { key: 'all', label: 'All types', test: () => true },
-  { key: 'image', label: 'Images', test: (a) => (a.mimeType || '').startsWith('image/') },
-  { key: 'video', label: 'Videos', test: (a) => (a.mimeType || '').startsWith('video/') },
-  { key: 'doc', label: 'Docs', test: (a) => !(a.mimeType || '').startsWith('image/') && !(a.mimeType || '').startsWith('video/') },
+// Platform filter — we focus the AI Social Media Manager service on
+// Instagram, LinkedIn, and X. The platform is captured on the parent task
+// (free-text, often comma-separated like "Instagram, LinkedIn"), so we
+// match case-insensitively and accept common synonyms (Twitter == X).
+const PLATFORM_FILTERS = [
+  { key: 'all', label: 'All', test: () => true },
+  {
+    key: 'instagram',
+    label: 'Instagram',
+    test: (a) => /\binstagram\b|\big\b/i.test(a.taskPlatform || ''),
+  },
+  {
+    key: 'linkedin',
+    label: 'LinkedIn',
+    test: (a) => /\blinkedin\b/i.test(a.taskPlatform || ''),
+  },
+  {
+    key: 'x',
+    label: 'X',
+    // Match either the modern "X" handle or its predecessor "Twitter".
+    // The negative lookarounds keep us from grabbing stray X's inside
+    // longer words (e.g. "TikTokX" or "Mixed").
+    test: (a) => /(?:^|[^A-Za-z])(x|twitter)(?:$|[^A-Za-z])/i.test(a.taskPlatform || ''),
+  },
 ];
 
 const DATE_WINDOWS = [
@@ -24,9 +43,8 @@ const LibraryView = ({ auth }) => {
   const [thumbs, setThumbs] = useState({});
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [typeKey, setTypeKey] = useState('all');
+  const [platformKey, setPlatformKey] = useState('all');
   const [dateKey, setDateKey] = useState('all');
-  const [taskId, setTaskId] = useState('all');
   const [q, setQ] = useState('');
 
   // Brand users with multi-brand membership should only see creatives from
@@ -67,31 +85,21 @@ const LibraryView = ({ auth }) => {
     return () => { cancelled = true; };
   }, [assets]);
 
-  const tasks = useMemo(() => {
-    const seen = new Map();
-    for (const a of assets) {
-      if (!a.taskId) continue;
-      if (!seen.has(a.taskId)) seen.set(a.taskId, { id: a.taskId, title: a.taskTitle });
-    }
-    return [{ id: 'all', title: 'All tasks' }, ...Array.from(seen.values())];
-  }, [assets]);
-
   const filtered = useMemo(() => {
-    const typeTest = TYPE_FILTERS.find((t) => t.key === typeKey)?.test || (() => true);
+    const platformTest = PLATFORM_FILTERS.find((t) => t.key === platformKey)?.test || (() => true);
     const window = DATE_WINDOWS.find((w) => w.key === dateKey);
     const now = Date.now();
     const needle = q.trim().toLowerCase();
     return assets.filter((a) => {
-      if (!typeTest(a)) return false;
-      if (taskId !== 'all' && a.taskId !== taskId) return false;
+      if (!platformTest(a)) return false;
       if (window?.cutoffMs && now - new Date(a.createdAt).getTime() > window.cutoffMs) return false;
       if (needle) {
-        const hay = `${a.filename} ${a.taskTitle || ''} ${a.accountName || ''}`.toLowerCase();
+        const hay = `${a.filename} ${a.taskTitle || ''} ${a.accountName || ''} ${a.taskPlatform || ''}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [assets, typeKey, dateKey, taskId, q]);
+  }, [assets, platformKey, dateKey, q]);
 
   const lightbox = useLightbox();
   const handleOpen = async (a) => {
@@ -112,7 +120,7 @@ const LibraryView = ({ auth }) => {
       <div className="page-head">
         <div className="titles">
           <h1>Library</h1>
-          <div className="sub">Every deliverable your agency has shipped. Filter by task, date, or file type.</div>
+          <div className="sub">Every deliverable your agency has shipped. Filter by platform or date.</div>
         </div>
         <div className="actions">
           <div className="topbar-search" style={{background: "var(--surface)", border: "1px solid var(--line)"}}>
@@ -129,23 +137,13 @@ const LibraryView = ({ auth }) => {
 
       <div className="filterbar">
         <div className="seg">
-          {TYPE_FILTERS.map((t) => (
-            <button key={t.key} className={typeKey === t.key ? "on" : ""} onClick={() => setTypeKey(t.key)}>
+          {PLATFORM_FILTERS.map((t) => (
+            <button key={t.key} className={platformKey === t.key ? "on" : ""} onClick={() => setPlatformKey(t.key)}>
               {t.label}
             </button>
           ))}
         </div>
         <div style={{flex: 1}}/>
-        <select
-          className="filter-pill"
-          value={taskId}
-          onChange={(e) => setTaskId(e.target.value)}
-          style={{padding: "6px 12px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 999}}
-        >
-          {tasks.map((t) => (
-            <option key={t.id} value={t.id}>{t.title}</option>
-          ))}
-        </select>
         <select
           className="filter-pill"
           value={dateKey}

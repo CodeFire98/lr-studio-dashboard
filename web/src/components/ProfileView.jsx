@@ -5,8 +5,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
-import { readAuth, requestPasswordReset } from '../lib/auth.js';
-import { loadProfile, updateProfile } from '../lib/db.js';
+import { readAuth, requestPasswordReset, setActiveBrand } from '../lib/auth.js';
+import { loadProfile, updateProfile, updateAccountName } from '../lib/db.js';
+import { confirm } from './ConfirmDialog.jsx';
 
 const AVATAR_COLORS = ['#E8553D', '#C4412C', '#C88A3F', '#3E8864', '#6579BE', '#8B5CF6', '#2B2B2E'];
 
@@ -36,6 +37,12 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
   const [initials, setInitials] = useState('');
   const [initialsTouched, setInitialsTouched] = useState(false);
   const [avatarColor, setAvatarColor] = useState('#E8553D');
+  // Brand-name editing for non-agency users. Tracks the current account's
+  // name so the field stays in sync if the user switches workspaces.
+  const accountId = auth.account?.id || null;
+  const accountNameInitial = auth.account?.name || '';
+  const canEditBrandName = !auth.isAgency && !!accountId;
+  const [brandName, setBrandName] = useState(accountNameInitial);
 
   const [saving, setSaving] = useState(false);
   const [flash, setFlash] = useState('');
@@ -65,7 +72,7 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
     setInitials(initialsFromName(displayName));
   }, [displayName, initialsTouched]);
 
-  const dirty = useMemo(() => {
+  const profileDirty = useMemo(() => {
     if (!profile) return false;
     return (
       (displayName || '') !== (profile.displayName || '') ||
@@ -74,16 +81,51 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
     );
   }, [profile, displayName, initials, avatarColor]);
 
+  const brandDirty = useMemo(() => {
+    if (!canEditBrandName) return false;
+    return (brandName || '').trim() !== (accountNameInitial || '').trim();
+  }, [canEditBrandName, brandName, accountNameInitial]);
+
+  const dirty = profileDirty || brandDirty;
+
   const save = async () => {
     if (!userId) return;
+    // Identity changes are sensitive — they show up on every brief, comment,
+    // and delivery (display name) and on every shared document the agency
+    // produces (brand name). Confirm before persisting.
+    const lines = [];
+    if (profileDirty && (displayName || '') !== (profile?.displayName || '')) {
+      lines.push(`Display name → "${displayName}"`);
+    }
+    if (brandDirty) {
+      lines.push(`Brand name → "${brandName.trim()}"`);
+    }
+    if (lines.length) {
+      const ok = await confirm({
+        title: 'Save these changes?',
+        body: `${lines.join(' · ')}. These names appear across every brief, deliverable, and message we share with your team.`,
+        confirmText: 'Save changes',
+        cancelText: 'Keep editing',
+      });
+      if (!ok) return;
+    }
     setSaving(true); setFlash(''); setErr('');
     try {
-      const updated = await updateProfile(userId, {
-        display_name: displayName,
-        initials,
-        avatar_color: avatarColor,
-      });
-      setProfile(updated);
+      let updatedProfile = profile;
+      if (profileDirty) {
+        updatedProfile = await updateProfile(userId, {
+          display_name: displayName,
+          initials,
+          avatar_color: avatarColor,
+        });
+      }
+      if (brandDirty) {
+        await updateAccountName(accountId, brandName.trim());
+        // Re-hydrate the auth snapshot so the sidebar workspace pill picks
+        // up the new name without a full reload.
+        try { await setActiveBrand(accountId); } catch {}
+      }
+      setProfile(updatedProfile);
       setInitialsTouched(false);
       setFlash('Profile saved.');
       setTimeout(() => setFlash(''), 1800);
@@ -100,6 +142,7 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
     setInitials(profile.initials || initialsFromName(profile.displayName || ''));
     setAvatarColor(profile.avatarColor || '#E8553D');
     setInitialsTouched(false);
+    setBrandName(accountNameInitial);
   };
 
   const handleResetPassword = async () => {
@@ -172,7 +215,7 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
             </div>
           </div>
           <div className="profile-head-right">
-            <button className="btn btn-ghost" onClick={() => setRoute?.({ view: 'home' })}>
+            <button className="btn btn-ghost" onClick={() => setRoute?.({ view: mode === 'admin' ? 'home' : 'calendar' })}>
               <Icon name="arrow-left" size={13}/> Back
             </button>
             <button className="btn btn-ghost" onClick={handleSignOut}>
@@ -215,6 +258,22 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
                 />
               </label>
             </div>
+            {canEditBrandName && (
+              <label className="pf-field">
+                <span>
+                  Brand name
+                  <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--ink-3)', textTransform: 'none', letterSpacing: 0 }}>
+                    Shows on every brief, delivery, and shared doc
+                  </span>
+                </span>
+                <input
+                  type="text"
+                  value={brandName}
+                  onChange={(e) => setBrandName(e.target.value)}
+                  placeholder={accountNameInitial || 'Your brand'}
+                />
+              </label>
+            )}
             <div className="pf-field">
               <span>Avatar color</span>
               <div className="pf-swatches">

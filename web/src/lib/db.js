@@ -537,7 +537,7 @@ export async function loadLibraryAssets({ kind = 'deliverable' } = {}) {
     .select(`
       *,
       uploader:profiles!uploaded_by(id, display_name, initials, avatar_color, is_agency),
-      task:tasks(id, title, account:accounts(id, name))
+      task:tasks(id, title, platform, account:accounts(id, name))
     `)
     .eq('kind', kind)
     .order('created_at', { ascending: false });
@@ -548,6 +548,9 @@ export async function loadLibraryAssets({ kind = 'deliverable' } = {}) {
       ...mapped,
       taskId: row.task_id,
       taskTitle: row.task?.title || 'Untitled task',
+      // Platform is a free-text comma-separated field on tasks (e.g.
+      // "Instagram, LinkedIn"). The Library filter normalises it client-side.
+      taskPlatform: row.task?.platform || '',
       accountId: row.task?.account?.id || null,
       accountName: row.task?.account?.name || null,
     };

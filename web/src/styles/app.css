@@ -287,6 +287,14 @@ input, textarea { font: inherit; color: inherit; }
   flex-direction: column;
   gap: 2px;
 }
+/* Bottom-pinned reference nav (Performance, Team) — sits above the
+   profile pill, visually separated from the primary list with a hairline
+   divider so the eye reads it as a distinct group. */
+.nav-secondary {
+  padding-top: 8px;
+  margin-bottom: 6px;
+  border-top: 1px solid var(--line);
+}
 .nav-item {
   display: flex;
   align-items: center;

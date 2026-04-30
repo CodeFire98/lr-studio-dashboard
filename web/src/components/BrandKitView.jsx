@@ -1760,61 +1760,19 @@ const BrandKitView = () => {
       {/* 1. HERO — logo + name + tagline + positioning + palette strip */}
       <HeroCard kit={kit} />
 
-      {/* 2. THE BRAND — mission, audience, pillars */}
-      {(kit.mission || kit.audience || (Array.isArray(kit.brandPillars) && kit.brandPillars.length)) ? (
-        <>
-          <SectionHead title="The brand" sub="why it exists, who it's for"/>
-          <BrandStoryCard kit={kit} saveField={saveField} />
-        </>
-      ) : null}
-
-      {/* 3. WHAT THEY OFFER — value props, differentiators, categories */}
-      {(kit.valueProps?.length || kit.keyDifferentiators?.length || kit.productCategories?.length) ? (
-        <>
-          <SectionHead title="What they offer" sub="hooks for ads, captions, scripts"/>
-          <OfferingCard kit={kit} />
-        </>
-      ) : null}
-
-      {/* 4. VOICE & MESSAGING — tone, voice tags, samples, do/don't.
-          Always renders because Do say / Don't say are useful interactive
-          fields even before fetch — the user can write rules directly. */}
-      {(kit.toneVoice || (kit.voiceTags?.length) || (kit.dos?.length) || (kit.donts?.length) || (kit.personality && Object.keys(kit.personality).length) || kit.mission || kit.metaDescription) ? (
-        <>
-          <SectionHead title="Voice &amp; messaging" sub="how the brand sounds"/>
-          <VoiceCard kit={kit} saveField={saveField} />
-        </>
-      ) : null}
-
-      {/* 5. VISUAL SYSTEM — palette + typography + logos + collapsible eng.
-          Logo & marks always renders (entry point for upload), so the
-          section always has at least one card. */}
-      <SectionHead title="Visual system" sub="palette, type, marks, tokens"/>
-      {((palette && palette.length) || (kit.fonts && kit.fonts.length)) ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-          {palette && palette.length > 0 && <PaletteCard kit={kit} palette={palette} />}
-          {kit.fonts && kit.fonts.length > 0 && <TypographyCard kit={kit} />}
-        </div>
-      ) : null}
-      <LogoMarksCard
-        accountId={accountId}
-        logoUrl={kit.logoUrl}
-        variants={logos}
-        onSave={saveField}
-        onVariantsChange={(updated) => setKit(updated)}
-        backgroundHint={kit.backgroundColor}
-      />
-      <CollapsibleEngineering kit={kit} />
-
-      {/* 6. PRESENCE — website + socials + search/OG/Twitter previews */}
+      {/* 2. ONLINE PRESENCE — website + social handles. Hoisted above the
+          visual system because it grounds the rest of the page in real
+          channels (and keeps front-loaded text from feeling dry). The
+          rest of "How they show up" (marketing snapshot) stays in its
+          original position further down the page. */}
       {(kit.websiteUrl || (kit.socialLinks && Object.values(kit.socialLinks).some((v) => v))) ? (
         <>
-          <SectionHead title="How they show up" sub="search, social, channels"/>
+          <SectionHead title="Online presence" sub="where the brand already lives"/>
           <div className="card" style={{ marginBottom: 16 }}>
             <div className="card-head">
               <div>
-                <div className="card-title">Online presence</div>
-                <div className="card-sub">Website + social handles</div>
+                <div className="card-title">Website &amp; social handles</div>
+                <div className="card-sub">Where the agency picks up tone and tracks performance</div>
               </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 24 }}>
@@ -1833,16 +1791,71 @@ const BrandKitView = () => {
               </div>
             </div>
           </div>
+        </>
+      ) : null}
+
+      {/* 3. VISUAL SYSTEM — palette + typography + logos + collapsible eng.
+          Promoted above the text-heavy story sections so the page leads
+          with something visual. Logo & marks always renders (it's the
+          entry point for upload), so the section is never empty. */}
+      <SectionHead title="Visual system" sub="palette, type, marks, tokens"/>
+      {((palette && palette.length) || (kit.fonts && kit.fonts.length)) ? (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+          {palette && palette.length > 0 && <PaletteCard kit={kit} palette={palette} />}
+          {kit.fonts && kit.fonts.length > 0 && <TypographyCard kit={kit} />}
+        </div>
+      ) : null}
+      <LogoMarksCard
+        accountId={accountId}
+        logoUrl={kit.logoUrl}
+        variants={logos}
+        onSave={saveField}
+        onVariantsChange={(updated) => setKit(updated)}
+        backgroundHint={kit.backgroundColor}
+      />
+      <CollapsibleEngineering kit={kit} />
+
+      {/* 4. THE BRAND — mission, audience, pillars */}
+      {(kit.mission || kit.audience || (Array.isArray(kit.brandPillars) && kit.brandPillars.length)) ? (
+        <>
+          <SectionHead title="The brand" sub="why it exists, who it's for"/>
+          <BrandStoryCard kit={kit} saveField={saveField} />
+        </>
+      ) : null}
+
+      {/* 5. WHAT THEY OFFER — value props, differentiators, categories */}
+      {(kit.valueProps?.length || kit.keyDifferentiators?.length || kit.productCategories?.length) ? (
+        <>
+          <SectionHead title="What they offer" sub="hooks for ads, captions, scripts"/>
+          <OfferingCard kit={kit} />
+        </>
+      ) : null}
+
+      {/* 6. VOICE & MESSAGING — tone, voice tags, samples, do/don't.
+          Always renders because Do say / Don't say are useful interactive
+          fields even before fetch — the user can write rules directly. */}
+      {(kit.toneVoice || (kit.voiceTags?.length) || (kit.dos?.length) || (kit.donts?.length) || (kit.personality && Object.keys(kit.personality).length) || kit.mission || kit.metaDescription) ? (
+        <>
+          <SectionHead title="Voice &amp; messaging" sub="how the brand sounds"/>
+          <VoiceCard kit={kit} saveField={saveField} />
+        </>
+      ) : null}
+
+      {/* 7. HOW THEY SHOW UP — search/OG/Twitter previews. Online presence
+          itself is already rendered up top; this section keeps the
+          marketing snapshot in its original spot so people scrolling down
+          still see how the brand reads in the wild. */}
+      {(kit.websiteUrl || (kit.socialLinks && Object.values(kit.socialLinks).some((v) => v))) ? (
+        <>
+          <SectionHead title="How they show up" sub="search, social previews"/>
           <MarketingSnapshotCard kit={kit} />
         </>
       ) : null}
 
-      {/* 7. CREATIVE LIBRARY — references + photography (+ past creatives
-          when ready). Header only renders when at least one inner block
-          will appear; ReferencesCard handles its own empty state, so we
-          treat it as always-present once we know we want this section. */}
+      {/* 8. CREATIVE LIBRARY — photography first (visual hook), then
+          reference assets and pinboard. ReferencesCard handles its own
+          empty state, so the section always has at least one block. */}
       <SectionHead title="Creative library" sub="references designers grab from"/>
-      <ReferencesCard accountId={accountId}/>
 
       {photography.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>
@@ -1858,6 +1871,8 @@ const BrandKitView = () => {
           </div>
         </div>
       )}
+
+      <ReferencesCard accountId={accountId}/>
 
       {(inspiration.length > 0 || pastCreatives.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>

@@ -305,8 +305,8 @@ const CalendarView = ({ tasks = [], setRoute }) => {
       <div className="page-head">
         <div className="titles">
           <div className="tiny" style={{ marginBottom: 8 }}>Schedule</div>
-          <h1>Calendar</h1>
-          <div className="sub">Tasks placed on the day they're due. Click a chip to jump in.</div>
+          <h1>Social Calendar</h1>
+          <div className="sub">Plan and preview every Instagram, LinkedIn, and X post for your brand. Click a chip to open the post.</div>
         </div>
         <div className="actions">
           <div className="seg">
@@ -318,8 +318,8 @@ const CalendarView = ({ tasks = [], setRoute }) => {
 
       {tasks.length === 0 ? (
         <div className="empty" style={{ padding: 32 }}>
-          <div className="big">No tasks yet.</div>
-          Submit a brief from Home and it'll appear here.
+          <div className="big">No posts scheduled yet.</div>
+          Once your agency lead schedules Instagram, LinkedIn, or X posts they'll show up here.
         </div>
       ) : layout === 'month' ? (
         <>

@@ -70,7 +70,16 @@ const App = () => {
     try { return JSON.parse(sessionStorage.getItem("lr_impersonation")) || null; } catch { return null; }
   });
   const [route, setRoute] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("lr_route")) || { view: "home" }; } catch { return { view: "home" }; }
+    // First-time default depends on mode: customers land on the Social
+    // Calendar (the new home of the AI Social Media Manager workflow),
+    // while admins still land on their Inbox. Guests get bounced to the
+    // Request page by the snap-back effect below.
+    try {
+      const saved = JSON.parse(localStorage.getItem("lr_route"));
+      if (saved && saved.view) return saved;
+    } catch {}
+    const savedMode = localStorage.getItem("lr_mode") || "customer";
+    return savedMode === "admin" ? { view: "home" } : { view: "calendar" };
   });
   const [tasks, setTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -101,7 +110,7 @@ const App = () => {
       client: { id: client.id, name: client.name },
     });
     setMode("customer");
-    setRoute({ view: "home" });
+    setRoute({ view: "calendar" });
   };
   const exitClientView = () => {
     if (!impersonation) return;
@@ -111,10 +120,15 @@ const App = () => {
   };
   useEffect(() => { localStorage.setItem("lr_route", JSON.stringify(route)); }, [route]);
 
-  // If a guest's persisted route is not "home", snap them back.
+  // Guest sandbox: only the empty Social Calendar and the Request page are
+  // accessible without an account. Anything else (Tasks, Library, etc.)
+  // snaps the guest back to the calendar so locked surfaces never render
+  // half-broken to a signed-out user.
   useEffect(() => {
-    if (!auth && route.view !== "home") setRoute({ view: "home" });
-  }, [auth]); // eslint-disable-line
+    if (auth) return;
+    const GUEST_ALLOWED = new Set(["calendar", "home"]);
+    if (!GUEST_ALLOWED.has(route.view)) setRoute({ view: "calendar" });
+  }, [auth, route.view]);
 
   // React to auth changes fired from any file
   useEffect(() => {
@@ -349,9 +363,11 @@ const App = () => {
   };
 
   // ----- Breadcrumb for topbar -----
+  const customerHome = mode === "admin" ? "home" : "calendar";
   const crumb = (() => {
     if (route.view === "profile") {
-      return <><a onClick={() => setRoute({view: "home"})} style={{cursor: "pointer"}}>Home</a><span className="crumb-sep">/</span><strong>Profile</strong></>;
+      const homeLabel = mode === "admin" ? "Inbox" : "Social Calendar";
+      return <><a onClick={() => setRoute({view: customerHome})} style={{cursor: "pointer"}}>{homeLabel}</a><span className="crumb-sep">/</span><strong>Profile</strong></>;
     }
     if (mode === "admin") {
       if (route.view === "home") return <><strong>Inbox</strong></>;
@@ -360,13 +376,14 @@ const App = () => {
         return <><span>Tasks</span><span className="crumb-sep">/</span><strong>{p?.title || "Task"}</strong></>;
       }
       if (route.view === "tasks") return <><strong>All tasks</strong></>;
-      if (route.view === "calendar") return <><strong>Calendar</strong></>;
+      if (route.view === "calendar") return <><strong>Social Calendar</strong></>;
       if (route.view === "library") return <><strong>Upload creatives</strong></>;
       if (route.view === "team") return <><strong>Clients</strong></>;
       if (route.view === "members") return <><strong>Team</strong></>;
       return <strong>{route.view}</strong>;
     }
-    if (route.view === "home") return <><span>{auth ? "Luma" : "Welcome"}</span><span className="crumb-sep">/</span><strong>Home</strong></>;
+    if (route.view === "calendar") return <><strong>Social Calendar</strong></>;
+    if (route.view === "home") return <><span>{auth ? "Luma" : "Welcome"}</span><span className="crumb-sep">/</span><strong>Request</strong></>;
     if (route.view === "tasks" && route.id) {
       const p = tasks.find((x) => x.id === route.id);
       return <><a onClick={() => setRoute({view: "tasks"})} style={{cursor: "pointer"}}>Tasks</a><span className="crumb-sep">/</span><strong>{p?.title || "Task"}</strong></>;
@@ -391,15 +408,18 @@ const App = () => {
     }
     // Customer + guest views:
     if (route.view === "home") return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
-    // Everything below here is auth-only — guests get snapped back to home by the effect above.
-    if (!auth) return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
+    // Guests can preview the empty Social Calendar — `tasks` is [] because
+    // the load effect short-circuits without auth, so CalendarView lands on
+    // its empty state. Everything else is auth-only and the snap-back
+    // effect bounces guests off those routes.
+    if (route.view === "calendar") return <CalendarView tasks={tasks} setRoute={setRoute}/>;
+    if (!auth) return <CalendarView tasks={tasks} setRoute={setRoute}/>;
     if (route.view === "tasks" && route.id) return <TaskDetailView taskId={route.id} tasks={tasks} updateTask={updateTask} setRoute={setRoute} mode={mode}/>;
     if (route.view === "tasks") return <TasksView setRoute={setRoute} tasks={tasks} mode={mode}/>;
     if (route.view === "library") return <LibraryView auth={auth}/>;
     if (route.view === "performance") return <PerformanceView/>;
     if (route.view === "team") return <TeamView overrideAccountId={impersonation?.client?.id} />;
     if (route.view === "brand") return <BrandKitView/>;
-    if (route.view === "calendar") return <CalendarView tasks={tasks} setRoute={setRoute}/>;
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;
     return <HomeView setRoute={setRoute} pushTask={pushTask} requireAuth={requireAuth} auth={auth}/>;
   };
