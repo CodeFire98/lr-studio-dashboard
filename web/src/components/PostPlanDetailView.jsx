@@ -29,7 +29,21 @@ import {
   addPostPlanAttachment,
   deletePostPlanAttachment,
   markPostPlanSeen,
+  loadPostPlanStatusLog,
 } from '../lib/db.js';
+
+// Status transition → human verb. Used in the activity feed to render
+// "Brand approved", "Agency requested changes", etc. in past tense.
+const STATUS_VERB = {
+  not_started:          'reset this plan to not started',
+  wip:                  'moved this plan to in progress',
+  needs_brand_feedback: 'submitted this plan for review',
+  needs_admin_revision: 'requested changes',
+  approved:             'approved this plan',
+  scheduled:            'scheduled this plan',
+  posted:               'marked this plan as posted',
+  delayed:              'marked this plan as delayed',
+};
 
 // =====================================================================
 // Attachments card
@@ -346,6 +360,19 @@ const PostPlanDetailView = ({
     return () => { cancelled = true; };
   }, [postPlanId]);
 
+  // ---- Status log (drives status entries in the Activity feed) ----
+  const [statusLog, setStatusLog] = useState([]);
+  useEffect(() => {
+    if (!postPlanId) return;
+    let cancelled = false;
+    loadPostPlanStatusLog(postPlanId)
+      .then((rows) => { if (!cancelled) setStatusLog(rows); })
+      .catch((e) => console.warn('loadPostPlanStatusLog failed', e));
+    return () => { cancelled = true; };
+    // Refetch when the plan's updated_at advances — covers our own
+    // status changes AND realtime-relayed changes from another tab/user.
+  }, [postPlanId, plan?.updatedAt]);
+
   const referenceAttachments = useMemo(
     () => attachments.filter((a) => a.kind === 'reference'),
     [attachments]
@@ -487,9 +514,10 @@ const PostPlanDetailView = ({
 
   // ---- Activity feed (synthesized) ------------------------------------
   // No dedicated activity table — we synthesize the timeline from the
-  // events we already store: created, comments, attachments uploaded,
-  // approval, posted. Hook stays above the null-plan early-return so
-  // React sees the same hook count on every render (Rules of Hooks).
+  // events we store across post_plans, post_plan_comments,
+  // post_plan_attachments, and post_plan_status_log. Hook stays above
+  // the null-plan early-return so React sees the same hook count on
+  // every render (Rules of Hooks).
   const activityFeed = useMemo(() => {
     if (!plan) return [];
     const items = [];
@@ -520,14 +548,17 @@ const PostPlanDetailView = ({
         body: a.filename,
       });
     }
-    if (plan.approvedAt) {
-      items.push({ id: 'approved', kind: 'approved', actor: null, time: plan.approvedAt, label: 'Plan approved' });
-    }
-    if (plan.postedAt) {
-      items.push({ id: 'posted', kind: 'posted', actor: null, time: plan.postedAt, label: 'Marked as posted' });
+    for (const s of statusLog) {
+      const verb = STATUS_VERB[s.toStatus] || `set status to ${s.toStatus}`;
+      items.push({
+        id: `status_${s.id}`, kind: 'status',
+        actor: s.actor,
+        time: s.createdAt,
+        label: `${s.actor?.name || 'Someone'} ${verb}`,
+      });
     }
     return items.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-  }, [plan?.createdAt, plan?.approvedAt, plan?.postedAt, plan?.creator, comments, attachments]);
+  }, [plan?.createdAt, plan?.creator, comments, attachments, statusLog]);
 
   // ---- Loading / not-found --------------------------------------------
 

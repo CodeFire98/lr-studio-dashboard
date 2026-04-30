@@ -1497,6 +1497,41 @@ export function subscribeToPostPlans(onChange, { accountId } = {}) {
   return () => supabase.removeChannel(channel);
 }
 
+// ---- Status log ----
+//
+// Every post_plans status change is auto-logged into post_plan_status_log
+// via an AFTER UPDATE trigger. The Activity tab reads this so the user
+// can see "Brand approved", "Agency requested changes", etc.
+
+const POST_PLAN_STATUS_LOG_SELECT = `
+  *,
+  actor:profiles!actor_id(id, display_name, initials, avatar_color, is_agency)
+`;
+
+export function mapPostPlanStatusLogRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    postPlanId: row.post_plan_id,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    actorId: row.actor_id,
+    actor: personFromProfile(row.actor),
+    createdAt: row.created_at,
+  };
+}
+
+export async function loadPostPlanStatusLog(postPlanId) {
+  if (!postPlanId) return [];
+  const { data, error } = await supabase
+    .from('post_plan_status_log')
+    .select(POST_PLAN_STATUS_LOG_SELECT)
+    .eq('post_plan_id', postPlanId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(mapPostPlanStatusLogRow);
+}
+
 // ---- Comments ----
 
 const POST_PLAN_COMMENT_SELECT = `
@@ -1737,9 +1772,11 @@ export async function loadPostPlanUnreadCounts({ userId, postPlans }) {
     if (!seen || a.created_at > seen) bump(a.post_plan_id);
   }
   for (const p of postPlans) {
-    // Skip plans the viewer created — their own initial save would
-    // otherwise show an unread on a freshly-spawned plan.
-    if (p.createdBy && p.createdBy === userId) continue;
+    // No createdBy skip here — markPostPlanSeen runs on every persist
+    // (including status changes), so the viewer's own edits won't
+    // surface as unread for themselves. But edits by other people on
+    // plans the viewer created (e.g. a brand approving an agency-
+    // authored plan) MUST surface, which the old skip prevented.
     const seen = views.get(p.id);
     if (!seen || (p.updatedAt && p.updatedAt > seen)) bump(p.id);
   }
