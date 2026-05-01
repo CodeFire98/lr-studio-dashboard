@@ -8,7 +8,8 @@
 import React, { useMemo, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { PlatformChip, STATUS_CONFIG } from './postPlanShared.jsx';
-import { createPostPlan } from '../lib/db.js';
+import { createPostPlan, duplicatePostPlan } from '../lib/db.js';
+import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 
 const HEADING_FMT   = { month: 'short', year: 'numeric' };
 const WEEKDAY_LABEL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -65,7 +66,7 @@ function buildMonthMatrix(viewYear, viewMonth) {
   return cells;
 }
 
-const PostChip = ({ post, onOpen, unreadCount = 0 }) => {
+const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
   const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.not_started;
   const time = formatTime(post.scheduledAt);
   const titleSuffix = unreadCount > 0
@@ -75,6 +76,11 @@ const PostChip = ({ post, onOpen, unreadCount = 0 }) => {
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onOpen(post); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu?.(e, post);
+      }}
       title={`${post.concept || 'Untitled post'} · ${cfg.label}${time ? ' · ' + time : ''}${titleSuffix}`}
       style={{
         display: 'flex',
@@ -127,7 +133,7 @@ const PostChip = ({ post, onOpen, unreadCount = 0 }) => {
   );
 };
 
-const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan }) => {
+const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu }) => {
   const cells = useMemo(
     () => buildMonthMatrix(viewDate.getFullYear(), viewDate.getMonth()),
     [viewDate]
@@ -237,6 +243,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                     key={p.id}
                     post={p}
                     onOpen={onOpenPost}
+                    onContextMenu={onChipContextMenu}
                     unreadCount={unreadByPlan?.get(p.id) || 0}
                   />
                 ))}
@@ -289,6 +296,11 @@ const CalendarView = ({
   const [creating, setCreating] = useState(false);
   // Status filter — replaces the bottom legend. 'all' = no filter.
   const [statusFilter, setStatusFilter] = useState('all');
+
+  // Context menu state for right-click on chips.
+  const [ctxMenu, setCtxMenu] = useState(null); // { x, y, plan }
+  // Duplicate date picker state (opened from context menu).
+  const [dupSource, setDupSource] = useState(null); // plan or null
 
   const filteredPostPlans = useMemo(
     () => statusFilter === 'all' ? postPlans : postPlans.filter((p) => p.status === statusFilter),
@@ -363,6 +375,63 @@ const CalendarView = ({
   const openExisting = (post) => {
     if (!post) return;
     setRoute?.({ view: 'plan', id: post.id });
+  };
+
+  // Context menu handlers for chip right-click.
+  const handleChipContextMenu = (e, post) => {
+    setCtxMenu({ x: e.clientX, y: e.clientY, plan: post });
+  };
+
+  const closeCtxMenu = () => setCtxMenu(null);
+
+  // Close context menu on click outside or Escape.
+  React.useEffect(() => {
+    if (!ctxMenu) return;
+    const onClickOutside = () => closeCtxMenu();
+    const onEscape = (e) => { if (e.key === 'Escape') closeCtxMenu(); };
+    document.addEventListener('click', onClickOutside);
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.removeEventListener('click', onClickOutside);
+      document.removeEventListener('keydown', onEscape);
+    };
+  }, [ctxMenu]);
+
+  const handleDuplicateFromCtx = () => {
+    if (!ctxMenu?.plan) return;
+    setDupSource(ctxMenu.plan);
+    closeCtxMenu();
+  };
+
+  const handleDuplicateConfirm = async (dates) => {
+    const source = dupSource;
+    setDupSource(null);
+    if (!dates.length || !source) return;
+    try {
+      const { created, errors } = await duplicatePostPlan({
+        sourcePlan: source,
+        targetDates: dates,
+        userId,
+      });
+      for (const p of created) {
+        onPlanCreated?.(p);
+      }
+      if (errors.length > 0 && created.length > 0) {
+        alert(`Created ${created.length} of ${dates.length} plans. ${errors.length} failed.`);
+      } else if (errors.length > 0) {
+        alert(`Duplication failed: ${errors[0]?.message || errors[0]}`);
+        return;
+      }
+      if (created.length > 0) {
+        const earliest = created.reduce((a, b) =>
+          (a.scheduledAt || '') < (b.scheduledAt || '') ? a : b
+        );
+        setRoute?.({ view: 'plan', id: earliest.id });
+      }
+    } catch (e) {
+      console.error('duplicate failed', e);
+      alert(`Duplication failed: ${e?.message || e}`);
+    }
   };
 
   return (
@@ -451,6 +520,7 @@ const CalendarView = ({
         onOpenDay={openCreateForDay}
         isAdmin={isAdmin}
         unreadByPlan={unreadByPlan}
+        onChipContextMenu={handleChipContextMenu}
       />
 
       {postPlans.length === 0 && (
@@ -461,6 +531,57 @@ const CalendarView = ({
             : 'Your agency is putting together your social calendar — posts will appear here once they’re drafted.'}
         </div>
       )}
+
+      {/* Context menu for right-click on chips */}
+      {ctxMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            top: ctxMenu.y,
+            left: ctxMenu.x,
+            zIndex: 100,
+            background: 'var(--surface)',
+            border: '1px solid var(--line)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-lg)',
+            padding: 4,
+            minWidth: 160,
+            animation: 'popIn 150ms var(--ease-out)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={handleDuplicateFromCtx}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '8px 10px',
+              border: 0,
+              borderRadius: 'var(--radius-sm)',
+              background: 'transparent',
+              color: 'var(--ink-2)',
+              fontSize: 13,
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <Icon name="calendar" size={14} />
+            Duplicate
+          </button>
+        </div>
+      )}
+
+      <DuplicateDatePicker
+        open={!!dupSource}
+        onConfirm={handleDuplicateConfirm}
+        onCancel={() => setDupSource(null)}
+        sourcePlan={dupSource}
+      />
 
     </div></div>
   );

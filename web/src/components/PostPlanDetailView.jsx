@@ -30,7 +30,9 @@ import {
   deletePostPlanAttachment,
   markPostPlanSeen,
   loadPostPlanStatusLog,
+  duplicatePostPlan,
 } from '../lib/db.js';
+import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 
 // Status transition → human verb. Used in the activity feed to render
 // "Brand approved", "Agency requested changes", etc. in past tense.
@@ -512,6 +514,41 @@ const PostPlanDetailView = ({
     }
   };
 
+  // ---- Duplicate flow -------------------------------------------------
+  const [dupPickerOpen, setDupPickerOpen] = useState(false);
+
+  const handleDuplicateConfirm = async (dates) => {
+    setDupPickerOpen(false);
+    if (!dates.length || !plan) return;
+    try {
+      const { created, errors } = await duplicatePostPlan({
+        sourcePlan: plan,
+        targetDates: dates,
+        userId,
+      });
+      // Optimistically push all created plans into App state.
+      for (const p of created) {
+        onPlanChanged?.(p);
+      }
+      if (errors.length > 0 && created.length > 0) {
+        alert(`Created ${created.length} of ${dates.length} plans. ${errors.length} failed.`);
+      } else if (errors.length > 0) {
+        alert(`Duplication failed: ${errors[0]?.message || errors[0]}`);
+        return;
+      }
+      // Navigate to the earliest-dated created plan.
+      if (created.length > 0) {
+        const earliest = created.reduce((a, b) =>
+          (a.scheduledAt || '') < (b.scheduledAt || '') ? a : b
+        );
+        setRoute({ view: 'plan', id: earliest.id });
+      }
+    } catch (e) {
+      console.error('duplicate failed', e);
+      alert(`Duplication failed: ${e?.message || e}`);
+    }
+  };
+
   // ---- Activity feed (synthesized) ------------------------------------
   // No dedicated activity table — we synthesize the timeline from the
   // events we store across post_plans, post_plan_comments,
@@ -736,6 +773,14 @@ const PostPlanDetailView = ({
               {a.label}
             </button>
           ))}
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setDupPickerOpen(true)}
+            title="Duplicate this post plan to other dates"
+          >
+            <Icon name="calendar" size={13}/>Duplicate
+          </button>
           {isAdmin && (
             <select
               className="btn btn-sm"
@@ -1108,6 +1153,13 @@ const PostPlanDetailView = ({
           </div>
         </aside>
       </div>
+
+      <DuplicateDatePicker
+        open={dupPickerOpen}
+        onConfirm={handleDuplicateConfirm}
+        onCancel={() => setDupPickerOpen(false)}
+        sourcePlan={plan}
+      />
     </div></div>
   );
 };

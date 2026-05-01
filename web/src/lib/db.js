@@ -1428,6 +1428,37 @@ export async function createPostPlan({
   return mapPostPlanRow(data);
 }
 
+/**
+ * Duplicate a post plan to one or more target dates.
+ * Copies platforms, concept, and copyVariants from the source plan.
+ * Each duplicate gets status 'not_started' and scheduled_at at 09:00 local.
+ */
+export async function duplicatePostPlan({ sourcePlan, targetDates, userId }) {
+  const created = [];
+  const errors = [];
+  for (const date of targetDates) {
+    try {
+      const scheduledAt = new Date(
+        date.getFullYear(), date.getMonth(), date.getDate(),
+        9, 0, 0, 0
+      ).toISOString();
+      const plan = await createPostPlan({
+        accountId: sourcePlan.accountId,
+        scheduledAt,
+        platforms: sourcePlan.platforms,
+        concept: sourcePlan.concept,
+        copyVariants: sourcePlan.copyVariants,
+        status: 'not_started',
+        userId,
+      });
+      created.push(plan);
+    } catch (e) {
+      errors.push(e);
+    }
+  }
+  return { created, errors };
+}
+
 // Map UI-shape patches to DB columns. Accepts a partial; ignores keys we
 // don't know about so callers can pass `{ status: '...' }` or full
 // edit-modal patches without ceremony.
