@@ -940,7 +940,7 @@ const App = () => {
         auth={auth}
         onRequestLogin={() => requireAuth(null, null)}
         taskCount={tasks.length}
-        calendarUnreadCount={Array.from(unreadByPlan.values()).reduce((a, b) => a + b, 0)}
+        calendarUnreadCount={unreadByPlan.size}
         activeAdminBrandId={activeAdminBrandId}
         brandAccounts={brandAccounts}
         isAllClientsMode={isAllClientsMode}

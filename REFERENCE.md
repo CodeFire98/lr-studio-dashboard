@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-01 (Post plan URLs nested under `/calendar/:id`)
+**Last updated:** 2026-05-01 (Sidebar badge counts plans-with-unreads, not event totals)
 
 ---
 
@@ -11,6 +11,10 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-01 — Sidebar Social Calendar badge counts plans, not events
+- The sidebar nav badge next to **Social Calendar** previously summed every unread *event* across all plans (`Array.from(unreadByPlan.values()).reduce((a,b) => a+b, 0)` in App.jsx). It now counts the number of plans with any unread (`unreadByPlan.size`), so the badge matches the count of red dots on the calendar instead of being a multiple of it.
+- Sections touched: Key feature flows (Unread tracking).
 
 ### 2026-05-01 — Post plan URLs nested under calendar
 - **`/c/:slug/plan/:id` is gone. Post plans now live at `/c/:slug/calendar/:id`** (and bare `/calendar/:id` for the no-slug fallback). The route shape inside the app is unchanged — it's still `{view: 'plan', id, brandSlug}` — only the URL string changed in `parsePathToRoute` and `viewToPath`. Hard cut, no backward-compat fallback for old `/plan/...` paths since none had been shared externally.
@@ -444,7 +448,7 @@ HomeView "Schedule a call" button → external link to `https://cal.linkrunner.i
    - Plan-level edits (`post_plans.updated_at > last_seen_at`)
 3. App.jsx subscribes to all three tables (`subscribeToPostPlanActivity`) — any new event triggers a refresh of the unread map.
 4. Same-tab edits update `App.unreadByPlan` directly via the `clearUnreadForPlan` callback (passed through to `PostPlanDetailView` as `onPlanSeen`) — no realtime roundtrip needed for the dot to clear when the viewer opens or edits a plan.
-5. Calendar chips show a red `<span>` dot at the right edge when the count is positive. Sidebar nav item shows a `badge-count` totalling all unread plans (`Array.from(unreadByPlan.values()).reduce(...)` in App.jsx).
+5. Calendar chips show a red `<span>` dot at the right edge when the count is positive. Sidebar nav item shows a `badge-count` equal to the **number of plans with any unread activity** (`unreadByPlan.size` in App.jsx) — i.e. it matches the count of red dots on the calendar, not the total event count across them.
 
 ### Replicating live data in another env
 
