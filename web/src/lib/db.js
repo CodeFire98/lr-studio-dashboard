@@ -774,6 +774,22 @@ export async function acceptInvitation(token) {
   return data; // account_id
 }
 
+// Trigger the `send-email` edge function to deliver a team-invite email for
+// a freshly created or revived invitation row. Returns the Resend message id
+// on success. Throws on any failure — callers should wrap so the invite row
+// (and Copy-link fallback) survive a delivery failure.
+export async function sendInviteEmail(invitationId) {
+  if (!invitationId) throw new Error('sendInviteEmail: invitationId is required');
+  const { data, error } = await supabase.functions.invoke('send-email', {
+    body: { template: 'team-invite', invitationId },
+  });
+  if (error) throw error;
+  if (data && typeof data === 'object' && 'error' in data && data.error) {
+    throw new Error(String(data.error));
+  }
+  return data;
+}
+
 // Bulk-accept any invitations whose email matches the signed-in user. Safe to
 // call on every login — returns [] when nothing is pending.
 export async function autoAcceptPendingInvitations() {
