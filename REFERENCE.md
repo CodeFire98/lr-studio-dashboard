@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-04-30 (Phase 1 router — real URLs, deep links, browser back/forward)
+**Last updated:** 2026-05-01 (Post plan URLs nested under `/calendar/:id`)
 
 ---
 
@@ -11,6 +11,11 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-01 — Post plan URLs nested under calendar
+- **`/c/:slug/plan/:id` is gone. Post plans now live at `/c/:slug/calendar/:id`** (and bare `/calendar/:id` for the no-slug fallback). The route shape inside the app is unchanged — it's still `{view: 'plan', id, brandSlug}` — only the URL string changed in `parsePathToRoute` and `viewToPath`. Hard cut, no backward-compat fallback for old `/plan/...` paths since none had been shared externally.
+- **Why:** the URL now reflects the UI hierarchy. You enter the calendar at `/c/abcoffee/calendar`, click a chip, and the URL extends to `/c/abcoffee/calendar/a3f9c2d8` — calendar stays in the breadcrumb. Previously the URL silently swapped `calendar` for `plan`, which read like the plan lived somewhere else.
+- Sections touched: Routes/Views (plan row), Known decisions (new entry: nested-under-calendar rationale).
 
 ### 2026-04-30 — Phase 1 router (real URLs, no per-brand segment yet)
 - Added `react-router-dom@6`. `<App/>` now mounts inside `<BrowserRouter/>` ([main.jsx](web/src/main.jsx)). Every view has a real path: `/calendar`, `/tasks`, `/tasks/:id`, `/plan/:id`, `/library`, `/brand`, `/team`, `/performance`, `/profile`, `/settings`, `/clients`, `/members`, `/home`. `/` redirects to the saved or default view.
@@ -346,7 +351,7 @@ URL-driven routing via `react-router-dom@6`. `<BrowserRouter>` wraps `<App/>` in
 | `team` | `/team` | `TeamView` | `AdminClientsView` | Customer: invite teammates. Admin: client list |
 | `members` | `/members` | — | `AdminTeamView` | Agency-only team management |
 | `brand` | `/brand` | `BrandKitView` | `BrandKitView` | Brand Intelligence — full kit view + Fetch Brand. Receives `accountId` from App. |
-| `plan` + `id` | `/plan/:shortId` | `PostPlanDetailView` | `PostPlanDetailView` | Per-plan detail: per-platform copy, references + deliverables, conversation, status workflow, activity feed. `:shortId` follows the same first-8-hex-chars rule as tasks. |
+| `plan` + `id` | `/calendar/:shortId` (or `/c/:slug/calendar/:shortId`) | `PostPlanDetailView` | `PostPlanDetailView` | Per-plan detail nested under calendar — calendar is the parent surface, so the URL stays `…/calendar/:shortId` instead of switching to a sibling `/plan/`. `:shortId` follows the same first-8-hex-chars rule as tasks. |
 | `clients` | `/clients` | — | `AdminClientsView` | Agency-only client list (reachable from BrandPicker). |
 | `settings` | `/settings` | `SettingsView` | `SettingsView` | Workspace name, danger-zone delete |
 | `profile` | `/profile` | `ProfileView` | `ProfileView` | User profile |
@@ -547,6 +552,7 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Post plan URLs nest under `/calendar/:id`, not a sibling `/plan/:id`.** Considered (a) sibling — `/c/:slug/calendar` and `/c/:slug/plan/:id` as peers (the original Phase 1/2 shape), (b) nested — `/c/:slug/calendar/:id`. Chose (b): the URL now reflects the UI hierarchy. You enter the calendar at `/c/abcoffee/calendar`, click a chip, and the URL extends to `/c/abcoffee/calendar/a3f9c2d8` — calendar stays in the breadcrumb instead of silently swapping for `plan`. Hard cut, no backward-compat for old `/plan/...` paths since none had been shared externally. The internal route shape (`{view: 'plan', id, brandSlug}`) didn't change — only `parsePathToRoute` and `viewToPath` did, so child components are untouched.
 - **BrandPicker replaces shadow-impersonation.** The old `lr_impersonation` sessionStorage flow was a UI-only shadow that left an "agency viewing X" banner across the screen. The new `BrandPicker` makes brand selection a first-class sidebar control for both brand owners and agency users — same control, different option list. Cleaner mental model, no banner, agency state persists across sessions via `localStorage.lr_admin_active_brand`.
 - **Same-tab edits use optimistic mutators, not realtime.** Realtime subscriptions are great for cross-tab and cross-user, but the same-tab same-user case (open plan → edit title → navigate back) was eating ~200ms before the calendar chip reflected the change. App.jsx now exposes `upsertPostPlan` / `removePostPlanLocal` / `clearUnreadForPlan` callbacks, passed down to detail and calendar views, that update App-level state synchronously. Realtime is the safety net.
 - **Post-plan status changes go through a log table, not the existing `activity` table.** `activity` is task-scoped and its triggers/types are tightly coupled to the brief flow. A standalone `post_plan_status_log` keeps post-plan history isolated, matches the pattern of `post_plan_attachments` / `post_plan_comments`, and makes RLS straightforward.

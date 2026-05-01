@@ -60,9 +60,9 @@ import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 // Path scheme (Phase 2 — per-brand segment):
 //   /                              → calendar (universal landing; redirects to /c/:slug/calendar when brand known)
 //   /c/:brandSlug/calendar         → calendar scoped to brand
+//   /c/:brandSlug/calendar/:id     → post plan detail (lives under calendar — its parent surface)
 //   /c/:brandSlug/tasks            → tasks list scoped to brand
 //   /c/:brandSlug/tasks/:id        → task detail
-//   /c/:brandSlug/plan/:id         → post plan detail
 //   /c/:brandSlug/home             → home (Request page for brand owners)
 //   /c/:brandSlug/library          → library
 //   /c/:brandSlug/brand            → brand intelligence
@@ -87,7 +87,7 @@ function parsePathToRoute(pathname) {
   // --- Phase 2: /c/:brandSlug/... ---
   let m = path.match(/^\/c\/([^/]+)\/tasks\/([^/]+)$/);
   if (m) return { view: 'tasks', id: m[2], brandSlug: m[1] };
-  m = path.match(/^\/c\/([^/]+)\/plan\/([^/]+)$/);
+  m = path.match(/^\/c\/([^/]+)\/calendar\/([^/]+)$/);
   if (m) return { view: 'plan', id: m[2], brandSlug: m[1] };
   m = path.match(/^\/c\/([^/]+)\/([^/]+)$/);
   if (m && SIMPLE_VIEWS.has(m[2])) return { view: m[2], brandSlug: m[1] };
@@ -98,7 +98,7 @@ function parsePathToRoute(pathname) {
   // --- Phase 1 bare paths (backward compat, no brand slug) ---
   m = path.match(/^\/tasks\/([^/]+)$/);
   if (m) return { view: 'tasks', id: m[1] };
-  m = path.match(/^\/plan\/([^/]+)$/);
+  m = path.match(/^\/calendar\/([^/]+)$/);
   if (m) return { view: 'plan', id: m[1] };
   if (path === '/' || path === '/calendar') return { view: 'calendar' };
   if (path === '/tasks') return { view: 'tasks' };
@@ -117,7 +117,7 @@ function parsePathToRoute(pathname) {
 }
 
 // Render UUIDs in URLs as their first 8 hex chars (git-short-SHA style):
-//   /plan/a3f9c2d8   instead of   /plan/a3f9c2d8-7e21-4b3a-9c01-1234567890ab
+//   /calendar/a3f9c2d8   instead of   /calendar/a3f9c2d8-7e21-4b3a-9c01-1234567890ab
 // Same rule for tasks. Non-UUID values (already short, or future slugs) pass
 // through untouched, so the URL is short for new rows automatically.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -149,7 +149,7 @@ function viewToPath(next, brandSlug) {
   const { view, id } = next;
   const prefix = brandSlug && BRAND_SCOPED_VIEWS.has(view) ? `/c/${brandSlug}` : '';
   if (view === 'tasks' && id) return `${prefix}/tasks/${shortenId(id)}`;
-  if (view === 'plan' && id) return `${prefix}/plan/${shortenId(id)}`;
+  if (view === 'plan' && id) return `${prefix}/calendar/${shortenId(id)}`;
   if (view === 'calendar') return `${prefix}/calendar`;
   if (prefix) return `${prefix}/${view}`;
   return `/${view}`;
