@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-01 (Resend Tier 1 — invitation emails replace the copy-link flow)
+**Last updated:** 2026-05-01 (Resend Tier 1 + invitation redemption fixes)
 
 ---
 
@@ -11,6 +11,12 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-01 — Invitation redemption fixes (accept idempotency + is_agency reset)
+Two pre-existing bugs surfaced during Tier 1 invitation testing. Both ship as migrations applied to prod via the Management API SQL endpoint.
+- **Migration 0025 — `accept_invitation` is now idempotent.** Bug: when a user clicks an email invite link, signs in, and the session refresh fires, `auto_accept_pending_invitations()` (added in 0010) bulk-redeems the invite by email match BEFORE the URL-token redemption code in [App.jsx:377](web/src/App.jsx:377) gets to call `accept_invitation(token)`. The original RPC matched only `accepted_at is null`, so it raised "invitation invalid or expired" even though redemption had succeeded — the user was added to the workspace but saw "Couldn't accept invite" in the banner. Fix: look up the invitation regardless of accepted state. If already accepted AND the caller is a member of the target account, return success.
+- **Migration 0026 — `remove_team_member` now resets `profiles.is_agency`.** Bug: `accept_invitation` sets `is_agency = true` when joining an agency account, but `remove_team_member` only deleted the membership row — `is_agency` stayed true. A user removed from the agency would keep landing in agency mode on future sessions even after joining a brand. Fix: when `remove_team_member` deletes an agency membership AND no other agency memberships remain, flip `is_agency = false`. Migration also includes a one-shot backfill for any rows currently in the broken state (verified: 0 stale rows remain after backfill).
+- Sections touched: §6 Data model (RPCs — both updated); §13 Known decisions & gotchas (two new entries); Recent changes log.
 
 ### 2026-05-01 — Resend Tier 1 (invitation emails replace copy-link)
 - New edge function [`send-email`](supabase/functions/send-email/index.ts) — Resend wrapper, dispatches by `template`. Currently supports the `team-invite` template only; future tiers (post-plan status, comments, etc.) will land additional `template` cases on the same function. Same auth model as `enrich-brand-kit`: caller's JWT is verified by the platform; we use a JWT-scoped client to read the target invitation through RLS (so the caller can only mail invites they have access to), then call Resend server-side with `RESEND_API_KEY`.
@@ -266,16 +272,19 @@ internally because it bypasses RLS:
 ### Migrations
 
 Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
-- **CLI**: `SUPABASE_ACCESS_TOKEN=<PAT> supabase db push --project-ref vmfwnfflhvskadkfnvds`
-- **Management API**: `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
+- **CLI** (requires `supabase link` + DB password): `SUPABASE_ACCESS_TOKEN=<PAT> supabase db push`
+- **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0023_post_plan_status_log.sql`.
+Most recent: `0026_remove_team_member_resets_is_agency.sql`.
 
-Recent batch (all post-plan-related):
+Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
 - `0022_post_plan_views_and_attachments_storage` — `post_plan_views` table, `post-plan-attachments` storage bucket + storage RLS scoped via `post_plan_attachment_account_id(name)` helper.
 - `0023_post_plan_status_log` — `post_plan_status_log` + `log_post_plan_status_change` trigger.
+- `0024_account_slug_backfill` — `accounts.slug` backfill + auto-generation trigger for Phase 2 routing.
+- `0025_accept_invitation_idempotent` — `accept_invitation(token)` is idempotent for the auto-accept race (don't raise "invalid or expired" when the row was already accepted by `auto_accept_pending_invitations()` and the caller is a member). See §13 entry.
+- `0026_remove_team_member_resets_is_agency` — `remove_team_member` now flips `profiles.is_agency = false` when removing the user's last agency membership. Includes a one-shot backfill for stale rows already in the broken state. See §13 entry.
 
 ---
 
@@ -632,6 +641,8 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **`accept_invitation` is idempotent for the auto-accept race.** The token-based `accept_invitation` runs *after* the email-based `auto_accept_pending_invitations` in the auth refresh chain. If the user's email matches the invite (which it does for any normal invite flow), auto-accept redeems the row first and then the token-based accept finds `accepted_at` non-null. Original RPC raised "invalid or expired" in this case even though the user was already a member. Fix (0025): look up the row regardless of `accepted_at`, then return success if the caller is already a member of the target account. Considered alternatives — (a) gate the App.jsx token-redemption useEffect on `auth.newlyJoinedAccountIds` being empty (works but only patches the symptom in one client path), (b) drop one of the two redemption paths entirely. Chose the SQL fix because it's robust against any future client path that calls `accept_invitation` on an already-accepted row, not just this one.
+- **`remove_team_member` resets `profiles.is_agency` when the last agency membership goes.** The flag was being set on join (in `accept_invitation` since 0002) but never cleared on removal, leaving stale `is_agency=true` rows and putting brand-only users in agency mode after they'd been removed from the agency. Considered: (a) compute `is_agency` on the read path as `memberships.some(m => m.accounts.type === 'agency')` instead of trusting the stored flag — cleanest but a behavior change touching every `auth.isAgency` read and the RLS helper `is_agency_user()`. (b) trigger on `account_members` DELETE that recomputes the flag — broader scope (covers any future delete path). (c) fix the specific RPC. Chose (c) for now because there's only one delete path in the app today; revisit (b) if a second appears. The migration also includes a one-shot backfill for rows that were already in the broken state.
 - **Email sending uses one edge function with `template` dispatch, not per-template functions.** Considered separate functions per email type (`send-team-invite`, `send-task-delivered`, etc. — clean isolation). Chose a single `send-email` function that switches on `body.template` because: (a) one Resend client, one set of secrets, one cold-start; (b) shared template-rendering helpers (HTML scaffolding, `escapeHtml`, From/Reply-To logic) live in one file instead of being copy-pasted; (c) we'll add Tier 2 templates (post-plan status, comments) without each one needing its own deploy. Each template still gets its own request shape and its own auth check inside the function — the dispatcher is just a switch, not a `eval`-like surface.
 - **Email failure is non-fatal for the invite flow.** If Resend errors out, the `invitations` row already exists and the Copy-link affordance below the invite form keeps working. We changed the flash message based on the email outcome ("Sent an invite to X" vs "Invite created for X, but the email didn't send. Copy the link below…") rather than aborting the whole submission. Reasoning: the row is the source of truth for accept-invite; the email is just delivery convenience. Better to let the user fall back to the manual flow than tell them "invite failed" when actually their teammate can still redeem.
 - **`Reply-To` set to the inviter, `From` always `agency@linkrunner.io`.** The visible `From` is the workspace identity (the recipient should see "L+R Agency" not a personal address), but replies should thread to the human who actually invited them. Resend allows distinct `from` and `reply_to`, so we use both. The `agency@linkrunner.io` Google Workspace mailbox catches anything not-replies-to-the-inviter (bounces, "wrong person" forwards, etc.).
