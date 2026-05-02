@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-02 (agency-update fan-out via Resend batch + brand-side URL→active-brand sync)
+**Last updated:** 2026-05-02 (remove_team_member: account owners — not just agency — can remove from their own team)
 
 ---
 
@@ -11,6 +11,18 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-02 — `remove_team_member` allows account owners (was agency-only)
+- **Bug:** since the original `remove_team_member` in 0002, the gate has been `if not public.is_agency_user() then raise ...` — meaning ONLY agency staff could remove anyone from any team. A brand owner trying to remove a teammate from *their own brand* hit "only agency staff can remove team members" — even though the UI enabled the Remove button for owners. The 0026 patch fixed `is_agency` reset but didn't touch the gating.
+- **Fix (migration 0028):** the rule now mirrors `change_member_role` — caller must be an `owner` of the account they're modifying. Naturally enforces all the rules without enumerating roles:
+  - Brand owners can remove members + owners of their brand
+  - Agency owners can remove members + owners of the agency
+  - Members of either side can't remove anyone (not owners)
+  - Brand owners can't touch the agency team (they're not owners there)
+  - Agency owners can't touch a brand team (they're not owners there) — agency operates on brands via the brand owner, not directly
+- The agency-flag-reset logic from 0026 stays intact (last agency removal still flips `profiles.is_agency = false`).
+- Verified with 7/7 dynamic tests (real fixtures, transaction-rolled-back) covering each rule.
+- Sections touched: Recent changes log; §6 Migrations list (new entry); §13 new decision-log entry.
 
 ### 2026-05-02 — agency-update fan-out fixes: Resend batch + brand-side URL routing
 Two bugs surfaced when an agency staff member tested the Send-update flow on a brand with multiple members:
@@ -294,7 +306,7 @@ internally because it bypasses RLS:
 - `create_brand_account(p_name)` — first-time brand provisioning
 - `create_additional_brand_account(p_name)` — explicit "create another brand" from picker
 - `delete_brand_account(p_account_id)` — owner-only brand deletion (migration 0020)
-- `remove_team_member(p_user_id, p_account_id)` — owner-only
+- `remove_team_member(p_user_id, p_account_id)` — caller must be an `owner` of `p_account_id`; can't remove self. Demotes `profiles.is_agency` if it's the user's last agency membership (since 0026). Pre-0028 the gate was agency-only; 0028 made it match `change_member_role`.
 - `change_member_role(p_user_id, p_account_id, p_new_role)` — owner-only
 - `accept_invitation(p_token)` — redeem an invite
 - `account_members_with_email(p_account_id)` — returns the account's members joined to `auth.users.email` (migration 0027). Authz: caller must be a member of the account, OR be agency staff. Used by `loadTeamForAccount` so TeamView and AdminTeamView can display each member's email next to their name.
@@ -307,7 +319,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0027_account_members_with_email.sql`.
+Most recent: `0028_remove_team_member_owner_can_remove.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -317,6 +329,7 @@ Recent batch:
 - `0025_accept_invitation_idempotent` — `accept_invitation(token)` is idempotent for the auto-accept race (don't raise "invalid or expired" when the row was already accepted by `auto_accept_pending_invitations()` and the caller is a member). See §13 entry.
 - `0026_remove_team_member_resets_is_agency` — `remove_team_member` now flips `profiles.is_agency = false` when removing the user's last agency membership. Includes a one-shot backfill for stale rows already in the broken state. See §13 entry.
 - `0027_account_members_with_email` — `account_members_with_email(p_account_id)` SECURITY DEFINER RPC that joins `account_members → profiles → auth.users.email` for team-list rendering. See §13 entry.
+- `0028_remove_team_member_owner_can_remove` — replaces the agency-only gate on `remove_team_member` with an account-owner check (matches `change_member_role`). Brand owners can now remove members of their own brand. See §13 entry.
 
 ---
 
@@ -680,6 +693,7 @@ Running log of "we considered X and chose Y because Z" — newest first.
 - **`remove_team_member` resets `profiles.is_agency` when the last agency membership goes.** The flag was being set on join (in `accept_invitation` since 0002) but never cleared on removal, leaving stale `is_agency=true` rows and putting brand-only users in agency mode after they'd been removed from the agency. Considered: (a) compute `is_agency` on the read path as `memberships.some(m => m.accounts.type === 'agency')` instead of trusting the stored flag — cleanest but a behavior change touching every `auth.isAgency` read and the RLS helper `is_agency_user()`. (b) trigger on `account_members` DELETE that recomputes the flag — broader scope (covers any future delete path). (c) fix the specific RPC. Chose (c) for now because there's only one delete path in the app today; revisit (b) if a second appears. The migration also includes a one-shot backfill for rows that were already in the broken state.
 - **Email sending uses one edge function with `template` dispatch, not per-template functions.** Considered separate functions per email type (`send-team-invite`, `send-task-delivered`, etc. — clean isolation). Chose a single `send-email` function that switches on `body.template` because: (a) one Resend client, one set of secrets, one cold-start; (b) shared template-rendering helpers (HTML scaffolding, `escapeHtml`, From/Reply-To logic) live in one file instead of being copy-pasted; (c) we'll add Tier 2 templates (post-plan status, comments) without each one needing its own deploy. Each template still gets its own request shape and its own auth check inside the function — the dispatcher is just a switch, not a `eval`-like surface. As of 2026-05-02 this is a true dispatcher: the `Deno.serve` handler verifies JWT once, then routes to `handleTeamInvite` or `handleAgencyUpdate` based on `body.template`.
 - **Agency-update fans out via Resend's batch endpoint (`POST /emails/batch`), not sequential single sends.** Initial implementation called `POST /emails` once per recipient inside a `for` loop. That hit Resend's 2-req/sec rate limit on brands with 3+ members and silently dropped sends — the modal would show "Sent to 1 member" when 3 were expected. Switched to the batch endpoint on 2026-05-02: one HTTP call, N envelopes inside, each with its own `to: [singleEmail]` so per-recipient privacy is preserved. Resend returns `{data: [{id}|...]}` indexed to input order; we map index→recipient to capture per-recipient failures. The function also returns `total` (recipients identified) alongside `sent` so the modal can render "Sent to X of Y" and partial failures are visible immediately. Considered: (a) keeping sequential + adding 500ms sleeps between sends (slow, still risky on free-tier upgrades); (b) single-envelope multi-`to` (leaks addresses); (c) BCC (one envelope, no per-recipient personalization). Batch is the right primitive.
+- **`remove_team_member` gates on "caller is owner of the target account", not "caller is agency".** Original 0002 hard-coded `is_agency_user()` as the precondition — workable when only the agency removed people, but the brand-side TeamView UI also exposes a Remove button for brand owners, and that button always errored with "only agency staff can remove team members" when clicked. Considered: (a) leaving the SQL as-is and removing the brand-side Remove button (UX regression — brand owners genuinely want to manage their own team); (b) splitting into two RPCs (`remove_brand_member`, `remove_agency_member`) with different gates. Chose neither — the symmetric rule "you must be an owner of the account you're modifying" works for both sides identically and matches `change_member_role`'s existing pattern. Cross-side removal (agency owner trying to drop a brand member, or vice versa) is naturally blocked because they're not owners of the other side's account. The agency-flag-reset side-effect from 0026 stays in place.
 - **URL slug is the source of truth for active brand — brand users included.** App.jsx had a URL→`activeAdminBrandId` sync useEffect for agency users (so `/c/<slug>/...` would switch the picker), but brand users with multiple memberships always landed on whichever brand `localStorage.lr_active_brand_<userId>` remembered. Per-brand deep links (e.g. the "Open Social Calendar" button in agency-update emails) were unreliable — clicking would open the recipient's *last* brand, not the *target* brand. Added a symmetric useEffect for non-agency users on 2026-05-02 that calls `setActiveBrand(match.account.id)` when the URL slug matches one of their memberships and isn't already active. Considered keeping localStorage authoritative and forcing the email link to include a query like `?switch_to=...` instead — rejected because the URL slug is already a clean signal that's consistent with how agency users handle the same case.
 - **Duplicate post plan is agency-only at the UI layer too, not just at RLS.** RLS already rejects non-agency `post_plans` INSERTs, but the brand UI used to render the Duplicate affordance (calendar right-click + detail-view button) anyway. That meant brand users saw a button that always errored — bad UX. Considered (a) hiding only the menu item; (b) hiding the entire right-click menu since Duplicate was its only entry; (c) leaving as-is and letting RLS speak. Chose (b): on chips for non-admin users, the right-click handler now early-returns and the browser's native context menu renders instead. Detail-view button is wrapped in `{isAdmin && ...}`. Server-side RLS unchanged — UI gating is defense-in-depth, not the primary boundary.
 - **Local-secrets file: only the Supabase PAT lives there; everything else stays in Supabase Edge Function secrets.** Pattern: `.claude/local-secrets.env` (gitignored) holds `SUPABASE_ACCESS_TOKEN=sbp_...` for `supabase functions deploy` / Management API SQL endpoint. The other rotatable keys (Supabase service_role, Firecrawl, Resend) never need to land on disk in this repo — they're written into Supabase via `supabase secrets set` (which uses the PAT) and read from `Deno.env` inside edge functions. Considered putting all four in the local file for "one place to rotate," but service_role / Firecrawl / Resend would just be sitting on disk doing nothing — and a key on disk is a key that can leak. Single-key local file = minimum attack surface for the same operational benefit.
