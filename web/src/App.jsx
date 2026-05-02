@@ -257,6 +257,28 @@ const App = () => {
     }
   }, [auth?.isAgency, route.brandSlug, brandAccounts, activeAdminBrandId]);
 
+  // Phase 2 (brand-side): sync the active brand from the URL slug for
+  // brand users. When a brand member with multiple memberships lands on
+  // /c/:brandSlug/... (e.g. via an agency-update email link pointing at a
+  // specific brand), switch to that brand if it matches one of their
+  // memberships. Without this, brand users would always land on whichever
+  // brand was last picked from localStorage — making per-brand deep links
+  // unreliable.
+  useEffect(() => {
+    if (!auth) return;
+    if (auth.isAgency) return; // handled by the agency-only effect above
+    if (!route.brandSlug) return;
+    if (auth.account?.slug === route.brandSlug) return; // already active
+    const match = (auth.memberships || []).find(
+      (m) => m?.account?.slug === route.brandSlug
+    );
+    if (match?.account?.id) {
+      // Fire-and-forget; setActiveBrand re-hydrates and dispatches an
+      // lr_auth_change event that re-renders downstream consumers.
+      setActiveBrand(match.account.id).catch(() => {});
+    }
+  }, [auth?.id, auth?.isAgency, auth?.account?.slug, route.brandSlug, (auth?.memberships || []).map((m) => m?.account?.slug).join(',')]);
+
   // Phase 2: redirect bare paths to brand-scoped paths.
   // When a signed-in user lands on a bare path like /calendar (no slug),
   // redirect them to /c/:slug/calendar so the URL always carries context.
