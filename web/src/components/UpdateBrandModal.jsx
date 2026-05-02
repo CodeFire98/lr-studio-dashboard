@@ -63,7 +63,9 @@ const UpdateBrandModal = ({ open, accountId, accountName, onClose }) => {
   if (!open) return null;
 
   const sentCount = result?.sent || 0;
+  const totalCount = result?.total ?? sentCount;
   const failedCount = (result?.failed || []).length;
+  const isPartial = totalCount > sentCount;
 
   return (
     <div
@@ -103,7 +105,7 @@ const UpdateBrandModal = ({ open, accountId, accountName, onClose }) => {
             >
               <Icon name="check" size={16} />
               <span>
-                Sent to {sentCount} member{sentCount === 1 ? '' : 's'}
+                Sent to {sentCount} of {totalCount} member{totalCount === 1 ? '' : 's'}
                 {failedCount > 0 ? ` · ${failedCount} failed` : ''}.
               </span>
             </div>

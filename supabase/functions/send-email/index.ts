@@ -72,6 +72,66 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Send N emails in one API call via Resend's /emails/batch endpoint.
+// Avoids the 2-req/sec rate limit on the single-send endpoint that was
+// silently failing fan-outs of 3+ recipients on the agency-update flow.
+// All recipients share subject/html/text/replyTo; only `to` differs.
+async function callResendBatch(args: {
+  recipients: string[];
+  subject: string;
+  html: string;
+  text: string;
+  replyTo?: string;
+}): Promise<{ ids: string[]; failures: Array<{ to: string; error: string }> }> {
+  if (args.recipients.length === 0) return { ids: [], failures: [] };
+  const fromHeader = EMAIL_FROM_NAME
+    ? `${EMAIL_FROM_NAME} <${EMAIL_FROM}>`
+    : EMAIL_FROM;
+  const items = args.recipients.map((to) => {
+    const payload: Record<string, unknown> = {
+      from: fromHeader,
+      to: [to],
+      subject: args.subject,
+      html: args.html,
+      text: args.text,
+    };
+    if (args.replyTo) payload.reply_to = args.replyTo;
+    return payload;
+  });
+
+  const res = await fetch("https://api.resend.com/emails/batch", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(items),
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* leave raw */ }
+  if (!res.ok) {
+    const msg = (data as { message?: string } | null)?.message || text || res.statusText;
+    // Whole batch failed — every recipient is a failure.
+    return {
+      ids: [],
+      failures: args.recipients.map((to) => ({ to, error: `Resend ${res.status}: ${msg}` })),
+    };
+  }
+  // Resend returns { data: [{ id }, ...] } on success — entry index matches
+  // input order. If an item-level error sneaks in we treat it as a
+  // per-recipient failure.
+  const arr = (data as { data?: Array<{ id?: string; error?: string }> } | null)?.data ?? [];
+  const ids: string[] = [];
+  const failures: Array<{ to: string; error: string }> = [];
+  args.recipients.forEach((to, i) => {
+    const entry = arr[i];
+    if (entry?.id) ids.push(entry.id);
+    else failures.push({ to, error: entry?.error || "Resend returned no id for this recipient" });
+  });
+  return { ids, failures };
+}
+
 async function callResend(args: {
   to: string;
   subject: string;
@@ -337,28 +397,32 @@ async function handleAgencyUpdate(
     customSubject: body.subject,
   });
 
-  // Send one email per recipient so members don't see each other's addresses.
-  const sentIds: string[] = [];
-  const failures: Array<{ to: string; error: string }> = [];
-  for (const to of recipients) {
-    try {
-      const result = await callResend({
-        to,
-        subject: rendered.subject,
-        html: rendered.html,
-        text: rendered.text,
-        replyTo: user.email ?? undefined,
-      });
-      sentIds.push(result.id);
-    } catch (ex) {
-      failures.push({ to, error: (ex as Error).message });
-    }
-  }
+  // Fan out via Resend's batch endpoint — one API call, N recipients,
+  // each in their own envelope (members don't see each other's addresses).
+  // The previous sequential-send approach hit Resend's 2-req/sec rate limit
+  // when a brand had 3+ members and silently dropped sends.
+  const { ids: sentIds, failures } = await callResendBatch({
+    recipients,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    replyTo: user.email ?? undefined,
+  });
+
+  // Surface counts so the modal can show "sent X of Y" — makes a partial
+  // failure obvious instead of looking like everything worked.
+  const totalRecipients = recipients.length;
 
   if (sentIds.length === 0) {
-    return jsonResponse({ ok: false, sent: 0, failed: failures }, 502);
+    return jsonResponse({ ok: false, sent: 0, total: totalRecipients, failed: failures }, 502);
   }
-  return jsonResponse({ ok: true, sent: sentIds.length, ids: sentIds, failed: failures });
+  return jsonResponse({
+    ok: true,
+    sent: sentIds.length,
+    total: totalRecipients,
+    ids: sentIds,
+    failed: failures,
+  });
 }
 
 Deno.serve(async (req) => {
