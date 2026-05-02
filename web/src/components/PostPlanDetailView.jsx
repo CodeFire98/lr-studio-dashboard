@@ -773,14 +773,16 @@ const PostPlanDetailView = ({
               {a.label}
             </button>
           ))}
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => setDupPickerOpen(true)}
-            title="Duplicate this post plan to other dates"
-          >
-            <Icon name="calendar" size={13}/>Duplicate
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setDupPickerOpen(true)}
+              title="Duplicate this post plan to other dates"
+            >
+              <Icon name="calendar" size={13}/>Duplicate
+            </button>
+          )}
           {isAdmin && (
             <select
               className="btn btn-sm"
