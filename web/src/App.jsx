@@ -22,6 +22,7 @@ import { CalendarView } from './components/CalendarView.jsx';
 import { PostPlanDetailView } from './components/PostPlanDetailView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { NotFoundView } from './components/NotFoundView.jsx';
+import { TrendsView } from './components/TrendsView.jsx';
 import {
   AdminHome,
   AdminUploadView,
@@ -108,6 +109,7 @@ function parsePathToRoute(pathname) {
   if (path === '/performance') return { view: 'performance' };
   if (path === '/clients') return { view: 'clients' };
   if (path === '/members') return { view: 'members' };
+  if (path === '/trends')  return { view: 'trends' };
   if (path === '/home') return { view: 'home' };
   if (path === '/profile') return { view: 'profile' };
   if (path === '/settings') return { view: 'settings' };
@@ -562,8 +564,8 @@ const App = () => {
   useEffect(() => {
     if (!auth?.isAgency) return;
     const r = route.view;
-    const allClientsRoutes = new Set(['home', 'tasks', 'profile', 'settings', 'clients', 'members', 'not_found']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'tasks', 'brand', 'library', 'performance', 'team', 'profile', 'settings', 'clients', 'members', 'not_found']);
+    const allClientsRoutes = new Set(['home', 'tasks', 'profile', 'settings', 'clients', 'members', 'trends', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'tasks', 'brand', 'library', 'performance', 'team', 'profile', 'settings', 'clients', 'members', 'trends', 'not_found']);
     if (isAllClientsMode) {
       if (!allClientsRoutes.has(r)) navigate('/home');
     } else {
@@ -810,6 +812,7 @@ const App = () => {
     if (route.view === "library") return <><strong>Library</strong></>;
     if (route.view === "clients") return <><strong>Clients</strong></>;
     if (route.view === "members") return <><strong>L+R Team</strong></>;
+    if (route.view === "trends")  return <><strong>Trends Radar</strong></>;
     if (route.view === "team") return <><strong>Team</strong></>;
     if (route.view === "brand") return <><strong>Brand Intelligence</strong></>;
     if (route.view === "settings") return <><strong>Settings</strong></>;
@@ -838,6 +841,9 @@ const App = () => {
     // Agency-only management surfaces — reachable from the picker / profile menu.
     if (auth?.isAgency && route.view === "clients") {
       return <AdminClientsView onOpenClient={(c) => handleSelectBrand(c.id)}/>;
+    }
+    if (auth?.isAgency && route.view === "trends") {
+      return <TrendsView />;
     }
     if (auth?.isAgency && route.view === "members") {
       return <AdminTeamView auth={auth}/>;

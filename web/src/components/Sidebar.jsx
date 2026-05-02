@@ -34,6 +34,10 @@ const buildBrandNav = ({ taskCount, calendarUnreadCount, isAgency }) => {
     { key: "team", label: "Brand team", icon: "team" },
   ];
   if (isAgency) {
+    // Trends Radar is agency-only and surfaces the latest social trends across
+    // every brand's category. Lives in the secondary block above L+R Team so
+    // the team management entry stays pinned at the bottom.
+    secondary.unshift({ key: "trends", label: "Trends Radar", icon: "sparkles" });
     secondary.push({ key: "members", label: "L+R Team", icon: "team" });
   }
   return { primary, secondary };
@@ -45,7 +49,11 @@ const buildAllClientsNav = (taskCount) => ({
     { key: "home", label: "Inbox", icon: "home" },
     { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
   ],
-  secondary: [],
+  // Trends Radar is also useful from All-clients mode (cross-brand insight),
+  // so it shows up in both contexts via the secondary block.
+  secondary: [
+    { key: "trends", label: "Trends Radar", icon: "sparkles" },
+  ],
 });
 
 const GUEST_NAV = [

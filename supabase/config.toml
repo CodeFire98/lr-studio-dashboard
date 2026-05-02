@@ -15,3 +15,9 @@ verify_jwt = true
 # through the caller's RLS scope (so they can only mail invites they have
 # access to), then dispatches via Resend server-side.
 verify_jwt = true
+
+[functions.fetch-trends]
+# Verify the caller's JWT. The function additionally checks
+# profiles.is_agency = true on the caller before scraping anything,
+# so this is fully agency-gated at the API surface.
+verify_jwt = true
