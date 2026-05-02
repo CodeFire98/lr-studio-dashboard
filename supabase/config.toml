@@ -16,6 +16,13 @@ verify_jwt = true
 # access to), then dispatches via Resend server-side.
 verify_jwt = true
 
+[functions.signup-for-invite]
+# Anon-callable: the user isn't signed in yet — they just clicked the
+# accept-invite link from their email and are creating an account. The
+# function gates itself on the validity of the invitation token, which
+# is the only credential the user has at this point.
+verify_jwt = false
+
 # fetch-trends does NOT live here — it's a Vercel serverless function at
 # web/api/fetch-trends.ts. We deliberately moved it off Supabase Edge
 # Functions on 2026-05-02 because the multipart deploy endpoint started

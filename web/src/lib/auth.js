@@ -275,18 +275,72 @@ async function signUpBrand({ email, password, displayName, brandName }) {
 // Bare signup used when the user is accepting an invitation — no workspace
 // creation here, because accept_invitation will add them to the invited
 // account atomically after the auth row exists.
+//
+// We bypass Supabase's standard auth.signUp() (which queues a "click the
+// link in your email" confirmation step) and instead call the
+// `signup-for-invite` edge function. That function uses the admin API
+// to create the auth user with `email_confirm: true` — the invitation row
+// itself is already proof the user owns the email, so a second
+// confirmation just adds friction.
+//
+// After the user is created, we sign them in with the same password to
+// establish a session. App.jsx's existing pending-invite useEffect then
+// redeems the token via accept_invitation(p_token) and lands them on the
+// workspace.
 async function signUpForInvite({ email, password, displayName }) {
-  const { data, error } = await supabase.auth.signUp({
+  const token = (() => {
+    try { return localStorage.getItem('lr_pending_invite'); } catch { return null; }
+  })();
+  if (!token) {
+    throw new Error('No invitation token found — open the invite link from your email again.');
+  }
+
+  // We invoke via raw fetch instead of `supabase.functions.invoke()` so we
+  // can read the function's JSON error body on non-2xx. The SDK helper
+  // wraps any non-2xx as a generic "Edge Function returned a non-2xx
+  // status code" error and doesn't surface the body — which means we lose
+  // our `code: "user_exists"` signal that's supposed to pivot the modal
+  // to sign-in mode.
+  const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/functions/v1/signup-for-invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Supabase's function gateway requires apikey + Authorization for
+        // anon-callable functions (verify_jwt = false). Both can be the
+        // anon publishable key.
+        'apikey': anonKey,
+        'Authorization': `Bearer ${anonKey}`,
+      },
+      body: JSON.stringify({ token, password, displayName: displayName || '' }),
+    });
+  } catch (netErr) {
+    throw new Error('Network error — please retry.');
+  }
+
+  let body = null;
+  try { body = await response.json(); } catch { /* leave null */ }
+
+  if (!response.ok) {
+    const ex = new Error(body?.error || `Signup failed (HTTP ${response.status})`);
+    if (body?.code) ex.code = body.code;
+    throw ex;
+  }
+
+  // User now exists with email_confirm=true. Sign them in to establish
+  // a session — this fires the same auth state-change events that a
+  // normal signin would, including App.jsx's invite-redemption useEffect.
+  const { error: signinErr } = await supabase.auth.signInWithPassword({
     email: email.trim(),
     password,
-    options: {
-      data: { display_name: displayName?.trim() || '' },
-    },
   });
-  if (error) throw error;
-  if (!data.session) return { pendingConfirmation: true, user: data.user };
+  if (signinErr) throw signinErr;
+
   await refreshFromSession();
-  return { pendingConfirmation: false, user: data.user, profile: _cachedAuth };
+  return { pendingConfirmation: false, profile: _cachedAuth };
 }
 
 async function signOut() {
