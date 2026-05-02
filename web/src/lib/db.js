@@ -748,6 +748,7 @@ export async function createInvitation({ accountId, email, role, invitedBy }) {
   if (error) throw error;
   return {
     id: data.id,
+    accountId: data.account_id,
     email: data.email,
     role: data.role,
     token: data.token,
