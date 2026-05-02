@@ -210,10 +210,36 @@ type TrendInsertRow = {
 
 function normaliseTitle(input: string | null | undefined, kind: TrendKind): string | null {
   if (!input) return null;
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  if (kind === "hashtag") return trimmed.replace(/^#/, "").toLowerCase();
-  return trimmed;
+  // Collapse all whitespace runs to a single space + trim ends. Without
+  // this, "song name" and "song  name" produce different dedupe keys.
+  const collapsed = input.replace(/\s+/g, " ").trim();
+  if (!collapsed) return null;
+  if (kind === "hashtag") return collapsed.replace(/^#/, "").toLowerCase();
+  if (kind === "sound") {
+    // TikTok sometimes appends an internal numeric ID like "song name(1403785)"
+    // — strip those (6+ digits in trailing parens) so re-fetches dedupe
+    // even when TikTok's pagination shifts which post the ID is pulled from.
+    // Lowercase for the same reason hashtags lowercase: case can drift.
+    return collapsed.replace(/\s*\(\d{6,}\)\s*$/, "").toLowerCase();
+  }
+  return collapsed;
+}
+
+// Firecrawl's JSON extract sometimes returns 0 for metrics that simply
+// weren't visible on the page (TikTok Creative Center music tab doesn't
+// expose a play count next to each sound, for instance). Treating those
+// as real zeros makes every sound card display "0", which looks broken.
+// We normalise 0 → null and drop the metric label too so the card just
+// hides the metric chip entirely.
+function coerceMetric(rawValue: unknown, rawLabel: unknown): {
+  metric_value: number | null;
+  metric_label: string | null;
+} {
+  const n = typeof rawValue === "number" ? rawValue : Number(rawValue);
+  if (!Number.isFinite(n) || n <= 0) {
+    return { metric_value: null, metric_label: null };
+  }
+  return { metric_value: n, metric_label: typeof rawLabel === "string" ? rawLabel : null };
 }
 
 // =====================================================================
@@ -233,6 +259,9 @@ async function fetchTikTokForRegion(args: {
   serviceClient: SupabaseClient;
 }): Promise<TikTokFetchSummary> {
   const { region, window: trendWindow, serviceClient } = args;
+  // Stamp every row from this scrape with the same capturedAt so we can
+  // sweep older rows in the same slice as stale once we're done.
+  const capturedAt = new Date();
   const summary: TikTokFetchSummary = {
     region,
     hashtags: { fetched: 0, written: 0 },
@@ -251,6 +280,7 @@ async function fetchTikTokForRegion(args: {
       .map((r, i): TrendInsertRow | null => {
         const title = normaliseTitle(r.title, "hashtag");
         if (!title) return null;
+        const m = coerceMetric(r.metric_value, r.metric_label);
         return {
           platform: "tiktok",
           kind: "hashtag",
@@ -259,8 +289,8 @@ async function fetchTikTokForRegion(args: {
           subtitle: r.subtitle ?? null,
           url: r.url ?? null,
           thumbnail_url: r.thumbnail_url ?? null,
-          metric_value: typeof r.metric_value === "number" ? r.metric_value : null,
-          metric_label: r.metric_label ?? null,
+          metric_value: m.metric_value,
+          metric_label: m.metric_label,
           rank: typeof r.rank === "number" ? r.rank : i + 1,
           trend_window: trendWindow,
           raw_payload: r,
@@ -268,7 +298,7 @@ async function fetchTikTokForRegion(args: {
       })
       .filter((row): row is TrendInsertRow => row !== null);
     if (inserts.length > 0) {
-      const { error } = await upsertTrends(serviceClient, inserts);
+      const { error } = await upsertTrends(serviceClient, inserts, capturedAt);
       if (error) summary.errors.push(`hashtag write: ${error.message}`);
       else summary.hashtags.written = inserts.length;
     }
@@ -287,6 +317,7 @@ async function fetchTikTokForRegion(args: {
       .map((r, i): TrendInsertRow | null => {
         const title = normaliseTitle(r.title, "sound");
         if (!title) return null;
+        const m = coerceMetric(r.metric_value, r.metric_label);
         return {
           platform: "tiktok",
           kind: "sound",
@@ -295,8 +326,8 @@ async function fetchTikTokForRegion(args: {
           subtitle: r.subtitle ?? null,
           url: r.url ?? null,
           thumbnail_url: r.thumbnail_url ?? null,
-          metric_value: typeof r.metric_value === "number" ? r.metric_value : null,
-          metric_label: r.metric_label ?? null,
+          metric_value: m.metric_value,
+          metric_label: m.metric_label,
           rank: typeof r.rank === "number" ? r.rank : i + 1,
           trend_window: trendWindow,
           raw_payload: r,
@@ -304,12 +335,27 @@ async function fetchTikTokForRegion(args: {
       })
       .filter((row): row is TrendInsertRow => row !== null);
     if (inserts.length > 0) {
-      const { error } = await upsertTrends(serviceClient, inserts);
+      const { error } = await upsertTrends(serviceClient, inserts, capturedAt);
       if (error) summary.errors.push(`sound write: ${error.message}`);
       else summary.sounds.written = inserts.length;
     }
   } catch (ex) {
     summary.errors.push(`sound fetch: ${(ex as Error).message}`);
+  }
+
+  // Sweep stale rows for this slice (TikTok / region / global). Anything
+  // that wasn't refreshed in this scrape was either dropped from the
+  // trending list or partial-failure — either way it's no longer "current"
+  // and shouldn't accumulate. Only sweep if SOMETHING was written this
+  // round; a totally-failed scrape (network error, bot wall) shouldn't
+  // wipe the existing data.
+  if (summary.hashtags.written + summary.sounds.written > 0) {
+    await sweepStaleTrends(serviceClient, {
+      platform: "tiktok",
+      region,
+      accountIdIsNull: true,
+      cutoff: capturedAt,
+    });
   }
 
   return summary;
@@ -318,17 +364,19 @@ async function fetchTikTokForRegion(args: {
 async function upsertTrends(
   serviceClient: SupabaseClient,
   rows: TrendInsertRow[],
+  capturedAt: Date = new Date(),
 ): Promise<{ error: { message: string } | null }> {
   // Refresh capture timestamps + push expiry forward so a re-run after
   // cron extends the lifetime instead of rotating IDs. The unique index
   // (platform, kind, region, title, trend_window, account_id) is the
   // dedupe key. Default expires_at on insert is now() + 14d; we set it
   // explicitly on update so re-fetches don't decay too quickly.
-  const now = new Date();
-  const expires = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+  // capturedAt is hoisted into a parameter so callers can later sweep
+  // stale rows using the same timestamp as the cutoff.
+  const expires = new Date(capturedAt.getTime() + 14 * 24 * 60 * 60 * 1000);
   const enriched = rows.map((r) => ({
     ...r,
-    captured_at: now.toISOString(),
+    captured_at: capturedAt.toISOString(),
     expires_at: expires.toISOString(),
   }));
   const { error } = await serviceClient
@@ -338,6 +386,44 @@ async function upsertTrends(
       ignoreDuplicates: false,
     });
   return { error: error ? { message: error.message } : null };
+}
+
+// After a successful refresh for a (platform, kind?, region, account_id)
+// slice, sweep any rows whose captured_at is older than the refresh
+// started — those represent trends that were trending in a previous
+// fetch but didn't come back this time, i.e. stale. Without this, the
+// dashboard accumulates ghost rows that say "this was trending 3 days
+// ago" alongside the actual current trends.
+//
+// Run this AFTER the upsert so a failed scrape doesn't wipe the existing
+// data. Rows from this scrape have captured_at = `refreshStartedAt`
+// (set in upsertTrends), so the cutoff is strict-less-than.
+async function sweepStaleTrends(
+  serviceClient: SupabaseClient,
+  args: {
+    platform: Platform;
+    region?: string;
+    kind?: TrendKind;
+    accountIdIsNull?: boolean;
+    accountId?: string;
+    cutoff: Date;
+  },
+): Promise<void> {
+  let q = serviceClient
+    .from("trend_signals")
+    .delete()
+    .eq("platform", args.platform)
+    .lt("captured_at", args.cutoff.toISOString());
+  if (args.region) q = q.eq("region", args.region);
+  if (args.kind)   q = q.eq("kind", args.kind);
+  if (args.accountIdIsNull) q = q.is("account_id", null);
+  else if (args.accountId)  q = q.eq("account_id", args.accountId);
+  const { error } = await q;
+  if (error) {
+    // Sweep failures are non-fatal — the data we just upserted is still
+    // valid; we just have some lingering stale rows. Log and move on.
+    console.warn("sweepStaleTrends failed", error.message);
+  }
 }
 
 async function handleTikTok(
@@ -568,6 +654,7 @@ async function handleTwitter(
     byRegion.get(region)!.push(item);
   }
 
+  const capturedAt = new Date();
   const summaries: TwitterFetchSummary[] = [];
   for (const region of regions) {
     const list = byRegion.get(region) ?? [];
@@ -583,9 +670,19 @@ async function handleTwitter(
       if (row) inserts.push(row);
     });
     if (inserts.length > 0) {
-      const { error } = await upsertTrends(serviceClient, inserts);
+      const { error } = await upsertTrends(serviceClient, inserts, capturedAt);
       if (error) summary.errors.push(`write: ${error.message}`);
       else summary.written = inserts.length;
+    }
+    // Sweep stale Twitter rows for this region — same rationale as TikTok.
+    // Only sweep if we actually wrote something this round.
+    if (summary.written > 0) {
+      await sweepStaleTrends(serviceClient, {
+        platform: "twitter",
+        region,
+        accountIdIsNull: true,
+        cutoff: capturedAt,
+      });
     }
     summaries.push(summary);
   }
@@ -607,16 +704,39 @@ async function handleTwitter(
 // =====================================================================
 // Instagram handler — Apify apify/instagram-hashtag-scraper
 //
-// Per-brand: the request body must include accountId. We read the
-// brand's trend_hashtags column (set in BrandKitView) and scrape recent
-// top posts for each hashtag, tagging the resulting trend_signals rows
-// with the same account_id. RLS on trend_signals already opens read
-// access to that account's members + agency staff.
+// **Pivoted 2026-05-02**: this used to be per-brand (read each brand's
+// configured hashtags from brand_kits.trend_hashtags). We pivoted back
+// to global trends to match TikTok/Twitter behaviour: surface what's
+// trending on Instagram RIGHT NOW by region, not "top posts for THIS
+// brand's tracked hashtags."
 //
-// Authz: the API surface still requires agency staff (caller-side
-// is_agency check above). The agency user picks which brand to fetch
-// for; brand owners don't trigger this directly in v1.
+// Strategy: Instagram doesn't expose a public "trends per country" API
+// the way TikTok Creative Center does. The closest signal we can get is
+// engagement-sorted recent posts under high-volume regional discovery
+// hashtags (#viralreels, #explorepage, regional flavour like #india /
+// #usa). It's not perfect — it's "viral-tagged" not "objectively viral"
+// — but it gives the agency a usable feed and matches the user
+// expectation of "Instagram trends like TikTok / X".
+//
+// Output: kind='post' rows with region set to the requested ISO code,
+// account_id=NULL (global pool), trend_window='now'. Same
+// trend_signals table; same TrendsView shell.
+//
+// brand_kits.trend_hashtags column added in migration 0030 stays —
+// it's harmless and may be reused by Phase 7 (brand-fit AI scoring).
 // =====================================================================
+
+// Curated discovery hashtags per region. The first few are always-trending
+// generic discovery tags; the rest are regional flavour. The Apify scraper
+// orders posts by engagement, so what comes back is "viral content right now
+// in this region" — close enough to "trending" for the agency's purposes.
+const IG_DISCOVERY_TAGS_BY_REGION: Record<string, string[]> = {
+  US: ["viral", "trending", "viralreels", "explorepage", "usa"],
+  IN: ["viralreels", "trendingreels", "india", "indianreels", "explorepage"],
+  GB: ["viral", "trending", "uk", "british", "explorepage"],
+  CA: ["viral", "trending", "canada", "viralreels", "explorepage"],
+  AU: ["viral", "trending", "australia", "aussie", "viralreels"],
+};
 
 type ApifyInstagramPost = {
   id?: string;
@@ -701,128 +821,120 @@ function parseInstagramPost(
   };
 }
 
+type InstagramRegionSummary = {
+  region: string;
+  hashtags: string[];
+  fetched: number;
+  written: number;
+  errors: string[];
+};
+
 async function handleInstagram(
   body: FetchTrendsRequest,
   serviceClient: SupabaseClient,
 ): Promise<{ status: number; payload: unknown }> {
-  if (!body.accountId) {
+  const regions = (body.regions && body.regions.length > 0 ? body.regions : DEFAULT_REGIONS)
+    .map((r) => r.trim().toUpperCase())
+    .filter((r) => /^[A-Z]{2}$/.test(r));
+  if (regions.length === 0) {
     return {
       status: 400,
-      payload: { error: "accountId is required for source=instagram" },
+      payload: { error: "No valid regions; expected ISO-3166 alpha-2 codes" },
     };
   }
 
-  // Read the brand's tracked hashtags.
-  const { data: kit, error: kitErr } = await serviceClient
-    .from("brand_kits")
-    .select("trend_hashtags, account_id")
-    .eq("account_id", body.accountId)
-    .maybeSingle();
-  if (kitErr) {
-    return { status: 500, payload: { error: kitErr.message } };
-  }
-  if (!kit) {
-    return {
-      status: 404,
-      payload: { error: "Brand kit not found for that accountId" },
-    };
-  }
-  const rawHashtags = (kit.trend_hashtags as string[] | null) ?? [];
-  const hashtags = rawHashtags
-    .map((h) => String(h).trim().replace(/^#/, "").toLowerCase())
-    .filter((h) => h.length > 0 && /^[a-z0-9_]+$/i.test(h));
-  if (hashtags.length === 0) {
-    return {
-      status: 200,
-      payload: {
-        ok: true,
-        source: "instagram",
-        accountId: body.accountId,
-        written: 0,
-        summaries: [],
-        note:
-          "This brand has no trend_hashtags configured yet. Add some in Brand Intelligence → Trend hashtags before fetching.",
-      },
-    };
-  }
-
-  // Apify Instagram Hashtag Scraper. Single multi-hashtag call where
-  // possible — many actors accept a `hashtags` array directly. We use
-  // the canonical `apify/instagram-hashtag-scraper` slug; if your account
-  // uses a different fork, the actor identifier in the URL is the only
-  // line that needs swapping.
   const apifyUrl =
     `https://api.apify.com/v2/acts/apify~instagram-hashtag-scraper` +
     `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
 
-  let res: Response;
-  try {
-    res = await fetch(apifyUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        hashtags,
-        resultsLimit: 12, // per hashtag
-        resultsType: "posts",
-      }),
-    });
-  } catch (ex) {
-    return {
-      status: 502,
-      payload: { error: `Apify request failed: ${(ex as Error).message}` },
-    };
-  }
+  const capturedAt = new Date();
+  const summaries: InstagramRegionSummary[] = [];
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    return {
-      status: 502,
-      payload: { error: `Apify ${res.status}: ${text.slice(0, 300)}` },
-    };
-  }
-
-  const items = (await res.json().catch(() => [])) as ApifyInstagramPost[];
-
-  // Group by hashtag (best-effort: some scrapers tag posts with the
-  // source hashtag, others don't and we have to match against the
-  // post's `hashtags` array).
-  const byHashtag = new Map<string, ApifyInstagramPost[]>();
-  for (const tag of hashtags) byHashtag.set(tag, []);
-  for (const post of items) {
-    const explicit = post.hashtag ?? post.inputHashtag ?? post.searchHashtag;
-    let tag: string | null = null;
-    if (typeof explicit === "string") tag = explicit.replace(/^#/, "").toLowerCase();
-    if (!tag && Array.isArray(post.hashtags)) {
-      tag = post.hashtags
-        .map((h) => String(h).replace(/^#/, "").toLowerCase())
-        .find((h) => hashtags.includes(h)) ?? null;
-    }
-    // Fallback: if we can't deduce, attach to the first hashtag the
-    // brand listed so the row isn't lost. raw_payload preserves the
-    // truth either way.
-    const final = tag && hashtags.includes(tag) ? tag : hashtags[0];
-    byHashtag.get(final)!.push(post);
-  }
-
-  const summaries: InstagramFetchSummary[] = [];
-  for (const tag of hashtags) {
-    const list = byHashtag.get(tag) ?? [];
-    const summary: InstagramFetchSummary = {
-      hashtag: tag,
-      fetched: list.length,
+  // Per-region Apify call. We could merge all regions into a single
+  // multi-hashtag call to save quota, but then post→region attribution
+  // becomes guesswork (a post tagged with #viral matches every region's
+  // discovery list). Keeping calls per-region preserves clean
+  // attribution and matches the TikTok per-region pattern.
+  for (const region of regions) {
+    const tags = IG_DISCOVERY_TAGS_BY_REGION[region] ?? IG_DISCOVERY_TAGS_BY_REGION.US;
+    const summary: InstagramRegionSummary = {
+      region,
+      hashtags: tags,
+      fetched: 0,
       written: 0,
       errors: [],
     };
-    const inserts: TrendInsertRow[] = [];
-    list.forEach((post, i) => {
-      const row = parseInstagramPost(post, tag, body.accountId!, i + 1);
-      if (row) inserts.push({ ...row, account_id: body.accountId });
+
+    let res: Response;
+    try {
+      res = await fetch(apifyUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hashtags: tags,
+          resultsLimit: 6, // per hashtag — keeps the per-region call small
+          resultsType: "posts",
+        }),
+      });
+    } catch (ex) {
+      summary.errors.push(`apify request: ${(ex as Error).message}`);
+      summaries.push(summary);
+      continue;
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      summary.errors.push(`apify ${res.status}: ${text.slice(0, 200)}`);
+      summaries.push(summary);
+      continue;
+    }
+
+    const items = (await res.json().catch(() => [])) as ApifyInstagramPost[];
+    summary.fetched = items.length;
+
+    // Sort by likes / views desc so the highest-engagement posts get the
+    // top ranks. The Apify scraper returns items in API order, not
+    // engagement order.
+    const sorted = [...items].sort((a, b) => {
+      const aMetric = (a.likesCount ?? a.videoViewCount ?? 0);
+      const bMetric = (b.likesCount ?? b.videoViewCount ?? 0);
+      return bMetric - aMetric;
     });
+
+    const inserts: TrendInsertRow[] = [];
+    sorted.forEach((post, i) => {
+      // Pick the first hashtag we can attribute to from this region's
+      // discovery set; fall back to the first one in the list. Used for
+      // the subtitle "@user · #foo · 1.2K likes" so the agency knows
+      // which discovery tag surfaced the post.
+      let attributedTag = tags[0];
+      if (Array.isArray(post.hashtags)) {
+        const found = post.hashtags
+          .map((h) => String(h).replace(/^#/, "").toLowerCase())
+          .find((h) => tags.includes(h));
+        if (found) attributedTag = found;
+      }
+      const row = parseInstagramPost(post, attributedTag, "", i + 1);
+      if (!row) return;
+      // Override region/account_id from the per-brand defaults to global.
+      inserts.push({ ...row, region, account_id: null });
+    });
+
     if (inserts.length > 0) {
-      const { error } = await upsertTrends(serviceClient, inserts);
+      const { error } = await upsertTrends(serviceClient, inserts, capturedAt);
       if (error) summary.errors.push(`write: ${error.message}`);
       else summary.written = inserts.length;
     }
+
+    if (summary.written > 0) {
+      await sweepStaleTrends(serviceClient, {
+        platform: "instagram",
+        region,
+        accountIdIsNull: true,
+        cutoff: capturedAt,
+      });
+    }
+
     summaries.push(summary);
   }
 
@@ -832,8 +944,7 @@ async function handleInstagram(
     payload: {
       ok: true,
       source: "instagram",
-      accountId: body.accountId,
-      hashtags,
+      regions,
       written: totalWritten,
       summaries,
     },

@@ -30,9 +30,10 @@ const PLATFORMS = [
 ];
 
 // Platforms that scrape per-brand (require an accountId in the request).
-// The TrendsView shows a brand selector when one of these is active and
-// scopes both the read and the refresh to the chosen brand.
-const PER_BRAND_PLATFORMS = new Set(['instagram']);
+// Empty for now — Instagram pivoted back to global on 2026-05-02 to match
+// TikTok / Twitter behaviour. Kept as a Set so adding a per-brand source
+// later (e.g. competitor monitoring in Phase 8) is a one-line change.
+const PER_BRAND_PLATFORMS = new Set();
 
 const KIND_LABEL = {
   hashtag: 'Hashtags',
@@ -48,7 +49,7 @@ const KIND_LABEL = {
 const PLATFORM_KINDS = {
   tiktok:    ['all', 'hashtag', 'sound'],
   twitter:   ['all', 'hashtag', 'topic'],
-  instagram: ['all', 'hashtag'],
+  instagram: ['all', 'post'],
   linkedin:  ['all', 'topic'],
 };
 
@@ -117,33 +118,19 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
   );
 }
 
-function EmptyState({ onRefresh, refreshing, hasError, platform, isPerBrand, hasBrand }) {
+function EmptyState({ onRefresh, refreshing, hasError, platform }) {
   const headline = (() => {
     if (platform === 'tiktok')    return 'Pull the latest from TikTok Creative Center';
     if (platform === 'twitter')   return "Pull what's trending on X right now";
-    if (platform === 'instagram') return 'Pull recent posts for this brand’s tracked hashtags';
+    if (platform === 'instagram') return "Pull what's viral on Instagram right now";
     return 'Fetch the latest trends';
   })();
   const body = (() => {
     if (platform === 'tiktok')    return "We'll fetch trending hashtags and sounds for the regions you've selected. First fetch takes ~30s per region.";
     if (platform === 'twitter')   return 'Real-time trending topics + hashtags by region. Returns in a few seconds.';
-    if (platform === 'instagram') return 'For each hashtag in this brand’s Brand Intelligence → Trend hashtags, we pull the top recent posts so the agency can see what’s landing in their space.';
+    if (platform === 'instagram') return 'Recent high-engagement posts under each region’s discovery hashtags. Approximates "trending now" since Instagram doesn’t expose a regional trends feed.';
     return '';
   })();
-
-  // For per-brand sources we can't fetch without a brand picked / configured.
-  if (isPerBrand && !hasBrand) {
-    return (
-      <div className="trends-empty">
-        <div className="trends-empty-eyebrow">No brand selected</div>
-        <h3 className="trends-empty-title">Pick a brand to see Instagram trends</h3>
-        <p className="trends-empty-body">
-          Instagram trends are scoped to each brand's tracked hashtags. Pick a brand
-          above, then add hashtags to track in Brand Intelligence → Trend hashtags.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="trends-empty">
@@ -380,9 +367,7 @@ const TrendsView = ({
 
         {refreshSummary && (
           <div className="trends-flash">
-            {refreshSummary.source === 'instagram'
-              ? `Wrote ${refreshSummary.written ?? 0} posts across ${refreshSummary.hashtags?.length ?? 0} hashtag(s).`
-              : `Wrote ${refreshSummary.written ?? 0} signals across ${refreshSummary.regions?.length ?? 0} region(s).`}
+            Wrote {refreshSummary.written ?? 0} signals across {refreshSummary.regions?.length ?? 0} region(s).
           </div>
         )}
         {refreshError && (
@@ -401,8 +386,6 @@ const TrendsView = ({
             refreshing={refreshing}
             hasError={!!refreshError}
             platform={activePlatform}
-            isPerBrand={isPerBrand}
-            hasBrand={!!activeAccountId}
           />
         ) : (
           <>
