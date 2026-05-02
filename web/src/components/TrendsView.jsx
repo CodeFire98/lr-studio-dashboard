@@ -23,7 +23,7 @@ const DEFAULT_REGIONS = Object.keys(REGION_LABELS);
 
 const PLATFORMS = [
   { key: 'tiktok',    label: 'TikTok',    available: true,  icon: 'sparkles' },
-  { key: 'twitter',   label: 'X / Twitter', available: false, icon: 'send' },
+  { key: 'twitter',   label: 'X / Twitter', available: true, icon: 'send' },
   { key: 'instagram', label: 'Instagram', available: false, icon: 'image' },
   { key: 'linkedin',  label: 'LinkedIn',  available: false, icon: 'team' },
 ];
@@ -34,6 +34,16 @@ const KIND_LABEL = {
   topic:   'Topics',
   post:    'Posts',
   creator: 'Creators',
+};
+
+// Per-platform kind filter options. The `all` pseudo-kind is always first.
+// Keep this small and curated so the UI doesn't show empty filter chips for
+// kinds the platform never produces (e.g. "Sounds" on Twitter).
+const PLATFORM_KINDS = {
+  tiktok:    ['all', 'hashtag', 'sound'],
+  twitter:   ['all', 'hashtag', 'topic'],
+  instagram: ['all', 'hashtag'],
+  linkedin:  ['all', 'topic'],
 };
 
 function formatRelative(iso) {
@@ -214,7 +224,14 @@ const TrendsView = () => {
               aria-selected={activePlatform === p.key}
               disabled={!p.available}
               className={'trends-tab' + (activePlatform === p.key ? ' active' : '')}
-              onClick={() => p.available && setActivePlatform(p.key)}
+              onClick={() => {
+                if (!p.available) return;
+                setActivePlatform(p.key);
+                // Different platforms expose different kinds; reset to "all"
+                // so the user doesn't see an empty grid because the selected
+                // kind doesn't exist on the new platform.
+                setActiveKind('all');
+              }}
             >
               <Icon name={p.icon} size={14} />
               <span>{p.label}</span>
@@ -240,7 +257,7 @@ const TrendsView = () => {
           <div className="trends-filter">
             <label>Type</label>
             <div className="trends-kind-pills">
-              {['all', 'hashtag', 'sound'].map((k) => (
+              {(PLATFORM_KINDS[activePlatform] || ['all']).map((k) => (
                 <button
                   key={k}
                   className={'trends-kind-pill' + (activeKind === k ? ' active' : '')}

@@ -10,8 +10,10 @@
 // single normalized table regardless of source.
 //
 // Sources are dispatched by `source` in the request body:
-//   tiktok  — TikTok Creative Center hashtags + sounds (free; uses Firecrawl).
-// Future sources land as sibling handlers (handleTwitter, handleInstagram).
+//   tiktok   — TikTok Creative Center hashtags + sounds (free; uses Firecrawl).
+//   twitter  — X / Twitter trending topics per region via Apify's
+//              automation-lab/twitter-trends-scraper actor.
+// Future sources land as sibling handlers (handleInstagram).
 //
 // Auth model:
 //   - Caller MUST send Authorization: Bearer <user JWT>. The handler
@@ -22,7 +24,8 @@
 //   - Writes use the service-role client (bypasses RLS).
 //
 // Env vars (set in Vercel Project Settings → Environment Variables):
-//   FIRECRAWL_API_KEY            — required, fc-... key from firecrawl.dev
+//   FIRECRAWL_API_KEY            — required for `tiktok` source. fc-... key.
+//   APIFY_API_TOKEN              — required for `twitter` source. apify_api_...
 //   SUPABASE_URL                 — https://vmfwnfflhvskadkfnvds.supabase.co
 //   SUPABASE_SERVICE_ROLE_KEY    — sb_secret_... from Supabase API settings
 //   SUPABASE_ANON_KEY            — sb_publishable_... from Supabase API
@@ -40,6 +43,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "";
+const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const ANON_KEY = process.env.SUPABASE_ANON_KEY ?? "";
@@ -368,6 +372,230 @@ async function handleTikTok(
 }
 
 // =====================================================================
+// Twitter / X handler — Apify automation-lab/twitter-trends-scraper
+//
+// Apify accepts a single multi-region call (one POST → all regions back),
+// so the architecture is simpler than TikTok's per-region Firecrawl loop.
+// We translate our ISO-3166 alpha-2 region list to whatever the actor
+// expects (mostly identity, except GB → UK which Twitter trends use).
+//
+// Output shape from the actor isn't formally documented, so we parse
+// defensively: each dataset item is treated as a single trend with a
+// best-effort mapping of common field names. Anything we don't
+// recognise gets stashed in `raw_payload` for forensics.
+// =====================================================================
+
+const TWITTER_REGION_MAP: Record<string, string> = {
+  // Keep our internal codes ISO-3166 alpha-2 everywhere; only translate at
+  // the API boundary. GB is the ISO code for United Kingdom but Twitter
+  // trends data is universally exposed under "UK" — Apify follows that.
+  GB: "UK",
+};
+
+function toApifyLocation(region: string): string {
+  const code = region.trim().toUpperCase();
+  return TWITTER_REGION_MAP[code] ?? code;
+}
+
+function fromApifyLocation(location: string): string {
+  // Inverse mapping so rows are stored under our canonical region code.
+  if (location?.toUpperCase() === "UK") return "GB";
+  return (location ?? "").toUpperCase();
+}
+
+type ApifyTrendItem = {
+  // Common shapes we've seen from various Twitter trends scrapers. Any of
+  // these may be present; we coalesce in `parseApifyTrendItem`.
+  name?: string;
+  topic?: string;
+  hashtag?: string;
+  trend?: string;
+  url?: string;
+  query?: string;
+  tweet_volume?: number | string | null;
+  tweetVolume?: number | string | null;
+  volume?: number | string | null;
+  rank?: number;
+  position?: number;
+  location?: string;
+  country?: string;
+  countryCode?: string;
+  woeid?: number | string;
+  promoted_content?: unknown;
+};
+
+type TwitterFetchSummary = {
+  region: string;
+  fetched: number;
+  written: number;
+  errors: string[];
+};
+
+function parseApifyTrendItem(
+  item: ApifyTrendItem,
+  fallbackRegion: string,
+  fallbackRank: number,
+): TrendInsertRow | null {
+  // Pick the first non-empty title-ish field. Twitter trends are typically
+  // either a hashtag (#foo) or a topic phrase ("Taylor Swift").
+  const rawTitle =
+    item.name ?? item.topic ?? item.hashtag ?? item.trend ?? null;
+  if (!rawTitle || typeof rawTitle !== "string") return null;
+  const trimmed = rawTitle.trim();
+  if (!trimmed) return null;
+
+  const isHashtag = trimmed.startsWith("#");
+  const kind: TrendKind = isHashtag ? "hashtag" : "topic";
+  const title = isHashtag
+    ? trimmed.slice(1).toLowerCase()
+    : trimmed;
+
+  const region = item.countryCode
+    ? fromApifyLocation(String(item.countryCode))
+    : item.location
+    ? fromApifyLocation(String(item.location))
+    : item.country
+    ? fromApifyLocation(String(item.country))
+    : fallbackRegion;
+
+  // tweet_volume is a number from the Twitter trends API but may come back
+  // as a string from some scrapers — coerce defensively.
+  const rawVolume =
+    item.tweet_volume ?? item.tweetVolume ?? item.volume ?? null;
+  const numericVolume =
+    rawVolume == null ? null : typeof rawVolume === "number"
+    ? rawVolume
+    : Number(rawVolume) || null;
+
+  const rank =
+    typeof item.rank === "number"
+      ? item.rank
+      : typeof item.position === "number"
+      ? item.position
+      : fallbackRank;
+
+  return {
+    platform: "twitter",
+    kind,
+    region,
+    title,
+    subtitle: numericVolume
+      ? `${numericVolume.toLocaleString()} tweets`
+      : null,
+    url: item.url ?? null,
+    thumbnail_url: null, // Twitter trends don't expose a thumbnail
+    metric_value: numericVolume,
+    metric_label: numericVolume ? "tweets" : null,
+    rank,
+    trend_window: "now", // Twitter trends are real-time, not windowed.
+    raw_payload: item,
+  };
+}
+
+async function handleTwitter(
+  body: FetchTrendsRequest,
+  serviceClient: SupabaseClient,
+): Promise<{ status: number; payload: unknown }> {
+  const regions = (body.regions && body.regions.length > 0 ? body.regions : DEFAULT_REGIONS)
+    .map((r) => r.trim().toUpperCase())
+    .filter((r) => /^[A-Z]{2}$/.test(r));
+  if (regions.length === 0) {
+    return {
+      status: 400,
+      payload: { error: "No valid regions; expected ISO-3166 alpha-2 codes" },
+    };
+  }
+
+  const apifyLocations = regions.map(toApifyLocation);
+
+  // Single multi-region call. Apify's run-sync-get-dataset-items endpoint
+  // blocks until the actor finishes and returns the dataset directly —
+  // saves us a separate poll loop.
+  const apifyUrl =
+    `https://api.apify.com/v2/acts/automation-lab~twitter-trends-scraper` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(apifyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        locations: apifyLocations,
+        maxTrendsPerLocation: 25,
+      }),
+    });
+  } catch (ex) {
+    return {
+      status: 502,
+      payload: { error: `Apify request failed: ${(ex as Error).message}` },
+    };
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return {
+      status: 502,
+      payload: { error: `Apify ${res.status}: ${text.slice(0, 300)}` },
+    };
+  }
+
+  const items = (await res.json().catch(() => [])) as ApifyTrendItem[];
+
+  // Group rows by region for the per-region rank fallback. Items for the
+  // same location come back in display order, so the array index is a
+  // good rank fallback when the actor doesn't expose one.
+  const byRegion = new Map<string, ApifyTrendItem[]>();
+  for (const item of items) {
+    const code = item.countryCode
+      ? fromApifyLocation(String(item.countryCode))
+      : item.location
+      ? fromApifyLocation(String(item.location))
+      : item.country
+      ? fromApifyLocation(String(item.country))
+      : null;
+    const region = code && regions.includes(code) ? code : regions[0];
+    if (!byRegion.has(region)) byRegion.set(region, []);
+    byRegion.get(region)!.push(item);
+  }
+
+  const summaries: TwitterFetchSummary[] = [];
+  for (const region of regions) {
+    const list = byRegion.get(region) ?? [];
+    const summary: TwitterFetchSummary = {
+      region,
+      fetched: list.length,
+      written: 0,
+      errors: [],
+    };
+    const inserts: TrendInsertRow[] = [];
+    list.forEach((item, i) => {
+      const row = parseApifyTrendItem(item, region, i + 1);
+      if (row) inserts.push(row);
+    });
+    if (inserts.length > 0) {
+      const { error } = await upsertTrends(serviceClient, inserts);
+      if (error) summary.errors.push(`write: ${error.message}`);
+      else summary.written = inserts.length;
+    }
+    summaries.push(summary);
+  }
+
+  const totalWritten = summaries.reduce((acc, s) => acc + s.written, 0);
+  return {
+    status: 200,
+    payload: {
+      ok: true,
+      source: "twitter",
+      window: "now",
+      regions,
+      written: totalWritten,
+      summaries,
+    },
+  };
+}
+
+// =====================================================================
 // Handler
 // =====================================================================
 
@@ -387,12 +615,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: "POST required" });
   }
 
-  if (!FIRECRAWL_API_KEY) {
-    return res.status(500).json({
-      error:
-        "FIRECRAWL_API_KEY not configured. Add it under Vercel Project Settings → Environment Variables.",
-    });
-  }
+  // Supabase env is needed for ALL sources (auth + service-role upsert).
+  // Source-specific provider keys (FIRECRAWL_API_KEY, APIFY_API_TOKEN) are
+  // checked by the individual handlers so a misconfigured `tiktok` env
+  // doesn't break a `twitter` call.
   if (!SUPABASE_URL || !SERVICE_ROLE || !ANON_KEY) {
     return res.status(500).json({
       error:
@@ -453,6 +679,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (body?.source === "tiktok") {
+    if (!FIRECRAWL_API_KEY) {
+      return res.status(500).json({
+        error:
+          "FIRECRAWL_API_KEY not configured. Add it under Vercel Project Settings → Environment Variables.",
+      });
+    }
     try {
       const result = await handleTikTok(body, serviceClient);
       return res.status(result.status).json(result.payload);
@@ -460,6 +692,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res
         .status(500)
         .json({ error: `TikTok handler crashed: ${(ex as Error).message}` });
+    }
+  }
+
+  if (body?.source === "twitter") {
+    if (!APIFY_API_TOKEN) {
+      return res.status(500).json({
+        error:
+          "APIFY_API_TOKEN not configured. Add it under Vercel Project Settings → Environment Variables.",
+      });
+    }
+    try {
+      const result = await handleTwitter(body, serviceClient);
+      return res.status(result.status).json(result.payload);
+    } catch (ex) {
+      return res
+        .status(500)
+        .json({ error: `Twitter handler crashed: ${(ex as Error).message}` });
     }
   }
 
