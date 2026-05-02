@@ -681,16 +681,27 @@ export async function loadAgencyAccountId() {
 }
 
 export async function loadTeamForAccount(accountId) {
-  const { data, error } = await supabase
-    .from('account_members')
-    .select('id, role, created_at, user:profiles!user_id(id, display_name, initials, avatar_color, is_agency)')
-    .eq('account_id', accountId);
+  // Goes through the `account_members_with_email` SECURITY DEFINER RPC
+  // (migration 0027) so we can join `auth.users.email` into the response.
+  // The anon-key SPA client can't read auth.users directly; the RPC adds
+  // the email column and authz-checks the caller (member of the account
+  // OR agency staff).
+  const { data, error } = await supabase.rpc('account_members_with_email', {
+    p_account_id: accountId,
+  });
   if (error) throw error;
   return (data || []).map((m) => ({
-    id: m.id,
+    id: m.member_id,
     role: m.role,
-    person: personFromProfile(m.user),
-    joinedAt: m.created_at,
+    person: personFromProfile({
+      id: m.user_id,
+      display_name: m.display_name,
+      initials: m.initials,
+      avatar_color: m.avatar_color,
+      is_agency: m.is_agency,
+      email: m.email,
+    }),
+    joinedAt: m.joined_at,
     status: 'active',
   }));
 }

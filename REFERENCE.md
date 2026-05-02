@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-02 (Auto-accept removed — invites must be explicitly redeemed via the email link)
+**Last updated:** 2026-05-02 (Member email surfaced via new RPC; auto-accept removed)
 
 ---
 
@@ -11,6 +11,12 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-02 — Member email surfaced in team views (new SECURITY DEFINER RPC)
+- TeamView (brand) and AdminTeamView (agency) needed to show each member's email next to their display name so duplicate names are disambiguatable. The `email` field was already rendered in both views (`{m.person.email || m.person.role}`) — what was missing was the data path: `loadTeamForAccount` joined `account_members → profiles`, and `profiles` doesn't carry email (verified — columns are `id, display_name, initials, avatar_url, avatar_color, is_agency, created_at`). REFERENCE.md previously claimed `profiles.email` exists; corrected today.
+- New migration `0027_account_members_with_email`: RPC `account_members_with_email(p_account_id uuid)` returns the member rows + email joined from `auth.users`. SECURITY DEFINER with explicit authz (caller is a member of the account OR is agency staff via `is_agency_user()`). Anon-key SPA client can't read `auth.users` directly; this is the canonical pattern for surfacing it.
+- `loadTeamForAccount` in [db.js](web/src/lib/db.js) now calls the RPC instead of the direct `account_members` query. Same return shape — no UI changes needed; the existing `email || role` fallback in TeamView and AdminTeamView starts populating with real emails immediately.
+- Sections touched: §6 RPCs list (new entry; profiles columns corrected), §13 new decision-log entry, Recent changes log.
 
 ### 2026-05-02 — Email-match auto-accept removed (invites require explicit redemption)
 - The `auto_accept_pending_invitations()` RPC (migration 0010) was being called on every session refresh from [auth.js:162](web/src/lib/auth.js:162). It silently joined any signed-in user to every pending invite whose `email` field matched their auth email — so invitees never had to click the link in the email, *and* an existing-account user invited via that account's email would be silently granted access on their next sign-in.
@@ -220,7 +226,7 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 |---|---|---|---|---|
 | `accounts` | Workspaces (brand or agency) | `id`, `name`, `type` (`brand`/`agency`), `accent_color` | Members + agency users | Agency for INSERT; members for UPDATE; **owner-only DELETE via `delete_brand_account` RPC** |
 | `account_members` | Per-account membership rows | `account_id`, `user_id`, `role` (`owner`/`member`) | Members + agency | Owners (via `remove_team_member`/`change_member_role` RPCs) |
-| `profiles` | Per-user profile mirror of auth.users | `id` (=auth.uid), `display_name`, `initials`, `avatar_color`, `is_agency`, `email` | Authenticated | Self-update only |
+| `profiles` | Per-user profile mirror of auth.users | `id` (=auth.uid), `display_name`, `initials`, `avatar_url`, `avatar_color`, `is_agency`. **No email column** — email lives in `auth.users.email`; surface it via the `account_members_with_email` RPC. | Authenticated | Self-update only |
 | `tasks` | Briefs / creative requests | `account_id`, `title`, `brief_text`, `status`, `creatives_count`, `deadline`, `format`, `platform`, `objective`, `assigned_lead_id`, `created_by` | Members of account | Members + agency |
 | `assets` | Files uploaded against a task | `task_id`, `kind` (`reference`/`wip`/`deliverable`), `storage_path`, `mime_type`, `version`, `uploaded_by` | Same as task | Same |
 | `messages` | Conversation thread per task | `task_id`, `author_id`, `body` | Same as task | Author + agency |
@@ -274,6 +280,7 @@ internally because it bypasses RLS:
 - `remove_team_member(p_user_id, p_account_id)` — owner-only
 - `change_member_role(p_user_id, p_account_id, p_new_role)` — owner-only
 - `accept_invitation(p_token)` — redeem an invite
+- `account_members_with_email(p_account_id)` — returns the account's members joined to `auth.users.email` (migration 0027). Authz: caller must be a member of the account, OR be agency staff. Used by `loadTeamForAccount` so TeamView and AdminTeamView can display each member's email next to their name.
 - ~~`auto_accept_pending_invitations()`~~ *(deprecated 2026-05-02)* — was called on every session refresh and matched by email. Removed because it silently granted access to existing-account invitees and made mistyped invite emails dangerous. Function still exists on prod (defensive — in case of cached clients), no longer called from anywhere in the app. Safe to drop in a follow-up migration.
 
 ### Migrations
@@ -283,7 +290,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0026_remove_team_member_resets_is_agency.sql`.
+Most recent: `0027_account_members_with_email.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -292,6 +299,7 @@ Recent batch:
 - `0024_account_slug_backfill` — `accounts.slug` backfill + auto-generation trigger for Phase 2 routing.
 - `0025_accept_invitation_idempotent` — `accept_invitation(token)` is idempotent for the auto-accept race (don't raise "invalid or expired" when the row was already accepted by `auto_accept_pending_invitations()` and the caller is a member). See §13 entry.
 - `0026_remove_team_member_resets_is_agency` — `remove_team_member` now flips `profiles.is_agency = false` when removing the user's last agency membership. Includes a one-shot backfill for stale rows already in the broken state. See §13 entry.
+- `0027_account_members_with_email` — `account_members_with_email(p_account_id)` SECURITY DEFINER RPC that joins `account_members → profiles → auth.users.email` for team-list rendering. See §13 entry.
 
 ---
 
