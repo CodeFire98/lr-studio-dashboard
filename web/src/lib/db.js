@@ -681,16 +681,27 @@ export async function loadAgencyAccountId() {
 }
 
 export async function loadTeamForAccount(accountId) {
-  const { data, error } = await supabase
-    .from('account_members')
-    .select('id, role, created_at, user:profiles!user_id(id, display_name, initials, avatar_color, is_agency)')
-    .eq('account_id', accountId);
+  // Goes through the `account_members_with_email` SECURITY DEFINER RPC
+  // (migration 0027) so we can join `auth.users.email` into the response.
+  // The anon-key SPA client can't read auth.users directly; the RPC adds
+  // the email column and authz-checks the caller (member of the account
+  // OR agency staff).
+  const { data, error } = await supabase.rpc('account_members_with_email', {
+    p_account_id: accountId,
+  });
   if (error) throw error;
   return (data || []).map((m) => ({
-    id: m.id,
+    id: m.member_id,
     role: m.role,
-    person: personFromProfile(m.user),
-    joinedAt: m.created_at,
+    person: personFromProfile({
+      id: m.user_id,
+      display_name: m.display_name,
+      initials: m.initials,
+      avatar_color: m.avatar_color,
+      is_agency: m.is_agency,
+      email: m.email,
+    }),
+    joinedAt: m.joined_at,
     status: 'active',
   }));
 }
@@ -774,12 +785,20 @@ export async function acceptInvitation(token) {
   return data; // account_id
 }
 
-// Bulk-accept any invitations whose email matches the signed-in user. Safe to
-// call on every login — returns [] when nothing is pending.
-export async function autoAcceptPendingInvitations() {
-  const { data, error } = await supabase.rpc('auto_accept_pending_invitations');
+// Trigger the `send-email` edge function to deliver a team-invite email for
+// a freshly created or revived invitation row. Returns the Resend message id
+// on success. Throws on any failure — callers should wrap so the invite row
+// (and Copy-link fallback) survive a delivery failure.
+export async function sendInviteEmail(invitationId) {
+  if (!invitationId) throw new Error('sendInviteEmail: invitationId is required');
+  const { data, error } = await supabase.functions.invoke('send-email', {
+    body: { template: 'team-invite', invitationId },
+  });
   if (error) throw error;
-  return Array.isArray(data) ? data : [];
+  if (data && typeof data === 'object' && 'error' in data && data.error) {
+    throw new Error(String(data.error));
+  }
+  return data;
 }
 
 // Check whether this email has any pending invitations waiting. Used to warn

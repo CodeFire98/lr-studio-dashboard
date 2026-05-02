@@ -13,6 +13,7 @@ import {
   loadInvitationsForAccount,
   createInvitation,
   revokeInvitation,
+  sendInviteEmail,
   removeTeamMember,
   changeMemberRole,
   loadBrandAccounts,
@@ -292,8 +293,14 @@ const AdminTeamView = ({ auth }) => {
         invitedBy: auth?.id || null,
       });
       setInvites((prev) => [inv, ...prev]);
-      setFlash(`Invite created for ${inv.email}. Copy the link below and send it to them.`);
       setEmail("");
+      try {
+        await sendInviteEmail(inv.id);
+        setFlash(`Sent an invite to ${inv.email}.`);
+      } catch (mailEx) {
+        console.error('send-email failed', mailEx);
+        setFlash(`Invite created for ${inv.email}, but the email didn't send. Copy the link below and send it manually.`);
+      }
     } catch (ex) {
       setErr(ex.message || "Couldn't create invite.");
     }

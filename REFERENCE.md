@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-01 (Sidebar badge counts plans-with-unreads, not event totals)
+**Last updated:** 2026-05-02 (Member email surfaced via new RPC; auto-accept removed)
 
 ---
 
@@ -11,6 +11,33 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-02 — Member email surfaced in team views (new SECURITY DEFINER RPC)
+- TeamView (brand) and AdminTeamView (agency) needed to show each member's email next to their display name so duplicate names are disambiguatable. The `email` field was already rendered in both views (`{m.person.email || m.person.role}`) — what was missing was the data path: `loadTeamForAccount` joined `account_members → profiles`, and `profiles` doesn't carry email (verified — columns are `id, display_name, initials, avatar_url, avatar_color, is_agency, created_at`). REFERENCE.md previously claimed `profiles.email` exists; corrected today.
+- New migration `0027_account_members_with_email`: RPC `account_members_with_email(p_account_id uuid)` returns the member rows + email joined from `auth.users`. SECURITY DEFINER with explicit authz (caller is a member of the account OR is agency staff via `is_agency_user()`). Anon-key SPA client can't read `auth.users` directly; this is the canonical pattern for surfacing it.
+- `loadTeamForAccount` in [db.js](web/src/lib/db.js) now calls the RPC instead of the direct `account_members` query. Same return shape — no UI changes needed; the existing `email || role` fallback in TeamView and AdminTeamView starts populating with real emails immediately.
+- Sections touched: §6 RPCs list (new entry; profiles columns corrected), §13 new decision-log entry, Recent changes log.
+
+### 2026-05-02 — Email-match auto-accept removed (invites require explicit redemption)
+- The `auto_accept_pending_invitations()` RPC (migration 0010) was being called on every session refresh from [auth.js:162](web/src/lib/auth.js:162). It silently joined any signed-in user to every pending invite whose `email` field matched their auth email — so invitees never had to click the link in the email, *and* an existing-account user invited via that account's email would be silently granted access on their next sign-in.
+- Three problems with that: (1) **silent grant for existing users** — invite an existing brand owner to the agency and they got agency access on their next normal sign-in with no acknowledgment; (2) **mistyped invite emails became dangerous** — typo `someone@gmail.con`, the wrong existing account silently inherits access; (3) **the email's "Accept invite" CTA was theater** — clicking it changed nothing.
+- Fix: stop calling the RPC. The token-based redemption flow ([App.jsx:377](web/src/App.jsx:377) → `accept_invitation(token)`) is now the only redemption path. The SQL function is left in place defensively (in case any cached client still calls it; safe to drop in a follow-up migration once that risk is past).
+- Also stripped: the dead `newlyJoinedAccountIds` welcome-banner useEffect in App.jsx that was reachable only via auto-accept; the unused `autoAcceptPendingInvitations()` export in db.js. The token redemption already shows its own "Invite accepted — welcome to the workspace." banner, so UX is unchanged for the canonical flow.
+- Sections touched: §6 RPCs list (auto-accept marked deprecated), §7 Sign-in paths (auto-accept line removed), §13 new decision-log entry, Recent changes log.
+
+### 2026-05-01 — Invitation redemption fixes (accept idempotency + is_agency reset)
+Two pre-existing bugs surfaced during Tier 1 invitation testing. Both ship as migrations applied to prod via the Management API SQL endpoint.
+- **Migration 0025 — `accept_invitation` is now idempotent.** Bug: when a user clicks an email invite link, signs in, and the session refresh fires, `auto_accept_pending_invitations()` (added in 0010) bulk-redeems the invite by email match BEFORE the URL-token redemption code in [App.jsx:377](web/src/App.jsx:377) gets to call `accept_invitation(token)`. The original RPC matched only `accepted_at is null`, so it raised "invitation invalid or expired" even though redemption had succeeded — the user was added to the workspace but saw "Couldn't accept invite" in the banner. Fix: look up the invitation regardless of accepted state. If already accepted AND the caller is a member of the target account, return success.
+- **Migration 0026 — `remove_team_member` now resets `profiles.is_agency`.** Bug: `accept_invitation` sets `is_agency = true` when joining an agency account, but `remove_team_member` only deleted the membership row — `is_agency` stayed true. A user removed from the agency would keep landing in agency mode on future sessions even after joining a brand. Fix: when `remove_team_member` deletes an agency membership AND no other agency memberships remain, flip `is_agency = false`. Migration also includes a one-shot backfill for any rows currently in the broken state (verified: 0 stale rows remain after backfill).
+- Sections touched: §6 Data model (RPCs — both updated); §13 Known decisions & gotchas (two new entries); Recent changes log.
+
+### 2026-05-01 — Resend Tier 1 (invitation emails replace copy-link)
+- New edge function [`send-email`](supabase/functions/send-email/index.ts) — Resend wrapper, dispatches by `template`. Currently supports the `team-invite` template only; future tiers (post-plan status, comments, etc.) will land additional `template` cases on the same function. Same auth model as `enrich-brand-kit`: caller's JWT is verified by the platform; we use a JWT-scoped client to read the target invitation through RLS (so the caller can only mail invites they have access to), then call Resend server-side with `RESEND_API_KEY`.
+- Client wrapper `sendInviteEmail(invitationId)` in [db.js](web/src/lib/db.js) fires `supabase.functions.invoke('send-email', {body: {template: 'team-invite', invitationId}})`.
+- [TeamView.jsx](web/src/components/TeamView.jsx) and [admin.jsx](web/src/components/admin.jsx) call `sendInviteEmail` immediately after `createInvitation` succeeds (and after `resendInvitation` in TeamView for the resend flow). **Email failure does not fail the invite** — the invitation row already exists and the Copy-link affordance below the form keeps working as a manual fallback. The flash message switches between "Sent an invite to X" and "Invite created for X, but the email didn't send. Copy the link below…" based on Resend's response.
+- New secrets: `RESEND_API_KEY`, `EMAIL_FROM` (`agency@linkrunner.io`), optional `EMAIL_FROM_NAME` (default `L+R Agency`), optional `APP_URL` (default `https://agency.linkrunner.io`). Set via `supabase secrets set` on the project; never in repo.
+- Sending domain `linkrunner.io` is verified on Resend (Squarespace DNS, verified 2026-04-29). Reply-To is set to the inviter's own email so replies thread back to whoever sent the invite, while the visible `From` is `agency@linkrunner.io`.
+- Sections touched: Recent changes log; §10 Edge functions & integrations (new function); §12 External accounts & secrets (Resend row + new secret rows); §13 Known decisions & gotchas (Resend design notes); §14 Pending work (Tier 2/3 follow-ups added).
 
 ### 2026-05-01 — Sidebar Social Calendar badge counts plans, not events
 - The sidebar nav badge next to **Social Calendar** previously summed every unread *event* across all plans (`Array.from(unreadByPlan.values()).reduce((a,b) => a+b, 0)` in App.jsx). It now counts the number of plans with any unread (`unreadByPlan.size`), so the badge matches the count of red dots on the calendar instead of being a multiple of it.
@@ -199,7 +226,7 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 |---|---|---|---|---|
 | `accounts` | Workspaces (brand or agency) | `id`, `name`, `type` (`brand`/`agency`), `accent_color` | Members + agency users | Agency for INSERT; members for UPDATE; **owner-only DELETE via `delete_brand_account` RPC** |
 | `account_members` | Per-account membership rows | `account_id`, `user_id`, `role` (`owner`/`member`) | Members + agency | Owners (via `remove_team_member`/`change_member_role` RPCs) |
-| `profiles` | Per-user profile mirror of auth.users | `id` (=auth.uid), `display_name`, `initials`, `avatar_color`, `is_agency`, `email` | Authenticated | Self-update only |
+| `profiles` | Per-user profile mirror of auth.users | `id` (=auth.uid), `display_name`, `initials`, `avatar_url`, `avatar_color`, `is_agency`. **No email column** — email lives in `auth.users.email`; surface it via the `account_members_with_email` RPC. | Authenticated | Self-update only |
 | `tasks` | Briefs / creative requests | `account_id`, `title`, `brief_text`, `status`, `creatives_count`, `deadline`, `format`, `platform`, `objective`, `assigned_lead_id`, `created_by` | Members of account | Members + agency |
 | `assets` | Files uploaded against a task | `task_id`, `kind` (`reference`/`wip`/`deliverable`), `storage_path`, `mime_type`, `version`, `uploaded_by` | Same as task | Same |
 | `messages` | Conversation thread per task | `task_id`, `author_id`, `body` | Same as task | Author + agency |
@@ -253,21 +280,26 @@ internally because it bypasses RLS:
 - `remove_team_member(p_user_id, p_account_id)` — owner-only
 - `change_member_role(p_user_id, p_account_id, p_new_role)` — owner-only
 - `accept_invitation(p_token)` — redeem an invite
-- `auto_accept_pending_invitations()` — runs on every session refresh; matches by email
+- `account_members_with_email(p_account_id)` — returns the account's members joined to `auth.users.email` (migration 0027). Authz: caller must be a member of the account, OR be agency staff. Used by `loadTeamForAccount` so TeamView and AdminTeamView can display each member's email next to their name.
+- ~~`auto_accept_pending_invitations()`~~ *(deprecated 2026-05-02)* — was called on every session refresh and matched by email. Removed because it silently granted access to existing-account invitees and made mistyped invite emails dangerous. Function still exists on prod (defensive — in case of cached clients), no longer called from anywhere in the app. Safe to drop in a follow-up migration.
 
 ### Migrations
 
 Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
-- **CLI**: `SUPABASE_ACCESS_TOKEN=<PAT> supabase db push --project-ref vmfwnfflhvskadkfnvds`
-- **Management API**: `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
+- **CLI** (requires `supabase link` + DB password): `SUPABASE_ACCESS_TOKEN=<PAT> supabase db push`
+- **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0023_post_plan_status_log.sql`.
+Most recent: `0027_account_members_with_email.sql`.
 
-Recent batch (all post-plan-related):
+Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
 - `0022_post_plan_views_and_attachments_storage` — `post_plan_views` table, `post-plan-attachments` storage bucket + storage RLS scoped via `post_plan_attachment_account_id(name)` helper.
 - `0023_post_plan_status_log` — `post_plan_status_log` + `log_post_plan_status_change` trigger.
+- `0024_account_slug_backfill` — `accounts.slug` backfill + auto-generation trigger for Phase 2 routing.
+- `0025_accept_invitation_idempotent` — `accept_invitation(token)` is idempotent for the auto-accept race (don't raise "invalid or expired" when the row was already accepted by `auto_accept_pending_invitations()` and the caller is a member). See §13 entry.
+- `0026_remove_team_member_resets_is_agency` — `remove_team_member` now flips `profiles.is_agency = false` when removing the user's last agency membership. Includes a one-shot backfill for stale rows already in the broken state. See §13 entry.
+- `0027_account_members_with_email` — `account_members_with_email(p_account_id)` SECURITY DEFINER RPC that joins `account_members → profiles → auth.users.email` for team-list rendering. See §13 entry.
 
 ---
 
@@ -277,7 +309,7 @@ Recent batch (all post-plan-related):
 
 1. **Email/password** — `signInWithPassword`
 2. **Google OAuth** — `signInWithGoogle`; `redirectTo` uses `window.location.origin` so it stays on the current domain
-3. **Invite token** — `accept_invitation` RPC after sign-in if `localStorage.lr_pending_invite` is set
+3. **Invite token** — `accept_invitation` RPC after sign-in if `localStorage.lr_pending_invite` is set. **This is now the only invite-redemption path** — the previous email-match auto-accept was removed 2026-05-02.
 
 ### Sign-up paths
 
@@ -497,6 +529,69 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
   --project-ref vmfwnfflhvskadkfnvds
 ```
 
+### `send-email`
+
+Transactional email via Resend. Single function, dispatches by `template`
+in the request body.
+
+| Template | Purpose | Status |
+|---|---|---|
+| `team-invite` | Sends a teammate-invite email when a row is created in `invitations`. Subject: "X invited you to {workspace} on L+R Agency". Includes accept-invite CTA + the same `?invite=<token>` URL the Copy-link button writes. | **Live** — used by both [TeamView.jsx](web/src/components/TeamView.jsx) (brand teammates) and [admin.jsx](web/src/components/admin.jsx) (agency staff). |
+
+#### Auth
+
+- `verify_jwt = true` (per [config.toml](supabase/config.toml)) — caller's JWT is verified by the platform.
+- The function uses a **JWT-scoped client** to read the target invitation through RLS, so the caller can only mail invites for accounts they belong to.
+- The function uses the **service-role client** to read the inviter's `profiles` row (display name) without depending on profiles SELECT policies.
+- The Resend API call itself is server-side only (`RESEND_API_KEY` never reaches the browser).
+
+#### Request shape
+
+```js
+POST /functions/v1/send-email
+Authorization: Bearer <user JWT>
+{
+  "template": "team-invite",
+  "invitationId": "<uuid of the invitations row>"
+}
+// → 200 { ok: true, id: "<resend message id>" }
+// → 4xx/5xx { error: "..." }
+```
+
+#### Reply-to behavior
+
+`From` is always `EMAIL_FROM` (default `agency@linkrunner.io`); `Reply-To`
+is set to the inviter's own email address so replies thread back to whoever
+created the invite, not to the shared `agency@` mailbox. Failure to send
+does **not** rollback the invitation row — the client treats email send as
+best-effort and falls back to the Copy-link UI.
+
+#### Environment variables
+
+| Name | Required | Default | Notes |
+|---|---|---|---|
+| `RESEND_API_KEY` | yes | — | `re_…` from resend.com/api-keys |
+| `EMAIL_FROM` | yes | — | `agency@linkrunner.io` (must be a verified domain on Resend) |
+| `EMAIL_FROM_NAME` | no | `L+R Agency` | Display name in `From` header |
+| `APP_URL` | no | `https://agency.linkrunner.io` | Base for the invite link |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_ANON_KEY` | yes | auto-injected | Set by Supabase platform |
+
+#### Deploying the edge function
+
+```sh
+SUPABASE_ACCESS_TOKEN=<PAT> \
+  supabase secrets set \
+    RESEND_API_KEY=re_... \
+    EMAIL_FROM=agency@linkrunner.io \
+    EMAIL_FROM_NAME="L+R Agency" \
+    APP_URL=https://agency.linkrunner.io \
+  --project-ref vmfwnfflhvskadkfnvds
+
+SUPABASE_ACCESS_TOKEN=<PAT> \
+  supabase functions deploy send-email \
+  --project-ref vmfwnfflhvskadkfnvds
+```
+
 ---
 
 ## 11. Deployment & environments
@@ -530,7 +625,9 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
 | Supabase | `supabase.com/dashboard/project/vmfwnfflhvskadkfnvds` | Postgres, Auth, Storage, Edge Functions |
 | Vercel | linked GitHub repo `CodeFire98/lr-studio-dashboard` | Hosting, Web Analytics, Speed Insights |
 | Firecrawl | dashboard at `firecrawl.dev` | Brand kit enrichment via `/v2/scrape` |
+| Resend | dashboard at `resend.com` | Transactional email via `send-email` edge function. Sending domain `linkrunner.io` (Squarespace DNS), verified 2026-04-29. From: `agency@linkrunner.io`. |
 | Google OAuth | Google Cloud Console → OAuth client | Sign-in via Supabase OAuth provider |
+| Google Workspace | hosts `agency@linkrunner.io` mailbox | Receives replies to outbound invitation emails (Reply-To header points at the inviter, but bounces / replies-to-the-from land here) |
 | Domain registrar | (per Lakshith) | `agency.linkrunner.io`, `cal.linkrunner.io`, `linkrunner.io` |
 | Cal.com | `cal.linkrunner.io/team/demos/lragency` | Scheduling link from HomeView |
 
@@ -542,13 +639,16 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | `web/.env.local` | Public; RLS-restricted |
 | Supabase `service_role` key | **Never in repo** | Should only live in Supabase function secrets |
 | `FIRECRAWL_API_KEY` | Supabase function secret | Read by `enrich-brand-kit` from `Deno.env` |
+| `RESEND_API_KEY` | Supabase function secret | Read by `send-email` from `Deno.env` |
+| `EMAIL_FROM` / `EMAIL_FROM_NAME` / `APP_URL` | Supabase function secrets (non-secret values, but stored alongside the API key for convenience) | Read by `send-email`. Defaults baked in if unset. |
 | Supabase Personal Access Token (PAT) | Local `~/.supabase/access-token` (CLI manages) | Used for `db push` and `functions deploy` |
 
-### Pending credential rotations (from session memory, 2026-04-23 → 04-27)
+### Pending credential rotations (from session memory, 2026-04-23 → 05-01)
 
 - Supabase `service_role` key — shared in chat 2026-04-23, rotate at Settings → API
 - Firecrawl key (`fc-…`) — shared in chat 2026-04-27, rotate at firecrawl.dev/app/api-keys
 - Supabase PAT (`sbp_…`) — shared in chat 2026-04-27 + reused 2026-04-28, rotate at supabase.com/dashboard/account/tokens
+- Resend key (`re_…`) — shared in chat 2026-05-01, rotate at resend.com/api-keys after Tier 1 ships
 
 ---
 
@@ -556,6 +656,12 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Email-match auto-accept removed; invites require an explicit token click.** The `auto_accept_pending_invitations()` RPC was introduced in 0010 with the goal of letting invitees skip the click — sign in with the matching email and you're in. Removed 2026-05-02 because the silent-grant cases (existing-account invitees, typos in the invite email) outweighed the QoL benefit. Considered: (a) keep auto-accept but only when `lr_pending_invite` localStorage is set — equivalent to just using the token flow, so redundant; (b) gate auto-accept on signup-event vs every session refresh — narrower, but still silent for the existing-account case which was the main complaint. Chose to remove entirely. Token flow is the single redemption path. The SQL function is intentionally left in place on prod for defensive compatibility with any cached client; safe to drop in a follow-up migration.
+- **`accept_invitation` is idempotent for the auto-accept race.** The token-based `accept_invitation` runs *after* the email-based `auto_accept_pending_invitations` in the auth refresh chain. If the user's email matches the invite (which it does for any normal invite flow), auto-accept redeems the row first and then the token-based accept finds `accepted_at` non-null. Original RPC raised "invalid or expired" in this case even though the user was already a member. Fix (0025): look up the row regardless of `accepted_at`, then return success if the caller is already a member of the target account. Considered alternatives — (a) gate the App.jsx token-redemption useEffect on `auth.newlyJoinedAccountIds` being empty (works but only patches the symptom in one client path), (b) drop one of the two redemption paths entirely. Chose the SQL fix because it's robust against any future client path that calls `accept_invitation` on an already-accepted row, not just this one.
+- **`remove_team_member` resets `profiles.is_agency` when the last agency membership goes.** The flag was being set on join (in `accept_invitation` since 0002) but never cleared on removal, leaving stale `is_agency=true` rows and putting brand-only users in agency mode after they'd been removed from the agency. Considered: (a) compute `is_agency` on the read path as `memberships.some(m => m.accounts.type === 'agency')` instead of trusting the stored flag — cleanest but a behavior change touching every `auth.isAgency` read and the RLS helper `is_agency_user()`. (b) trigger on `account_members` DELETE that recomputes the flag — broader scope (covers any future delete path). (c) fix the specific RPC. Chose (c) for now because there's only one delete path in the app today; revisit (b) if a second appears. The migration also includes a one-shot backfill for rows that were already in the broken state.
+- **Email sending uses one edge function with `template` dispatch, not per-template functions.** Considered separate functions per email type (`send-team-invite`, `send-task-delivered`, etc. — clean isolation). Chose a single `send-email` function that switches on `body.template` because: (a) one Resend client, one set of secrets, one cold-start; (b) shared template-rendering helpers (HTML scaffolding, `escapeHtml`, From/Reply-To logic) live in one file instead of being copy-pasted; (c) we'll add Tier 2 templates (post-plan status, comments) without each one needing its own deploy. Each template still gets its own request shape and its own auth check inside the function — the dispatcher is just a switch, not a `eval`-like surface.
+- **Email failure is non-fatal for the invite flow.** If Resend errors out, the `invitations` row already exists and the Copy-link affordance below the invite form keeps working. We changed the flash message based on the email outcome ("Sent an invite to X" vs "Invite created for X, but the email didn't send. Copy the link below…") rather than aborting the whole submission. Reasoning: the row is the source of truth for accept-invite; the email is just delivery convenience. Better to let the user fall back to the manual flow than tell them "invite failed" when actually their teammate can still redeem.
+- **`Reply-To` set to the inviter, `From` always `agency@linkrunner.io`.** The visible `From` is the workspace identity (the recipient should see "L+R Agency" not a personal address), but replies should thread to the human who actually invited them. Resend allows distinct `from` and `reply_to`, so we use both. The `agency@linkrunner.io` Google Workspace mailbox catches anything not-replies-to-the-inviter (bounces, "wrong person" forwards, etc.).
 - **Post plan URLs nest under `/calendar/:id`, not a sibling `/plan/:id`.** Considered (a) sibling — `/c/:slug/calendar` and `/c/:slug/plan/:id` as peers (the original Phase 1/2 shape), (b) nested — `/c/:slug/calendar/:id`. Chose (b): the URL now reflects the UI hierarchy. You enter the calendar at `/c/abcoffee/calendar`, click a chip, and the URL extends to `/c/abcoffee/calendar/a3f9c2d8` — calendar stays in the breadcrumb instead of silently swapping for `plan`. Hard cut, no backward-compat for old `/plan/...` paths since none had been shared externally. The internal route shape (`{view: 'plan', id, brandSlug}`) didn't change — only `parsePathToRoute` and `viewToPath` did, so child components are untouched.
 - **BrandPicker replaces shadow-impersonation.** The old `lr_impersonation` sessionStorage flow was a UI-only shadow that left an "agency viewing X" banner across the screen. The new `BrandPicker` makes brand selection a first-class sidebar control for both brand owners and agency users — same control, different option list. Cleaner mental model, no banner, agency state persists across sessions via `localStorage.lr_admin_active_brand`.
 - **Same-tab edits use optimistic mutators, not realtime.** Realtime subscriptions are great for cross-tab and cross-user, but the same-tab same-user case (open plan → edit title → navigate back) was eating ~200ms before the calendar chip reflected the change. App.jsx now exposes `upsertPostPlan` / `removePostPlanLocal` / `clearUnreadForPlan` callbacks, passed down to detail and calendar views, that update App-level state synchronously. Realtime is the safety net.
@@ -580,6 +686,8 @@ Running log of "we considered X and chose Y because Z" — newest first.
 
 ## 14. Pending work / known issues
 
+- **Resend Tier 2 — workflow notifications**: not built yet. Tier 1 (invitation emails) shipped 2026-05-01. Tier 2 fans out emails on DB writes via `pg_net` from existing triggers — task delivered, brief assigned, post-plan submitted-for-review / approved / needs-changes / delayed, new comments, new deliverables. See the Tier-2 list in the [Resend integration memory note](.claude/projects/.../memory/project_resend_email_integration.md). All hooks land in `send-email` as new `template` cases.
+- **Resend Tier 3 — digests + auth-side replacements**: also not built. Daily/weekly digest of unread post-plan activity (powered by `post_plan_views.last_seen_at`); optionally replacing Supabase's native password-reset / signup-confirm emails with branded Resend versions.
 - **Multi-source URL discovery (`discover` / `check_agent` modes)**: deployed in `enrich-brand-kit` but no client wires call them yet. Designed to find socials from a seed URL via Firecrawl Agent.
 - **Past creatives image cache**: noted in session memory — IG image fetch + cache to Supabase Storage is deferred until the social asset pipeline is built. `kit.pastCreatives` entries without `imageUrl` are filtered out of the UI (`BrandKitView` line ~1710).
 - **Per-brand URL paths (Phase 2 of the routing work)**: not implemented. Phase 1 (2026-04-30) added real per-view URLs (`/calendar`, `/plan/:id`, etc.) but brand context is still scoped via `BrandPicker` + `localStorage.lr_admin_active_brand`. Phase 2 will add a `/c/:brandSlug/...` URL segment so agency users can deep-link to "this brand's calendar / this plan in this brand", make multiple tabs independent, and stop relying on localStorage for brand scope. Needs an additive `accounts.slug` migration (or fall back to UUIDs in URLs).

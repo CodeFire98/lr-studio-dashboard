@@ -9,3 +9,9 @@ project_id = "vmfwnfflhvskadkfnvds"
 # caller is allowed to read/edit per RLS. The function then uses the
 # service role internally to write the enrichment back.
 verify_jwt = true
+
+[functions.send-email]
+# Verify the caller's JWT. The function reads the target invitation
+# through the caller's RLS scope (so they can only mail invites they have
+# access to), then dispatches via Resend server-side.
+verify_jwt = true

@@ -12,6 +12,7 @@ import {
   createInvitation,
   revokeInvitation,
   resendInvitation,
+  sendInviteEmail,
   removeTeamMember,
   changeMemberRole,
 } from '../lib/db.js';
@@ -102,8 +103,16 @@ const TeamView = ({ overrideAccountId } = {}) => {
         invitedBy: auth?.id || null,
       });
       setInvites((prev) => [inv, ...prev]);
-      setFlash(`Invite created for ${inv.email}. Copy the link below and send it to them.`);
       setEmail('');
+      // Deliver the email. If Resend errors out, the invite row still exists
+      // and the Copy-link fallback below the form keeps working.
+      try {
+        await sendInviteEmail(inv.id);
+        setFlash(`Sent an invite to ${inv.email}.`);
+      } catch (mailEx) {
+        console.error('send-email failed', mailEx);
+        setFlash(`Invite created for ${inv.email}, but the email didn't send. Copy the link below and send it manually.`);
+      }
     } catch (ex) {
       setErr(ex.message || "Couldn't create invite.");
     }
@@ -141,7 +150,13 @@ const TeamView = ({ overrideAccountId } = {}) => {
     try {
       const fresh = await resendInvitation(inv, { invitedBy: auth?.id || null });
       setInvites((prev) => [fresh, ...prev.filter((x) => x.id !== inv.id)]);
-      setFlash(`Sent a fresh invite link to ${fresh.email}.`);
+      try {
+        await sendInviteEmail(fresh.id);
+        setFlash(`Sent a fresh invite to ${fresh.email}.`);
+      } catch (mailEx) {
+        console.error('send-email failed', mailEx);
+        setFlash(`Created a fresh invite for ${fresh.email}, but the email didn't send. Copy the link manually.`);
+      }
     } catch (ex) {
       setErr(ex.message || "Couldn't resend invite.");
     } finally {

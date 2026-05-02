@@ -153,25 +153,14 @@ async function _doRefresh() {
   const { data: { session } } = await supabase.auth.getSession();
   _cachedAuth = session?.user ? await loadProfileFor(session.user) : null;
 
-  // Auto-accept any invitations matching this user's email. Works for both
-  // email/password and Google OAuth sign-ins — no token URL required. This
-  // runs BEFORE the auto-create-brand guard so a newly-joined brand member
-  // doesn't trigger an unwanted throwaway brand.
-  if (_cachedAuth) {
-    try {
-      const joined = await supabase.rpc('auto_accept_pending_invitations');
-      const newAccountIds = Array.isArray(joined?.data) ? joined.data : [];
-      if (newAccountIds.length > 0) {
-        // Re-hydrate so the new memberships + possibly-flipped is_agency show up.
-        _cachedAuth = await loadProfileFor(session.user);
-        // Expose the newly-joined IDs so App.jsx can show a welcome banner.
-        _cachedAuth.newlyJoinedAccountIds = newAccountIds;
-      }
-    } catch (e) {
-      // Non-fatal — token-link flow still works if this RPC is missing.
-      console.warn('auto_accept_pending_invitations failed', e);
-    }
-  }
+  // Invitations are now redeemed only via the explicit token-based flow
+  // (App.jsx → accept_invitation(token)). The previous email-match auto-
+  // accept silently granted workspace access on next sign-in for any user
+  // whose email matched a pending invite — which let mistyped invite emails
+  // and existing-account invitees skip the "click the link" step entirely.
+  // Removed 2026-05-02. The `auto_accept_pending_invitations()` SQL function
+  // is left in place defensively in case any cached client still calls it;
+  // safe to drop in a follow-up migration once that risk is past.
 
   // If a brand user has no account yet (e.g. signed up with email confirmation,
   // or signed up via Google OAuth), create their brand workspace now.
