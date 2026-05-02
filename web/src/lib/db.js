@@ -1891,3 +1891,97 @@ export function subscribeToPostPlanActivity({ accountId }, onChange) {
     .subscribe();
   return () => supabase.removeChannel(channel);
 }
+
+// =====================================================================
+// Trends Radar — agency-only read of public.trend_signals + edge function
+// trigger to refetch from external sources. Compartmentalized away from
+// every other surface so the feature can evolve in isolation.
+// =====================================================================
+
+function mapTrendSignalRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    platform: row.platform,
+    kind: row.kind,
+    region: row.region,
+    category: row.category || null,
+    title: row.title,
+    subtitle: row.subtitle || null,
+    url: row.url || null,
+    thumbnailUrl: row.thumbnail_url || null,
+    metricValue: row.metric_value != null ? Number(row.metric_value) : null,
+    metricLabel: row.metric_label || null,
+    rank: row.rank != null ? Number(row.rank) : null,
+    trendWindow: row.trend_window,
+    capturedAt: row.captured_at,
+    expiresAt: row.expires_at,
+    accountId: row.account_id || null,
+  };
+}
+
+// Read the current trend pool. RLS is agency-only on this table, so a
+// non-agency caller will just get an empty array.
+export async function loadTrendSignals({ platform, region, kind, limit = 200 } = {}) {
+  let q = supabase
+    .from('trend_signals')
+    .select('*')
+    .order('platform', { ascending: true })
+    .order('region', { ascending: true })
+    .order('rank', { ascending: true, nullsFirst: false })
+    .limit(limit);
+  if (platform) q = q.eq('platform', platform);
+  if (region)   q = q.eq('region', region);
+  if (kind)     q = q.eq('kind', kind);
+  const { data, error } = await q;
+  if (error) {
+    console.warn('loadTrendSignals failed', error);
+    return [];
+  }
+  return (data || []).map(mapTrendSignalRow).filter(Boolean);
+}
+
+// Trigger the fetch-trends Vercel serverless function for the given source.
+// Agency-only on the server — non-agency callers get a 403 even if they
+// bypass UI gating. Lives at /api/fetch-trends in the same Vercel deploy
+// as the SPA, so it's a relative URL and CORS isn't a concern.
+export async function refreshTrends({ source, regions, window: trendWindow } = {}) {
+  if (!source) throw new Error('refreshTrends: source is required');
+  const body = { source };
+  if (regions && regions.length > 0) body.regions = regions;
+  if (trendWindow) body.window = trendWindow;
+
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error('refreshTrends: not signed in');
+
+  let res;
+  try {
+    res = await fetch('/api/fetch-trends', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (ex) {
+    throw new Error(`Could not reach trends API: ${ex?.message || ex}`);
+  }
+
+  let payload;
+  try {
+    payload = await res.json();
+  } catch {
+    payload = null;
+  }
+  if (!res.ok) {
+    const msg = (payload && payload.error) || `HTTP ${res.status}`;
+    throw new Error(String(msg));
+  }
+  if (payload && typeof payload === 'object' && 'error' in payload && payload.error) {
+    throw new Error(String(payload.error));
+  }
+  return payload;
+}
+

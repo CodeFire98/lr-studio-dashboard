@@ -22,3 +22,10 @@ verify_jwt = true
 # function gates itself on the validity of the invitation token, which
 # is the only credential the user has at this point.
 verify_jwt = false
+
+# fetch-trends does NOT live here — it's a Vercel serverless function at
+# web/api/fetch-trends.ts. We deliberately moved it off Supabase Edge
+# Functions on 2026-05-02 because the multipart deploy endpoint started
+# 403'ing for our PAT and the deploy friction was costing us hours per
+# iteration. Vercel co-deploys the API with the SPA on every push, so
+# Trends Radar phases (Twitter/IG/LinkedIn) drop in via the same path.

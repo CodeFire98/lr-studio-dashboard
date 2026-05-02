@@ -2916,3 +2916,361 @@ input, textarea { font: inherit; color: inherit; }
   .onboarding-body { padding: 18px 20px 20px; }
   .onboarding-colors { grid-template-columns: 1fr; }
 }
+
+/* =========================================================
+   Trends Radar (agency-only)
+   Compartmentalized — class names prefixed with `trends-`
+   so nothing here can leak into the rest of the dashboard.
+   ========================================================= */
+
+.trends-view {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-6) var(--space-12);
+}
+
+.trends-header {
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--line);
+}
+
+.trends-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.trends-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: var(--space-2);
+}
+
+.trends-title {
+  font-family: var(--font-serif);
+  font-size: 32px;
+  line-height: 1.15;
+  font-weight: 500;
+  color: var(--ink);
+  margin: 0 0 var(--space-2);
+  letter-spacing: -0.01em;
+}
+
+.trends-sub {
+  font-size: 14px;
+  color: var(--ink-3);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.trends-stamp {
+  color: var(--ink-4);
+}
+
+.trends-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+  white-space: nowrap;
+}
+.trends-refresh-btn:hover:not(:disabled) {
+  border-color: var(--ink-4);
+  color: var(--ink);
+}
+.trends-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.trends-refresh-btn.primary {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+.trends-refresh-btn.primary:hover:not(:disabled) {
+  background: var(--ink-2);
+  color: var(--bg);
+}
+
+.trends-platform-tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.trends-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+.trends-tab:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+.trends-tab.active {
+  background: var(--ink);
+  color: var(--bg);
+}
+.trends-tab:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.trends-tab-soon {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--line-2);
+  color: var(--ink-4);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  margin-left: 4px;
+}
+.trends-tab.active .trends-tab-soon {
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.trends-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  align-items: flex-end;
+}
+
+.trends-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.trends-filter label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.trends-filter select {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 13px;
+  color: var(--ink);
+  font-family: inherit;
+  cursor: pointer;
+  min-width: 200px;
+}
+.trends-filter select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-focus);
+}
+
+.trends-kind-pills {
+  display: flex;
+  gap: 4px;
+  background: var(--surface-2);
+  padding: 3px;
+  border-radius: var(--radius-pill);
+}
+.trends-kind-pill {
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+.trends-kind-pill:hover {
+  color: var(--ink-2);
+}
+.trends-kind-pill.active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-xs);
+}
+
+.trends-flash {
+  margin-top: var(--space-4);
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--good-soft);
+  color: var(--good);
+  font-size: 13px;
+}
+.trends-flash.error {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* ----- Body / sections / grid ------------------------------------- */
+.trends-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.trends-loading {
+  padding: var(--space-12) 0;
+  text-align: center;
+  color: var(--ink-4);
+  font-size: 14px;
+}
+
+.trends-section-title {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--ink);
+  margin: 0 0 var(--space-4);
+  letter-spacing: -0.005em;
+}
+.trends-section-count {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--ink-4);
+  font-weight: 400;
+  margin-left: 8px;
+}
+
+.trends-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+.trend-card {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+.trend-card:hover {
+  border-color: var(--ink-4);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+.trend-card[aria-disabled="true"] {
+  cursor: default;
+}
+.trend-card[aria-disabled="true"]:hover {
+  border-color: var(--line);
+  transform: none;
+  box-shadow: none;
+}
+
+.trend-card-rank {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-4);
+  min-width: 28px;
+  letter-spacing: 0.04em;
+}
+
+.trend-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.trend-card-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.3;
+  word-break: break-word;
+  margin-bottom: 4px;
+}
+
+.trend-card-sub {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.trend-card-metric {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+}
+
+/* ----- Empty state ------------------------------------------------ */
+.trends-empty {
+  text-align: center;
+  padding: var(--space-12) var(--space-4);
+  background: var(--bg-panel);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+}
+.trends-empty-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin-bottom: var(--space-3);
+}
+.trends-empty-title {
+  font-family: var(--font-serif);
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--ink);
+  margin: 0 0 var(--space-3);
+}
+.trends-empty-body {
+  max-width: 460px;
+  margin: 0 auto var(--space-5);
+  font-size: 14px;
+  color: var(--ink-3);
+  line-height: 1.55;
+}
+.trends-empty-error {
+  margin-top: var(--space-4);
+  font-size: 12px;
+  color: var(--accent-ink);
+}
+
+@media (max-width: 720px) {
+  .trends-header-row { flex-direction: column; align-items: stretch; }
+  .trends-grid { grid-template-columns: 1fr; }
+  .trends-filter-row { flex-direction: column; gap: var(--space-3); align-items: stretch; }
+  .trends-filter select { min-width: 0; width: 100%; }
+}
