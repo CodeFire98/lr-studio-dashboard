@@ -118,17 +118,25 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
   );
 }
 
-function EmptyState({ onRefresh, refreshing, hasError, platform }) {
+function EmptyState({ onRefresh, refreshing, hasError, platform, igMode }) {
   const headline = (() => {
-    if (platform === 'tiktok')    return 'Pull the latest from TikTok Creative Center';
+    if (platform === 'tiktok')    return 'Pull the latest from TikTok';
     if (platform === 'twitter')   return "Pull what's trending on X right now";
-    if (platform === 'instagram') return "Pull what's viral on Instagram right now";
+    if (platform === 'instagram') {
+      return igMode === 'competitors'
+        ? "Pull this brand's competitors' latest posts"
+        : "Pull what top creators are posting in this region";
+    }
     return 'Fetch the latest trends';
   })();
   const body = (() => {
-    if (platform === 'tiktok')    return "We'll fetch trending hashtags and sounds for the regions you've selected. First fetch takes ~30s per region.";
+    if (platform === 'tiktok')    return "We'll fetch trending hashtags and sounds for each region from TikTok Creative Center. Returns in ~10s per region.";
     if (platform === 'twitter')   return 'Real-time trending topics + hashtags by region. Returns in a few seconds.';
-    if (platform === 'instagram') return 'Recent high-engagement posts under each region’s discovery hashtags. Approximates "trending now" since Instagram doesn’t expose a regional trends feed.';
+    if (platform === 'instagram') {
+      return igMode === 'competitors'
+        ? "We'll scrape recent posts from this brand's competitor accounts (configured in Brand Intelligence → Competitors), engagement-sorted."
+        : "We'll scrape recent posts from a curated set of high-engagement creators per region, engagement-sorted. Better signal than discovery hashtags because every account is hand-picked.";
+    }
     return '';
   })();
 
@@ -165,8 +173,11 @@ const TrendsView = ({
   const [activePlatform, setActivePlatform] = useState('tiktok');
   const [activeRegion, setActiveRegion] = useState('US');
   const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound' | 'topic' | 'post'
-  // Active brand for per-brand platforms (currently Instagram). Null until
-  // the user picks one — without it we can't read or write IG signals.
+  // For Instagram tab only: choose between regional curated creators or
+  // the active brand's competitors. Other platforms ignore this state.
+  const [igMode, setIgMode] = useState('region'); // 'region' | 'competitors'
+  // Active brand for IG competitors mode. Null until the user picks one
+  // — without it we can't read or write per-brand IG signals.
   const [activeAccountId, setActiveAccountId] = useState(defaultAccountId || (brandAccounts[0]?.id ?? null));
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -184,22 +195,25 @@ const TrendsView = ({
     else if (brandAccounts.length > 0) setActiveAccountId((prev) => prev || brandAccounts[0].id);
   }, [defaultAccountId, brandAccounts]);
 
-  const isPerBrand = PER_BRAND_PLATFORMS.has(activePlatform);
+  // "Per brand" is a function of (platform, mode) now: only IG in
+  // competitors mode reads/writes brand-scoped rows. Region mode for IG
+  // is global, just like TikTok / Twitter.
+  const isPerBrand = activePlatform === 'instagram' && igMode === 'competitors';
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    // For per-brand platforms (IG), filter rows to the picked account so
-    // we never mix Brand A's IG trends into Brand B's view.
-    // For global platforms, pass account_id IS NULL so we never accidentally
-    // pull a brand-scoped row alongside the global ones.
     const args = {
       platform: activePlatform,
       accountId: isPerBrand ? activeAccountId : null,
     };
-    if (!isPerBrand) args.region = activeRegion;
+    if (activePlatform === 'instagram' && igMode === 'region') {
+      // IG region mode rows have region set per-row; filter by it.
+      args.region = activeRegion;
+    } else if (!isPerBrand) {
+      args.region = activeRegion;
+    }
     if (isPerBrand && !activeAccountId) {
-      // Per-brand mode but no brand picked yet — nothing to load.
       setTrends([]);
       setLoading(false);
       return () => {};
@@ -209,7 +223,7 @@ const TrendsView = ({
       .catch((e) => { if (!cancelled) console.warn('loadTrendSignals failed', e); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activePlatform, activeRegion, activeAccountId, isPerBrand, reloadKey]);
+  }, [activePlatform, activeRegion, activeAccountId, isPerBrand, igMode, reloadKey]);
 
   const visibleTrends = useMemo(() => {
     if (activeKind === 'all') return trends;
@@ -252,8 +266,13 @@ const TrendsView = ({
     setRefreshSummary(null);
     try {
       const args = { source: activePlatform };
-      if (isPerBrand) {
-        args.accountId = activeAccountId;
+      if (activePlatform === 'instagram') {
+        args.mode = igMode;
+        if (igMode === 'competitors') {
+          args.accountId = activeAccountId;
+        } else {
+          args.regions = DEFAULT_REGIONS;
+        }
       } else {
         args.regions = DEFAULT_REGIONS;
         args.window = '7d';
@@ -316,10 +335,31 @@ const TrendsView = ({
         </nav>
 
         <div className="trends-filter-row">
+          {/* Instagram-only mode toggle: pick between regional curated
+              creators and the active brand's competitor list. Renders
+              before the Region/Brand selector so the user sees the
+              choice first. */}
+          {activePlatform === 'instagram' && (
+            <div className="trends-filter">
+              <label>Mode</label>
+              <div className="trends-kind-pills">
+                {[
+                  { key: 'region',      label: 'Top in region' },
+                  { key: 'competitors', label: "Brand's competitors" },
+                ].map((m) => (
+                  <button
+                    key={m.key}
+                    className={'trends-kind-pill' + (igMode === m.key ? ' active' : '')}
+                    onClick={() => setIgMode(m.key)}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {isPerBrand ? (
-            // Per-brand sources show a brand selector instead of a region
-            // dropdown; trends are tied to a single brand's tracked
-            // hashtags rather than to a country.
             <div className="trends-filter">
               <label>Brand</label>
               <select
@@ -413,6 +453,7 @@ const TrendsView = ({
             refreshing={refreshing}
             hasError={!!refreshError}
             platform={activePlatform}
+            igMode={igMode}
           />
         ) : (
           <>

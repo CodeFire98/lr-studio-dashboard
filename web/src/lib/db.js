@@ -913,6 +913,7 @@ function mapBrandKitRow(row) {
     fonts: Array.isArray(row.fonts) ? row.fonts : [],
     voiceTags: Array.isArray(row.voice_tags) ? row.voice_tags : [],
     trendHashtags: Array.isArray(row.trend_hashtags) ? row.trend_hashtags : [],
+    competitorHandles: Array.isArray(row.competitor_handles) ? row.competitor_handles : [],
     dos: Array.isArray(row.dos) ? row.dos : [],
     donts: Array.isArray(row.donts) ? row.donts : [],
     photography: Array.isArray(row.photography) ? row.photography : [],
@@ -1952,12 +1953,13 @@ export async function loadTrendSignals({ platform, region, kind, accountId, limi
 // Agency-only on the server — non-agency callers get a 403 even if they
 // bypass UI gating. Lives at /api/fetch-trends in the same Vercel deploy
 // as the SPA, so it's a relative URL and CORS isn't a concern.
-export async function refreshTrends({ source, regions, window: trendWindow, accountId } = {}) {
+export async function refreshTrends({ source, regions, window: trendWindow, accountId, mode } = {}) {
   if (!source) throw new Error('refreshTrends: source is required');
   const body = { source };
   if (regions && regions.length > 0) body.regions = regions;
   if (trendWindow) body.window = trendWindow;
   if (accountId)   body.accountId = accountId;
+  if (mode)        body.mode = mode;
 
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;

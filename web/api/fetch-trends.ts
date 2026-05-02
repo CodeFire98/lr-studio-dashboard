@@ -60,10 +60,14 @@ type FetchTrendsRequest = {
   source: Platform;
   regions?: string[];
   window?: "7d" | "30d";
-  // For source=instagram only: which brand to scope the scrape to.
-  // The handler reads brand_kits.trend_hashtags for this account_id and
-  // writes trend_signals rows tagged with this same account_id (per-brand
-  // visibility). Required for Instagram; ignored for other sources.
+  // For source=instagram, picks between two operating modes:
+  //   - "region" (default): scrape curated regional creators per region
+  //   - "competitors": scrape this brand's competitor list (requires accountId)
+  // Ignored for tiktok / twitter (those are always region-scoped).
+  mode?: "region" | "competitors";
+  // For source=instagram + mode='competitors': which brand to fetch for.
+  // Reads brand_kits.competitor_handles for this id and writes per-brand
+  // trend_signals (account_id set on each row).
   accountId?: string;
 };
 
@@ -243,8 +247,44 @@ function coerceMetric(rawValue: unknown, rawLabel: unknown): {
 }
 
 // =====================================================================
-// TikTok handler
+// TikTok handler — Apify automation-lab/tiktok-trends-scraper
+//
+// **Pivoted 2026-05-03** from Firecrawl Creative Center scraping. Why:
+// the Firecrawl approach was returning identical content across every
+// region (countryCode URL param wasn't actually scoping the page) AND
+// the music page rarely surfaced play-count metrics. Apify's actor
+// accepts countryCode natively and works correctly per region.
 // =====================================================================
+
+type ApifyTikTokTrendItem = {
+  // Defensive parsing — different Apify TikTok actor variants expose
+  // slightly different field names. We accept several common shapes
+  // and stash the raw payload for forensics.
+  rank?: number;
+  position?: number;
+  hashtag_name?: string;
+  hashtag?: string;
+  name?: string;
+  title?: string;
+  song_name?: string;
+  songName?: string;
+  song_title?: string;
+  artist_name?: string;
+  artistName?: string;
+  artist?: string;
+  posts?: number;
+  postCount?: number;
+  publishCnt?: number;
+  views?: number;
+  viewCount?: number;
+  videoViews?: number;
+  url?: string;
+  link?: string;
+  cover_url?: string;
+  coverUrl?: string;
+  countryCode?: string;
+  [key: string]: unknown;
+};
 
 type TikTokFetchSummary = {
   region: string;
@@ -253,15 +293,116 @@ type TikTokFetchSummary = {
   errors: string[];
 };
 
+function parseTikTokHashtag(
+  item: ApifyTikTokTrendItem,
+  region: string,
+  trendWindow: string,
+  fallbackRank: number,
+): TrendInsertRow | null {
+  const rawTitle = item.hashtag_name ?? item.hashtag ?? item.name ?? item.title;
+  const title = normaliseTitle(typeof rawTitle === "string" ? rawTitle : null, "hashtag");
+  if (!title) return null;
+  const posts = item.posts ?? item.postCount ?? item.publishCnt ?? null;
+  const views = item.views ?? item.viewCount ?? item.videoViews ?? null;
+  // Prefer post count over views — for hashtag trends, post count is
+  // the more agency-relevant signal ("how many people are making content
+  // around this"). Fall back to views if posts isn't exposed.
+  const m = coerceMetric(posts, "posts");
+  const finalMetric = m.metric_value != null
+    ? m
+    : coerceMetric(views, "views");
+  return {
+    platform: "tiktok",
+    kind: "hashtag",
+    region,
+    title,
+    subtitle: finalMetric.metric_value != null
+      ? `${finalMetric.metric_value.toLocaleString()} ${finalMetric.metric_label}`
+      : null,
+    url: item.url ?? item.link ?? null,
+    thumbnail_url: item.cover_url ?? item.coverUrl ?? null,
+    metric_value: finalMetric.metric_value,
+    metric_label: finalMetric.metric_label,
+    rank: typeof item.rank === "number" ? item.rank
+        : typeof item.position === "number" ? item.position
+        : fallbackRank,
+    trend_window: trendWindow,
+    raw_payload: item,
+  };
+}
+
+function parseTikTokSound(
+  item: ApifyTikTokTrendItem,
+  region: string,
+  trendWindow: string,
+  fallbackRank: number,
+): TrendInsertRow | null {
+  const rawTitle = item.song_name ?? item.songName ?? item.song_title ?? item.title ?? item.name;
+  const title = normaliseTitle(typeof rawTitle === "string" ? rawTitle : null, "sound");
+  if (!title) return null;
+  const artist = item.artist_name ?? item.artistName ?? item.artist;
+  const posts = item.posts ?? item.postCount ?? item.publishCnt ?? null;
+  const m = coerceMetric(posts, "posts");
+  return {
+    platform: "tiktok",
+    kind: "sound",
+    region,
+    title,
+    subtitle: typeof artist === "string" && artist.trim()
+      ? artist.trim()
+      : (m.metric_value != null ? `${m.metric_value.toLocaleString()} ${m.metric_label}` : null),
+    url: item.url ?? item.link ?? null,
+    thumbnail_url: item.cover_url ?? item.coverUrl ?? null,
+    metric_value: m.metric_value,
+    metric_label: m.metric_label,
+    rank: typeof item.rank === "number" ? item.rank
+        : typeof item.position === "number" ? item.position
+        : fallbackRank,
+    trend_window: trendWindow,
+    raw_payload: item,
+  };
+}
+
+async function callApifyTikTokTrends(args: {
+  trendType: "hashtag" | "song";
+  countryCode: string;
+  period: 7 | 30;
+  maxResults: number;
+}): Promise<{ items: ApifyTikTokTrendItem[]; error?: string }> {
+  const url =
+    `https://api.apify.com/v2/acts/automation-lab~tiktok-trends-scraper` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trendType: args.trendType,
+        countryCode: args.countryCode,
+        period: args.period,
+        maxResults: args.maxResults,
+      }),
+    });
+  } catch (ex) {
+    return { items: [], error: `network: ${(ex as Error).message}` };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { items: [], error: `apify ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const items = (await res.json().catch(() => [])) as ApifyTikTokTrendItem[];
+  return { items: Array.isArray(items) ? items : [] };
+}
+
 async function fetchTikTokForRegion(args: {
   region: string;
   window: "7d" | "30d";
   serviceClient: SupabaseClient;
 }): Promise<TikTokFetchSummary> {
   const { region, window: trendWindow, serviceClient } = args;
-  // Stamp every row from this scrape with the same capturedAt so we can
-  // sweep older rows in the same slice as stale once we're done.
   const capturedAt = new Date();
+  const period: 7 | 30 = trendWindow === "30d" ? 30 : 7;
   const summary: TikTokFetchSummary = {
     region,
     hashtags: { fetched: 0, written: 0 },
@@ -270,85 +411,47 @@ async function fetchTikTokForRegion(args: {
   };
 
   // Hashtags
-  try {
-    const rows = await firecrawlExtract({
-      url: tiktokUrl({ kind: "hashtag", region, window: trendWindow }),
-      prompt: TIKTOK_HASHTAG_PROMPT,
+  {
+    const { items, error } = await callApifyTikTokTrends({
+      trendType: "hashtag",
+      countryCode: region,
+      period,
+      maxResults: 25,
     });
-    summary.hashtags.fetched = rows.length;
-    const inserts: TrendInsertRow[] = rows
-      .map((r, i): TrendInsertRow | null => {
-        const title = normaliseTitle(r.title, "hashtag");
-        if (!title) return null;
-        const m = coerceMetric(r.metric_value, r.metric_label);
-        return {
-          platform: "tiktok",
-          kind: "hashtag",
-          region,
-          title,
-          subtitle: r.subtitle ?? null,
-          url: r.url ?? null,
-          thumbnail_url: r.thumbnail_url ?? null,
-          metric_value: m.metric_value,
-          metric_label: m.metric_label,
-          rank: typeof r.rank === "number" ? r.rank : i + 1,
-          trend_window: trendWindow,
-          raw_payload: r,
-        };
-      })
+    if (error) summary.errors.push(`hashtag fetch: ${error}`);
+    summary.hashtags.fetched = items.length;
+    const inserts = items
+      .map((it, i) => parseTikTokHashtag(it, region, trendWindow, i + 1))
       .filter((row): row is TrendInsertRow => row !== null);
     if (inserts.length > 0) {
-      const { error } = await upsertTrends(serviceClient, inserts, capturedAt);
-      if (error) summary.errors.push(`hashtag write: ${error.message}`);
+      const { error: writeErr } = await upsertTrends(serviceClient, inserts, capturedAt);
+      if (writeErr) summary.errors.push(`hashtag write: ${writeErr.message}`);
       else summary.hashtags.written = inserts.length;
     }
-  } catch (ex) {
-    summary.errors.push(`hashtag fetch: ${(ex as Error).message}`);
   }
 
-  // Sounds
-  try {
-    const rows = await firecrawlExtract({
-      url: tiktokUrl({ kind: "sound", region, window: trendWindow }),
-      prompt: TIKTOK_SOUND_PROMPT,
+  // Sounds (Apify uses trendType: "song" — different from our internal "sound" kind name)
+  {
+    const { items, error } = await callApifyTikTokTrends({
+      trendType: "song",
+      countryCode: region,
+      period,
+      maxResults: 25,
     });
-    summary.sounds.fetched = rows.length;
-    const inserts: TrendInsertRow[] = rows
-      .map((r, i): TrendInsertRow | null => {
-        const title = normaliseTitle(r.title, "sound");
-        if (!title) return null;
-        const m = coerceMetric(r.metric_value, r.metric_label);
-        return {
-          platform: "tiktok",
-          kind: "sound",
-          region,
-          title,
-          subtitle: r.subtitle ?? null,
-          url: r.url ?? null,
-          thumbnail_url: r.thumbnail_url ?? null,
-          metric_value: m.metric_value,
-          metric_label: m.metric_label,
-          rank: typeof r.rank === "number" ? r.rank : i + 1,
-          trend_window: trendWindow,
-          raw_payload: r,
-        };
-      })
+    if (error) summary.errors.push(`sound fetch: ${error}`);
+    summary.sounds.fetched = items.length;
+    const inserts = items
+      .map((it, i) => parseTikTokSound(it, region, trendWindow, i + 1))
       .filter((row): row is TrendInsertRow => row !== null);
     if (inserts.length > 0) {
-      const { error } = await upsertTrends(serviceClient, inserts, capturedAt);
-      if (error) summary.errors.push(`sound write: ${error.message}`);
+      const { error: writeErr } = await upsertTrends(serviceClient, inserts, capturedAt);
+      if (writeErr) summary.errors.push(`sound write: ${writeErr.message}`);
       else summary.sounds.written = inserts.length;
     }
-  } catch (ex) {
-    summary.errors.push(`sound fetch: ${(ex as Error).message}`);
   }
 
-  // Sweep stale rows for this slice (TikTok / region / global). Anything
-  // that wasn't refreshed in this scrape was either dropped from the
-  // trending list or partial-failure — either way it's no longer "current"
-  // and shouldn't accumulate. Only sweep if SOMETHING was written this
-  // round; a totally-failed scrape (network error, bot wall) shouldn't
-  // wipe the existing data.
+  // Sweep stale rows for this slice. Only sweep if SOMETHING was written
+  // this round — a totally-failed scrape shouldn't wipe existing data.
   if (summary.hashtags.written + summary.sounds.written > 0) {
     await sweepStaleTrends(serviceClient, {
       platform: "tiktok",
@@ -747,40 +850,90 @@ async function handleTwitter(
 }
 
 // =====================================================================
-// Instagram handler — Apify apify/instagram-hashtag-scraper
+// Instagram handler — Apify apify/instagram-profile-scraper (v3, 2026-05-03)
 //
-// **Pivoted 2026-05-02**: this used to be per-brand (read each brand's
-// configured hashtags from brand_kits.trend_hashtags). We pivoted back
-// to global trends to match TikTok/Twitter behaviour: surface what's
-// trending on Instagram RIGHT NOW by region, not "top posts for THIS
-// brand's tracked hashtags."
+// Two operating modes the client picks via `mode`:
+//   - region:      scrape a curated list of high-engagement creator accounts
+//                  per region. Designed to surface "what's working on IG in
+//                  this region right now."
+//   - competitors: scrape a brand's competitor list (brand_kits.competitor_handles).
+//                  Designed for "what are MY brand's competitors posting that's
+//                  getting engagement?"
 //
-// Strategy: Instagram doesn't expose a public "trends per country" API
-// the way TikTok Creative Center does. The closest signal we can get is
-// engagement-sorted recent posts under high-volume regional discovery
-// hashtags (#viralreels, #explorepage, regional flavour like #india /
-// #usa). It's not perfect — it's "viral-tagged" not "objectively viral"
-// — but it gives the agency a usable feed and matches the user
-// expectation of "Instagram trends like TikTok / X".
+// Both modes feed @handles to the SAME Apify actor and share the same parser.
 //
-// Output: kind='post' rows with region set to the requested ISO code,
-// account_id=NULL (global pool), trend_window='now'. Same
-// trend_signals table; same TrendsView shell.
+// Why this replaced the v2 hashtag-discovery approach:
+// v2 scraped #viral, #trending, #india, #explorepage etc. and sorted by
+// engagement. The discovery hashtags are spam-tagged by anyone, regional
+// hashtags don't actually mean "from this region" (e.g. Spanish posts in
+// the IN tab tagged #india), and there's no quality signal at all. Real-
+// world test on 2026-05-03 returned random low-engagement noise.
 //
-// brand_kits.trend_hashtags column added in migration 0030 stays —
-// it's harmless and may be reused by Phase 7 (brand-fit AI scoring).
+// Profile-based scraping has none of those problems: the @handles are
+// curated (either by us per-region or by the agency per-brand), so every
+// post is from a known-quality source. Output: kind='post', engagement-
+// sorted, with handle ownership baked into the subtitle.
+//
+// trend_hashtags column from migration 0030 is no longer read by any
+// code path. Left in place for forensic value + possible Phase 7 reuse.
 // =====================================================================
 
-// Curated discovery hashtags per region. The first few are always-trending
-// generic discovery tags; the rest are regional flavour. The Apify scraper
-// orders posts by engagement, so what comes back is "viral content right now
-// in this region" — close enough to "trending" for the agency's purposes.
-const IG_DISCOVERY_TAGS_BY_REGION: Record<string, string[]> = {
-  US: ["viral", "trending", "viralreels", "explorepage", "usa"],
-  IN: ["viralreels", "trendingreels", "india", "indianreels", "explorepage"],
-  GB: ["viral", "trending", "uk", "british", "explorepage"],
-  CA: ["viral", "trending", "canada", "viralreels", "explorepage"],
-  AU: ["viral", "trending", "australia", "aussie", "viralreels"],
+// Curated regional creator handles (no @ prefix, lowercase). 8-ish high-
+// engagement accounts per region across categories (food, fashion,
+// entertainment, news, sports). Hardcoded for now — once the agency
+// wants to edit this without a deploy we can move it to a Supabase
+// table, but a static list ships today and is easy to tune.
+const IG_TOP_CREATORS_BY_REGION: Record<string, string[]> = {
+  US: [
+    "natgeo",
+    "tasty",
+    "voguemagazine",
+    "theshaderoom",
+    "starbucks",
+    "nikemag",
+    "glossier",
+    "rollingstone",
+  ],
+  IN: [
+    "indiatoday",
+    "foodtalkindia",
+    "vogueindia",
+    "filmfare",
+    "viratkohli",
+    "diipakhosla",
+    "myntra",
+    "natgeoindia",
+  ],
+  GB: [
+    "bbc",
+    "voguemagazine_uk",
+    "manchesterunited",
+    "hellomag",
+    "gordongram",
+    "primeminister",
+    "thetimes",
+    "asos",
+  ],
+  CA: [
+    "champagnepapi",
+    "torontolife",
+    "narcity_canada",
+    "cbcnews",
+    "cmagazinecanada",
+    "raptors",
+    "shawnmendes",
+    "tim_hortons",
+  ],
+  AU: [
+    "australia",
+    "abcnews_au",
+    "bondibeach",
+    "gigi",
+    "hughjackman",
+    "broadsheet_aus",
+    "9news",
+    "kookaiclothing",
+  ],
 };
 
 type ApifyInstagramPost = {
@@ -819,24 +972,24 @@ function captionSnippet(caption: string | undefined | null, max = 140): string |
   return oneLine.slice(0, max - 1) + "…";
 }
 
-function parseInstagramPost(
-  post: ApifyInstagramPost,
-  hashtag: string,
-  accountId: string,
-  fallbackRank: number,
-): TrendInsertRow | null {
+function parseInstagramPost(args: {
+  post: ApifyInstagramPost;
+  ownerHandle: string;        // the @handle being scraped (without @)
+  region: string;             // 'US' / 'IN' / ... / 'global'
+  accountId: string | null;   // null for region mode, brand uuid for competitors mode
+  fallbackRank: number;
+}): TrendInsertRow | null {
+  const { post, ownerHandle, region, accountId, fallbackRank } = args;
   const url = post.url ?? (post.shortCode ? `https://www.instagram.com/p/${post.shortCode}/` : null);
-  if (!url && !post.id) return null; // Need at least one stable identifier.
+  if (!url && !post.id) return null;
 
-  // Title preference: caption snippet → username + shortcode (so posts
-  // without captions still produce unique titles per post, otherwise
-  // every "@username post" would collide on the dedupe key) → fallback.
-  // We keep the source hashtag in subtitle so the agency can tell which
-  // discovery hashtag surfaced this post.
-  const username = post.ownerUsername ? `@${post.ownerUsername}` : "anonymous";
+  // Title: caption snippet (most informative) or fallback to "@handle · short-id"
+  // so multiple caption-less posts from the same account don't collide on
+  // the dedupe key.
+  const usernameTag = `@${ownerHandle}`;
   const snippet = captionSnippet(post.caption);
   const shortRef = post.shortCode || (post.id ? String(post.id).slice(-6) : "");
-  const title = snippet || `${username}${shortRef ? ` · ${shortRef}` : " post"}`;
+  const title = snippet || `${usernameTag}${shortRef ? ` · ${shortRef}` : " post"}`;
 
   const likes =
     typeof post.likesCount === "number"
@@ -844,40 +997,84 @@ function parseInstagramPost(
       : typeof post.videoViewCount === "number"
       ? post.videoViewCount
       : null;
+  const isVideoMetric = likes != null && typeof post.videoViewCount === "number" && post.likesCount == null;
 
   const subtitleParts = [
-    username,
-    `#${hashtag}`,
-    likes != null ? `${likes.toLocaleString()} ${post.videoViewCount ? "views" : "likes"}` : null,
+    usernameTag,
+    likes != null ? `${likes.toLocaleString()} ${isVideoMetric ? "views" : "likes"}` : null,
   ].filter(Boolean);
 
   return {
     platform: "instagram",
     kind: "post",
-    region: "global", // IG posts aren't region-scoped per row
+    region,
     title: title.slice(0, 280),
     subtitle: subtitleParts.join(" · "),
     url,
     thumbnail_url: post.displayUrl ?? null,
     metric_value: likes,
-    metric_label: likes != null
-      ? (post.videoViewCount ? "views" : "likes")
-      : null,
+    metric_label: likes != null ? (isVideoMetric ? "views" : "likes") : null,
     rank: fallbackRank,
     trend_window: "now",
     raw_payload: post,
+    account_id: accountId,
   };
 }
 
 type InstagramRegionSummary = {
+  // For region mode: { region, handles, ... }. For competitor mode: { region: 'global', handles (brand competitors), ... }.
   region: string;
-  hashtags: string[];
+  handles: string[];
   fetched: number;
   written: number;
   errors: string[];
 };
 
+// Single Apify call: feed N usernames, get back posts across all of them.
+// apify/instagram-profile-scraper accepts a `usernames` array natively
+// and returns posts with all the engagement fields we need.
+async function callApifyInstagramProfiles(args: {
+  handles: string[];
+  resultsLimit: number;
+}): Promise<{ items: ApifyInstagramPost[]; error?: string }> {
+  const url =
+    `https://api.apify.com/v2/acts/apify~instagram-profile-scraper` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        usernames: args.handles,
+        resultsLimit: args.resultsLimit,
+        resultsType: "posts",
+      }),
+    });
+  } catch (ex) {
+    return { items: [], error: `network: ${(ex as Error).message}` };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { items: [], error: `apify ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const items = (await res.json().catch(() => [])) as ApifyInstagramPost[];
+  return { items: Array.isArray(items) ? items : [] };
+}
+
 async function handleInstagram(
+  body: FetchTrendsRequest,
+  serviceClient: SupabaseClient,
+): Promise<{ status: number; payload: unknown }> {
+  const mode = body.mode === "competitors" ? "competitors" : "region";
+
+  if (mode === "competitors") {
+    return handleInstagramCompetitors(body, serviceClient);
+  }
+  return handleInstagramRegion(body, serviceClient);
+}
+
+async function handleInstagramRegion(
   body: FetchTrendsRequest,
   serviceClient: SupabaseClient,
 ): Promise<{ status: number; payload: unknown }> {
@@ -885,92 +1082,55 @@ async function handleInstagram(
     .map((r) => r.trim().toUpperCase())
     .filter((r) => /^[A-Z]{2}$/.test(r));
   if (regions.length === 0) {
-    return {
-      status: 400,
-      payload: { error: "No valid regions; expected ISO-3166 alpha-2 codes" },
-    };
+    return { status: 400, payload: { error: "No valid regions; expected ISO-3166 alpha-2 codes" } };
   }
-
-  const apifyUrl =
-    `https://api.apify.com/v2/acts/apify~instagram-hashtag-scraper` +
-    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
 
   const capturedAt = new Date();
   const summaries: InstagramRegionSummary[] = [];
 
-  // Per-region Apify call. We could merge all regions into a single
-  // multi-hashtag call to save quota, but then post→region attribution
-  // becomes guesswork (a post tagged with #viral matches every region's
-  // discovery list). Keeping calls per-region preserves clean
-  // attribution and matches the TikTok per-region pattern.
   for (const region of regions) {
-    const tags = IG_DISCOVERY_TAGS_BY_REGION[region] ?? IG_DISCOVERY_TAGS_BY_REGION.US;
+    const handles = IG_TOP_CREATORS_BY_REGION[region] ?? [];
     const summary: InstagramRegionSummary = {
       region,
-      hashtags: tags,
+      handles,
       fetched: 0,
       written: 0,
       errors: [],
     };
-
-    let res: Response;
-    try {
-      res = await fetch(apifyUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          hashtags: tags,
-          resultsLimit: 6, // per hashtag — keeps the per-region call small
-          resultsType: "posts",
-        }),
-      });
-    } catch (ex) {
-      summary.errors.push(`apify request: ${(ex as Error).message}`);
+    if (handles.length === 0) {
+      summary.errors.push(`no curated creators for region ${region}`);
       summaries.push(summary);
       continue;
     }
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      summary.errors.push(`apify ${res.status}: ${text.slice(0, 200)}`);
-      summaries.push(summary);
-      continue;
-    }
-
-    const items = (await res.json().catch(() => [])) as ApifyInstagramPost[];
+    const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: 4 });
+    if (error) summary.errors.push(error);
     summary.fetched = items.length;
 
-    // Sort by likes / views desc so the highest-engagement posts get the
-    // top ranks. The Apify scraper returns items in API order, not
-    // engagement order.
+    // Sort posts by engagement desc so the highest-performing land at top
+    // ranks regardless of which creator they came from.
     const sorted = [...items].sort((a, b) => {
-      const aMetric = (a.likesCount ?? a.videoViewCount ?? 0);
-      const bMetric = (b.likesCount ?? b.videoViewCount ?? 0);
-      return bMetric - aMetric;
+      const am = (a.likesCount ?? a.videoViewCount ?? 0);
+      const bm = (b.likesCount ?? b.videoViewCount ?? 0);
+      return bm - am;
     });
 
     const inserts: TrendInsertRow[] = [];
     sorted.forEach((post, i) => {
-      // Pick the first hashtag we can attribute to from this region's
-      // discovery set; fall back to the first one in the list. Used for
-      // the subtitle "@user · #foo · 1.2K likes" so the agency knows
-      // which discovery tag surfaced the post.
-      let attributedTag = tags[0];
-      if (Array.isArray(post.hashtags)) {
-        const found = post.hashtags
-          .map((h) => String(h).replace(/^#/, "").toLowerCase())
-          .find((h) => tags.includes(h));
-        if (found) attributedTag = found;
-      }
-      const row = parseInstagramPost(post, attributedTag, "", i + 1);
-      if (!row) return;
-      // Override region/account_id from the per-brand defaults to global.
-      inserts.push({ ...row, region, account_id: null });
+      const owner = post.ownerUsername ? String(post.ownerUsername).toLowerCase() : "unknown";
+      const row = parseInstagramPost({
+        post,
+        ownerHandle: owner,
+        region,
+        accountId: null,
+        fallbackRank: i + 1,
+      });
+      if (row) inserts.push(row);
     });
 
     if (inserts.length > 0) {
-      const { error } = await upsertTrends(serviceClient, inserts, capturedAt);
-      if (error) summary.errors.push(`write: ${error.message}`);
+      const { error: writeErr } = await upsertTrends(serviceClient, inserts, capturedAt);
+      if (writeErr) summary.errors.push(`write: ${writeErr.message}`);
       else summary.written = inserts.length;
     }
 
@@ -992,9 +1152,110 @@ async function handleInstagram(
     payload: {
       ok: true,
       source: "instagram",
+      mode: "region",
       regions,
       written: totalWritten,
       summaries,
+    },
+  };
+}
+
+async function handleInstagramCompetitors(
+  body: FetchTrendsRequest,
+  serviceClient: SupabaseClient,
+): Promise<{ status: number; payload: unknown }> {
+  if (!body.accountId) {
+    return { status: 400, payload: { error: "accountId is required for mode=competitors" } };
+  }
+
+  // Read this brand's competitor list.
+  const { data: kit, error: kitErr } = await serviceClient
+    .from("brand_kits")
+    .select("competitor_handles, account_id")
+    .eq("account_id", body.accountId)
+    .maybeSingle();
+  if (kitErr) return { status: 500, payload: { error: kitErr.message } };
+  if (!kit) return { status: 404, payload: { error: "Brand kit not found for that accountId" } };
+
+  const rawHandles = (kit.competitor_handles as string[] | null) ?? [];
+  const handles = Array.from(
+    new Set(
+      rawHandles
+        .map((h) => String(h).trim().replace(/^@/, "").toLowerCase())
+        .filter((h) => h.length > 0 && /^[a-z0-9._]+$/i.test(h)),
+    ),
+  ).slice(0, 12);
+  if (handles.length === 0) {
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        source: "instagram",
+        mode: "competitors",
+        accountId: body.accountId,
+        written: 0,
+        summaries: [],
+        note: "This brand has no competitor handles configured. Add some in Brand Intelligence → Competitors before fetching.",
+      },
+    };
+  }
+
+  const capturedAt = new Date();
+  const summary: InstagramRegionSummary = {
+    region: "global",
+    handles,
+    fetched: 0,
+    written: 0,
+    errors: [],
+  };
+
+  const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: 6 });
+  if (error) summary.errors.push(error);
+  summary.fetched = items.length;
+
+  const sorted = [...items].sort((a, b) => {
+    const am = (a.likesCount ?? a.videoViewCount ?? 0);
+    const bm = (b.likesCount ?? b.videoViewCount ?? 0);
+    return bm - am;
+  });
+
+  const inserts: TrendInsertRow[] = [];
+  sorted.forEach((post, i) => {
+    const owner = post.ownerUsername ? String(post.ownerUsername).toLowerCase() : "unknown";
+    const row = parseInstagramPost({
+      post,
+      ownerHandle: owner,
+      region: "global",
+      accountId: body.accountId!,
+      fallbackRank: i + 1,
+    });
+    if (row) inserts.push(row);
+  });
+
+  if (inserts.length > 0) {
+    const { error: writeErr } = await upsertTrends(serviceClient, inserts, capturedAt);
+    if (writeErr) summary.errors.push(`write: ${writeErr.message}`);
+    else summary.written = inserts.length;
+  }
+
+  if (summary.written > 0) {
+    await sweepStaleTrends(serviceClient, {
+      platform: "instagram",
+      region: "global",
+      accountId: body.accountId,
+      cutoff: capturedAt,
+    });
+  }
+
+  return {
+    status: 200,
+    payload: {
+      ok: true,
+      source: "instagram",
+      mode: "competitors",
+      accountId: body.accountId,
+      written: summary.written,
+      summaries: [summary],
     },
   };
 }

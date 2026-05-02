@@ -1489,10 +1489,56 @@ const VoiceCard = ({ kit, saveField }) => {
   );
 };
 
-// (TrendHashtagsCard was removed 2026-05-02 when Trends Radar pivoted
-// Instagram from per-brand hashtag tracking to global discovery. The
-// brand_kits.trend_hashtags column is left in place — it's harmless and
-// may be reused by a future Phase 7 brand-fit AI scoring feature.)
+// CompetitorAccountsCard — added 2026-05-03 for Trends Radar IG mode='competitors'.
+// Each brand declares 5–10 IG @handles for accounts they consider their
+// competitors / aspirational set. The Trends Radar IG tab uses these to
+// scrape recent posts via apify/instagram-profile-scraper, surfacing what
+// the brand's competitors are posting that's actually getting engagement.
+//
+// Storage: brand_kits.competitor_handles (text[], migration 0032).
+// Normalised on save: strip leading @, lowercase, dedupe, drop invalid
+// chars. IG handle pattern is more permissive than hashtags — allows '.'
+// and '_' (e.g. nyt.cooking, the_rock).
+const CompetitorAccountsCard = ({ kit, saveField }) => {
+  const handles = Array.isArray(kit?.competitorHandles) ? kit.competitorHandles : [];
+
+  const onSave = async (_field, raw) => {
+    const arr = Array.isArray(raw) ? raw : [];
+    const cleaned = Array.from(
+      new Set(
+        arr
+          .map((s) => String(s).trim().replace(/^@/, '').toLowerCase())
+          .filter((s) => s.length > 0 && /^[a-z0-9._]+$/.test(s))
+      )
+    ).slice(0, 12);
+    return saveField('competitor_handles', cleaned);
+  };
+
+  return (
+    <div className="card" style={{ padding: 24 }}>
+      <div className="card-title" style={{ fontSize: 14, marginBottom: 6 }}>Who they compete with</div>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55, margin: '0 0 16px' }}>
+        Instagram accounts this brand competes with or looks up to. Trends Radar →
+        Instagram → Competitors mode pulls these accounts' recent posts so the
+        agency can see what's actually working in this brand's space.
+        Lowercase, no leading <code>@</code>. Up to 12.
+      </p>
+      {handles.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+          {handles.map((h) => (
+            <Chip key={h}>@{h}</Chip>
+          ))}
+        </div>
+      )}
+      <InlineList
+        field="competitor_handles"
+        value={handles}
+        onSave={onSave}
+        hideDisplay
+      />
+    </div>
+  );
+};
 
 // TypographyCard — live type samples in the brand's actual fonts.
 const TypographyCard = ({ kit }) => {
@@ -1848,6 +1894,13 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
           <VoiceCard kit={kit} saveField={saveField} />
         </>
       ) : null}
+
+      {/* Competitors — feeds Trends Radar's Instagram > Competitors mode.
+          Always renders so the agency can configure it before any fetch,
+          even on a brand with an empty kit. */}
+      <SectionHead title="Competitors" sub="powers Trends Radar · Instagram"/>
+      <CompetitorAccountsCard kit={kit} saveField={saveField} />
+
 
 
 
