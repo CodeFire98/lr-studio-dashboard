@@ -972,9 +972,49 @@ function captionSnippet(caption: string | undefined | null, max = 140): string |
   return oneLine.slice(0, max - 1) + "…";
 }
 
+// Apify Instagram Profile Scraper output is inconsistent across actor
+// versions and post types — owner username sometimes lives on `ownerUsername`,
+// sometimes on `username`, sometimes nested in `owner.username`, and on
+// some Reel/video items it's missing entirely. Try every known field
+// position before falling back.
+function extractOwnerHandle(post: ApifyInstagramPost): string | null {
+  const tryString = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim().replace(/^@/, "").toLowerCase();
+    return t.length > 0 ? t : null;
+  };
+  const direct = tryString(post.ownerUsername)
+    ?? tryString((post as Record<string, unknown>).username)
+    ?? tryString((post as Record<string, unknown>).inputUsername);
+  if (direct) return direct;
+  const owner = (post as Record<string, unknown>).owner;
+  if (owner && typeof owner === "object") {
+    const fromOwner = tryString((owner as Record<string, unknown>).username);
+    if (fromOwner) return fromOwner;
+  }
+  const user = (post as Record<string, unknown>).user;
+  if (user && typeof user === "object") {
+    const fromUser = tryString((user as Record<string, unknown>).username);
+    if (fromUser) return fromUser;
+  }
+  // Some scrapers expose the input URL on each item (e.g. inputUrl =
+  // https://www.instagram.com/<handle>/). Parse it out.
+  const inputUrl = (post as Record<string, unknown>).inputUrl;
+  if (typeof inputUrl === "string") {
+    const m = inputUrl.match(/instagram\.com\/([^/?#]+)/i);
+    if (m) {
+      const cleaned = tryString(m[1]);
+      if (cleaned && !["p", "reel", "tv", "explore"].includes(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+  return null;
+}
+
 function parseInstagramPost(args: {
   post: ApifyInstagramPost;
-  ownerHandle: string;        // the @handle being scraped (without @)
+  ownerHandle: string;        // fallback @handle when the post doesn't expose owner — typically the handle we asked Apify to scrape, derived from input position
   region: string;             // 'US' / 'IN' / ... / 'global'
   accountId: string | null;   // null for region mode, brand uuid for competitors mode
   fallbackRank: number;
@@ -983,10 +1023,14 @@ function parseInstagramPost(args: {
   const url = post.url ?? (post.shortCode ? `https://www.instagram.com/p/${post.shortCode}/` : null);
   if (!url && !post.id) return null;
 
+  // Resolve owner handle: prefer fields ON the post; fall back to the
+  // handle we asked Apify to scrape (input attribution).
+  const resolvedOwner = extractOwnerHandle(post) ?? ownerHandle ?? "unknown";
+
   // Title: caption snippet (most informative) or fallback to "@handle · short-id"
   // so multiple caption-less posts from the same account don't collide on
   // the dedupe key.
-  const usernameTag = `@${ownerHandle}`;
+  const usernameTag = `@${resolvedOwner}`;
   const snippet = captionSnippet(post.caption);
   const shortRef = post.shortCode || (post.id ? String(post.id).slice(-6) : "");
   const title = snippet || `${usernameTag}${shortRef ? ` · ${shortRef}` : " post"}`;
@@ -1103,24 +1147,33 @@ async function handleInstagramRegion(
       continue;
     }
 
-    const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: 4 });
+    const RESULTS_PER_HANDLE = 4;
+    const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: RESULTS_PER_HANDLE });
     if (error) summary.errors.push(error);
     summary.fetched = items.length;
 
+    // Apify Instagram Profile Scraper returns posts in input-handle
+    // order: handles[0]'s posts first, then handles[1]'s, etc. Tag each
+    // post with the handle whose chunk it falls into so we have a
+    // positional fallback when the post object itself doesn't expose
+    // owner. parseInstagramPost will prefer fields on the post over this.
+    const tagged = items.map((post, originalIdx) => ({
+      post,
+      inputHandle: handles[Math.floor(originalIdx / RESULTS_PER_HANDLE)] ?? handles[handles.length - 1],
+    }));
     // Sort posts by engagement desc so the highest-performing land at top
     // ranks regardless of which creator they came from.
-    const sorted = [...items].sort((a, b) => {
-      const am = (a.likesCount ?? a.videoViewCount ?? 0);
-      const bm = (b.likesCount ?? b.videoViewCount ?? 0);
+    tagged.sort((a, b) => {
+      const am = (a.post.likesCount ?? a.post.videoViewCount ?? 0);
+      const bm = (b.post.likesCount ?? b.post.videoViewCount ?? 0);
       return bm - am;
     });
 
     const inserts: TrendInsertRow[] = [];
-    sorted.forEach((post, i) => {
-      const owner = post.ownerUsername ? String(post.ownerUsername).toLowerCase() : "unknown";
+    tagged.forEach(({ post, inputHandle }, i) => {
       const row = parseInstagramPost({
         post,
-        ownerHandle: owner,
+        ownerHandle: inputHandle,
         region,
         accountId: null,
         fallbackRank: i + 1,
@@ -1168,19 +1221,28 @@ async function handleInstagramCompetitors(
     return { status: 400, payload: { error: "accountId is required for mode=competitors" } };
   }
 
-  // Read this brand's competitor list.
+  // Read this brand's competitor list. Prefer the new `competitors`
+  // jsonb column ({name, handle, url}); fall back to the legacy
+  // `competitor_handles text[]` (migration 0032) if the brand was
+  // edited under the old code path and never re-enriched.
   const { data: kit, error: kitErr } = await serviceClient
     .from("brand_kits")
-    .select("competitor_handles, account_id")
+    .select("competitors, competitor_handles, account_id")
     .eq("account_id", body.accountId)
     .maybeSingle();
   if (kitErr) return { status: 500, payload: { error: kitErr.message } };
   if (!kit) return { status: 404, payload: { error: "Brand kit not found for that accountId" } };
 
-  const rawHandles = (kit.competitor_handles as string[] | null) ?? [];
+  type CompetitorEntry = { name?: string; handle?: string; url?: string };
+  const fromJsonb = (kit.competitors as CompetitorEntry[] | null) ?? [];
+  const fromLegacy = (kit.competitor_handles as string[] | null) ?? [];
+  const allHandlesRaw: string[] = [
+    ...fromJsonb.map((c) => (typeof c?.handle === "string" ? c.handle : "")),
+    ...fromLegacy,
+  ];
   const handles = Array.from(
     new Set(
-      rawHandles
+      allHandlesRaw
         .map((h) => String(h).trim().replace(/^@/, "").toLowerCase())
         .filter((h) => h.length > 0 && /^[a-z0-9._]+$/i.test(h)),
     ),
@@ -1195,7 +1257,7 @@ async function handleInstagramCompetitors(
         accountId: body.accountId,
         written: 0,
         summaries: [],
-        note: "This brand has no competitor handles configured. Add some in Brand Intelligence → Competitors before fetching.",
+        note: "This brand has no competitors configured. Click \"Fetch Brand\" in Brand Intelligence to auto-populate them, or add them manually in the Competitors section.",
       },
     };
   }
@@ -1209,22 +1271,29 @@ async function handleInstagramCompetitors(
     errors: [],
   };
 
-  const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: 6 });
+  const RESULTS_PER_HANDLE = 6;
+  const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: RESULTS_PER_HANDLE });
   if (error) summary.errors.push(error);
   summary.fetched = items.length;
 
-  const sorted = [...items].sort((a, b) => {
-    const am = (a.likesCount ?? a.videoViewCount ?? 0);
-    const bm = (b.likesCount ?? b.videoViewCount ?? 0);
+  // Same input-position-based attribution as the region handler — see
+  // comment there. Apify returns posts grouped by input handle in the
+  // order we supplied them, so the chunk index is reliable.
+  const tagged = items.map((post, originalIdx) => ({
+    post,
+    inputHandle: handles[Math.floor(originalIdx / RESULTS_PER_HANDLE)] ?? handles[handles.length - 1],
+  }));
+  tagged.sort((a, b) => {
+    const am = (a.post.likesCount ?? a.post.videoViewCount ?? 0);
+    const bm = (b.post.likesCount ?? b.post.videoViewCount ?? 0);
     return bm - am;
   });
 
   const inserts: TrendInsertRow[] = [];
-  sorted.forEach((post, i) => {
-    const owner = post.ownerUsername ? String(post.ownerUsername).toLowerCase() : "unknown";
+  tagged.forEach(({ post, inputHandle }, i) => {
     const row = parseInstagramPost({
       post,
-      ownerHandle: owner,
+      ownerHandle: inputHandle,
       region: "global",
       accountId: body.accountId!,
       fallbackRank: i + 1,
