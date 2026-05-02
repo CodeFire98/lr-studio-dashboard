@@ -115,12 +115,10 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
       } else if (invitePreview) {
         // Bare signup — accept_invitation (run by App.jsx on auth change)
         // adds them to the invited account; no create_brand_account call.
+        // Goes through the signup-for-invite edge function which creates
+        // the auth user with email already confirmed, so there's no
+        // "check your email" step on this path anymore.
         const res = await signUpForInvite({ email, password, displayName: name });
-        if (res.pendingConfirmation) {
-          setInfo("Check your email to confirm your account, then sign in to accept the invite.");
-          setLoading(false);
-          return;
-        }
         profile = res.profile;
       } else {
         // Fresh signup → creates a brand account. If this email has a
@@ -141,6 +139,15 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
       }
     } catch (caught) {
       setLoading(false);
+      // Invitee tried to sign up with an email that already has an account
+      // — pivot them to the sign-in tab with a helpful message instead of
+      // showing the raw "user already exists" error.
+      if (caught?.code === 'user_exists' && invitePreview) {
+        setMode('signin');
+        setErr('');
+        setInfo('You already have an account with this email. Sign in below to accept the invite.');
+        return;
+      }
       setErr(caught?.message || "Something went wrong. Try again.");
     }
   };
