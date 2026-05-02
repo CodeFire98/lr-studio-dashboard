@@ -33,6 +33,7 @@ import {
   duplicatePostPlan,
 } from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
+import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
 // Status transition → human verb. Used in the activity feed to render
 // "Brand approved", "Agency requested changes", etc. in past tense.
@@ -504,7 +505,15 @@ const PostPlanDetailView = ({
 
   const handleDelete = async () => {
     if (!plan?.id) return;
-    if (!window.confirm('Delete this post plan? This can’t be undone.')) return;
+    const conceptLabel = (plan.concept || '').trim();
+    const ok = await confirmDialog({
+      title: conceptLabel ? `Delete “${conceptLabel}”?` : 'Delete this post plan?',
+      body: 'This can’t be undone — the plan, its conversation, and uploaded files will all be removed.',
+      confirmText: 'Delete plan',
+      cancelText: 'Keep it',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deletePostPlan(plan.id);
       onPlanDeleted?.(plan.id);
