@@ -361,6 +361,44 @@ async function fetchTikTokForRegion(args: {
   return summary;
 }
 
+// Postgres' ON CONFLICT DO UPDATE rejects a batch where two input rows
+// collide on the same target — `cannot affect row a second time`.
+// Within a single Apify response, multiple Instagram posts often share
+// the same caption snippet (template captions, generic "viral" posts),
+// so they hash to the same dedupe key. Deduplicate in JS before upsert,
+// keeping the highest-engagement entry per natural key. metric_value
+// ties break by lower rank (i.e. earlier position in the source list).
+function dedupeRowsByNaturalKey(rows: TrendInsertRow[]): TrendInsertRow[] {
+  const map = new Map<string, TrendInsertRow>();
+  for (const r of rows) {
+    const key = [
+      r.platform,
+      r.kind,
+      r.region,
+      r.title,
+      r.trend_window,
+      r.account_id ?? "__null__",
+    ].join("|");
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, r);
+      continue;
+    }
+    const existingMetric = existing.metric_value ?? 0;
+    const newMetric = r.metric_value ?? 0;
+    if (newMetric > existingMetric) {
+      map.set(key, r);
+      continue;
+    }
+    if (newMetric === existingMetric) {
+      const existingRank = existing.rank ?? Infinity;
+      const newRank = r.rank ?? Infinity;
+      if (newRank < existingRank) map.set(key, r);
+    }
+  }
+  return Array.from(map.values());
+}
+
 async function upsertTrends(
   serviceClient: SupabaseClient,
   rows: TrendInsertRow[],
@@ -374,7 +412,14 @@ async function upsertTrends(
   // capturedAt is hoisted into a parameter so callers can later sweep
   // stale rows using the same timestamp as the cutoff.
   const expires = new Date(capturedAt.getTime() + 14 * 24 * 60 * 60 * 1000);
-  const enriched = rows.map((r) => ({
+  // Drop in-batch duplicates BEFORE adding the timestamps so the
+  // engagement-aware tiebreak in dedupeRowsByNaturalKey picks the right
+  // winner. Without this, Postgres' ON CONFLICT DO UPDATE errors out
+  // with "cannot affect row a second time" when two input rows share
+  // the natural key (common on IG where multiple posts have identical
+  // caption snippets).
+  const deduped = dedupeRowsByNaturalKey(rows);
+  const enriched = deduped.map((r) => ({
     ...r,
     captured_at: capturedAt.toISOString(),
     expires_at: expires.toISOString(),
@@ -783,12 +828,15 @@ function parseInstagramPost(
   const url = post.url ?? (post.shortCode ? `https://www.instagram.com/p/${post.shortCode}/` : null);
   if (!url && !post.id) return null; // Need at least one stable identifier.
 
-  // Title preference: caption snippet → username post → fallback.
+  // Title preference: caption snippet → username + shortcode (so posts
+  // without captions still produce unique titles per post, otherwise
+  // every "@username post" would collide on the dedupe key) → fallback.
   // We keep the source hashtag in subtitle so the agency can tell which
-  // of the brand's tracked hashtags surfaced this post.
+  // discovery hashtag surfaced this post.
   const username = post.ownerUsername ? `@${post.ownerUsername}` : "anonymous";
   const snippet = captionSnippet(post.caption);
-  const title = snippet || `${username} post`;
+  const shortRef = post.shortCode || (post.id ? String(post.id).slice(-6) : "");
+  const title = snippet || `${username}${shortRef ? ` · ${shortRef}` : " post"}`;
 
   const likes =
     typeof post.likesCount === "number"
