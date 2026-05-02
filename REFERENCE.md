@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-02 (Trends Radar Phase 0+1: trend_signals table, fetch-trends edge function, agency-only TrendsView)
+**Last updated:** 2026-05-02 (Trends Radar Phase 0+1: trend_signals table, fetch-trends Vercel API route, agency-only TrendsView)
 
 ---
 
@@ -12,15 +12,21 @@
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
 
-### 2026-05-02 — Trends Radar Phase 0+1 (trend_signals + TikTok Creative Center scraper)
+### 2026-05-02 — Trends Radar Phase 0+1 (trend_signals + Vercel /api/fetch-trends + TikTok scraper)
 First slice of the Trends Radar feature. Compartmentalized so it can evolve in isolation from the rest of the dashboard — every new identifier is prefixed (`trend_signals`, `fetch-trends`, `TrendsView`, `.trends-*` CSS) and nothing existing was renamed or restructured.
-- **Migration `0028_trend_signals`** — new platform-agnostic `trend_signals` table holding one row per trending hashtag/sound/topic/post/creator across (platform, kind, region, title, trend_window, account_id). RLS: agency-only read at v1; per-account read forward-compatible for Phase 3 (Instagram per-brand). Service-role only writes. Includes `prune_expired_trend_signals()` cleanup helper for the future cron. Unique dedupe index on the natural key so re-fetches upsert instead of stacking duplicates.
-- **Edge function `fetch-trends`** (`supabase/functions/fetch-trends/index.ts`) — dispatcher pattern matching `send-email`'s shape. Phase 1 ships `source: 'tiktok'` only; future sources (twitter via Apify, instagram via Apify/EnsembleData) land as sibling handlers without touching the dispatch shell. Authz double-gated: caller's JWT verified by the platform AND `profiles.is_agency = true` checked server-side. Uses Firecrawl's `/v2/scrape` with the JSON extract format to pull trending hashtags + sounds from TikTok Creative Center pages (`https://ads.tiktok.com/business/creativecenter/inspiration/popular/{hashtag,music}/pc/en?countryCode=XX&period=7|30`). Default regions: US, IN, GB, CA, AU. `proxy: "auto"` mirrors enrich-brand-kit's pattern for soft-bot-wall handling.
-- **TrendsView** (`web/src/components/TrendsView.jsx`) — agency-only sidebar entry "Trends Radar" (icon: sparkles), reachable at `/trends`. Both `buildBrandNav` (when an agency user is in a brand) and `buildAllClientsNav` (All-clients mode) include it in the secondary block — the surface is agency-level, not brand-scoped, so context-switching the BrandPicker leaves you on it. Tabs for TikTok / Twitter / Instagram / LinkedIn (only TikTok is `available: true` in v1; the rest show a `soon` chip). Region selector + kind filter (All / Hashtags / Sounds). Trend cards link out to the source URL, show rank, title, subtitle, and a formatted metric (M/K abbreviated). Empty state has a "Fetch trends now" CTA that calls the edge function. Manual refresh button in the header for re-fetching.
-- **db.js wrappers** (additive only) — `loadTrendSignals({platform, region, kind, limit})` reads via the agency-only RLS; `refreshTrends({source, regions, window})` invokes the edge function.
-- **Routing** — `/trends` added to `parsePathToRoute` (non-brand-scoped, sits at the root like `/clients` and `/members`). The agency context-snap effect's `allClientsRoutes` and `inBrandRoutes` sets both gain `'trends'` so picker switches don't bounce the user away.
-- **No existing schema/UI touched.** Goal was a checkpoint with zero blast radius — adding Trends Radar can't break Calendar, Tasks, Library, Brand Intelligence, etc., because nothing in those flows references the new table, function, or view.
-- **Sections touched:** Recent changes log; Glossary (new entries); §6 Data model (new table + new RPC `prune_expired_trend_signals`); §6 Migrations (0028 row); §10 Edge functions (new `fetch-trends` row); §13 Known decisions.
+- **Migration `0028_trend_signals`** — new platform-agnostic `trend_signals` table holding one row per trending hashtag/sound/topic/post/creator across (platform, kind, region, title, trend_window, account_id). RLS: agency-only read at v1; per-account read forward-compatible for Phase 3 (Instagram per-brand). Service-role only writes. Includes `prune_expired_trend_signals()` cleanup helper for the future cron. Unique dedupe index on the natural key so re-fetches upsert instead of stacking duplicates. **Applied to prod 2026-05-02.**
+- **Vercel serverless API `web/api/fetch-trends.ts`** — Node 20 runtime, dispatches by `source` in the body. Phase 1 ships `source: 'tiktok'` only; future sources (twitter via Apify, instagram via Apify/EnsembleData) land as sibling handlers without touching the dispatch shell. Authz double-gated: caller's JWT verified server-side via `supabase.auth.getUser()` AND `profiles.is_agency = true` checked via service-role client. Uses Firecrawl's `/v2/scrape` with the JSON extract format to pull trending hashtags + sounds from TikTok Creative Center (`https://ads.tiktok.com/business/creativecenter/inspiration/popular/{hashtag,music}/pc/en?countryCode=XX&period=7|30`). Default regions: US, IN, GB, CA, AU. `proxy: "auto"` mirrors enrich-brand-kit's pattern for soft-bot-wall handling. `maxDuration: 60` to give multi-region scrapes room.
+  - **Why Vercel and not a Supabase Edge Function:** we initially built this as a Supabase Edge Function (matching `send-email` and `enrich-brand-kit`). The multipart deploy endpoint started returning 403 for our PAT (despite Owner role + MFA + freshly-minted full-scope tokens), and the legacy JSON deploy endpoint produces functions without compiled eszip artifacts (immediate BOOT_ERROR on invoke). After several iterations of trying to unblock the deploy mechanism, we pivoted: this kind of feature (third-party-API call + scheduled scrape, no per-user RLS coupling) is a more natural fit for Vercel anyway, and co-deploys with the SPA on every push to main. **Only this surface uses the Vercel route**; user-data CRUD continues to flow through Supabase clients with RLS.
+- **TrendsView** (`web/src/components/TrendsView.jsx`) — agency-only sidebar entry "Trends Radar" (icon: sparkles), reachable at `/trends`. Both `buildBrandNav` (when an agency user is in a brand) and `buildAllClientsNav` (All-clients mode) include it in the secondary block — the surface is agency-level, not brand-scoped, so context-switching the BrandPicker leaves you on it. Tabs for TikTok / Twitter / Instagram / LinkedIn (only TikTok is `available: true` in v1; the rest show a `soon` chip). Region selector + kind filter (All / Hashtags / Sounds). Trend cards link out to the source URL, show rank, title, subtitle, and a formatted metric (M/K abbreviated). Empty state has a "Fetch trends now" CTA. Manual refresh button in the header for re-fetching.
+- **db.js wrappers** (additive only) — `loadTrendSignals({platform, region, kind, limit})` reads via the agency-only RLS. `refreshTrends({source, regions, window})` POSTs to `/api/fetch-trends` with `Authorization: Bearer <user JWT>` (pulled from `supabase.auth.getSession()`).
+- **Routing** — `/trends` added to `parsePathToRoute` (non-brand-scoped, sits at the root like `/clients` and `/members`). The agency context-snap effect's `allClientsRoutes` and `inBrandRoutes` sets both gain `'trends'` so picker switches don't bounce the user away. `web/vercel.json` rewrites changed from `/(.*)` to `/((?!api/).*)` so `/api/*` falls through to the serverless function instead of getting caught by the SPA fallback.
+- **Vercel env vars** (set in Project Settings → Environment Variables before the route works):
+  - `FIRECRAWL_API_KEY` — same key already in use by `enrich-brand-kit` (server-side only).
+  - `SUPABASE_URL` — `https://vmfwnfflhvskadkfnvds.supabase.co`.
+  - `SUPABASE_SERVICE_ROLE_KEY` — from Supabase Project Settings → API → "service_role" key (server-side only, never exposed to client).
+  - `SUPABASE_ANON_KEY` — same publishable key the SPA uses (`VITE_SUPABASE_PUBLISHABLE_KEY` in `.env.local`).
+- **No existing schema/UI touched.** Goal was a checkpoint with zero blast radius — adding Trends Radar can't break Calendar, Tasks, Library, Brand Intelligence, etc., because nothing in those flows references the new table, route, or view.
+- **Sections touched:** Recent changes log; Glossary (new entries); §6 Data model (new table + new RPC `prune_expired_trend_signals`); §6 Migrations (0028 row); §10 Edge functions / integrations (new Vercel route entry replacing the Supabase Edge Function plan); §13 Known decisions.
 
 ### 2026-05-02 — agency-update fan-out fixes: Resend batch + brand-side URL routing
 Two bugs surfaced when an agency staff member tested the Send-update flow on a brand with multiple members:
@@ -163,7 +169,7 @@ something looks confusingly named.
 | **Status log** | Per-row history of a post plan's status transitions | `post_plan_status_log`, written by `log_post_plan_status_change` AFTER UPDATE trigger |
 | **Unread activity** | Red dot on a calendar chip + badge count on sidebar — fires when comments, attachments, or plan edits by other users happened since the viewer's `last_seen_at` | `post_plan_views`, `loadPostPlanUnreadCounts` in `db.js` |
 | **Mark seen** | Stamp `post_plan_views.last_seen_at = now()` for the viewer | `markPostPlanSeen`, called on detail-view mount, on tab focus, and after every `persist()` |
-| **Trends Radar** | Agency-only "what's trending right now" pool — TikTok / IG / X / LinkedIn signals scraped on demand | `trend_signals` table, `TrendsView`, route `"trends"`, edge function `fetch-trends` |
+| **Trends Radar** | Agency-only "what's trending right now" pool — TikTok / IG / X / LinkedIn signals scraped on demand | `trend_signals` table, `TrendsView`, route `"trends"`, Vercel API route `web/api/fetch-trends.ts` |
 | **Trend signal** | One trending hashtag / sound / topic row in the pool | `trend_signals` row; mapped via `mapTrendSignalRow` in `db.js` |
 
 ---
@@ -279,9 +285,9 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 
 | Table | Purpose | Key columns | Who can SELECT | Who can write |
 |---|---|---|---|---|
-| `trend_signals` | Platform-agnostic pool of trending things (hashtags / sounds / topics / posts / creators) for the agency-only Trends Radar surface | `platform` ('tiktok'/'instagram'/'twitter'/'linkedin'), `kind` ('hashtag'/'sound'/...), `region` (ISO-2 or 'global'), `category`, `title`, `subtitle`, `url`, `thumbnail_url`, `metric_value`, `metric_label`, `rank`, `trend_window` ('now'/'24h'/'7d'/'30d'), `captured_at`, `expires_at`, `raw_payload` (jsonb), `account_id` (nullable, for per-brand IG signals in Phase 3) | Agency staff (via `is_agency_user()`) — and members of `account_id` if set (forward-compat for Phase 3) | **Service role only** (the `fetch-trends` edge function). No client-side writes. |
+| `trend_signals` | Platform-agnostic pool of trending things (hashtags / sounds / topics / posts / creators) for the agency-only Trends Radar surface | `platform` ('tiktok'/'instagram'/'twitter'/'linkedin'), `kind` ('hashtag'/'sound'/...), `region` (ISO-2 or 'global'), `category`, `title`, `subtitle`, `url`, `thumbnail_url`, `metric_value`, `metric_label`, `rank`, `trend_window` ('now'/'24h'/'7d'/'30d'), `captured_at`, `expires_at`, `raw_payload` (jsonb), `account_id` (nullable, for per-brand IG signals in Phase 3) | Agency staff (via `is_agency_user()`) — and members of `account_id` if set (forward-compat for Phase 3) | **Service role only** (the Vercel `/api/fetch-trends` route). No client-side writes. |
 
-Unique dedupe index on `(platform, kind, region, title, trend_window, account_id)` so `fetch-trends` upserts re-fetched rows instead of duplicating. `prune_expired_trend_signals()` SECURITY DEFINER helper deletes rows past `expires_at` (default `now() + 14 days` on insert).
+Unique dedupe index on `(platform, kind, region, title, trend_window, account_id)` so `/api/fetch-trends` upserts re-fetched rows instead of duplicating. `prune_expired_trend_signals()` SECURITY DEFINER helper deletes rows past `expires_at` (default `now() + 14 days` on insert).
 
 All four post-plan tables are in the `supabase_realtime` publication. Realtime drives cross-tab unread refresh and same-tab cross-user updates; same-tab same-user updates use optimistic mutators (`upsertPostPlan`, `removePostPlanLocal`, `clearUnreadForPlan` in `App.jsx`).
 
@@ -338,7 +344,7 @@ Recent batch:
 - `0025_accept_invitation_idempotent` — `accept_invitation(token)` is idempotent for the auto-accept race (don't raise "invalid or expired" when the row was already accepted by `auto_accept_pending_invitations()` and the caller is a member). See §13 entry.
 - `0026_remove_team_member_resets_is_agency` — `remove_team_member` now flips `profiles.is_agency = false` when removing the user's last agency membership. Includes a one-shot backfill for stale rows already in the broken state. See §13 entry.
 - `0027_account_members_with_email` — `account_members_with_email(p_account_id)` SECURITY DEFINER RPC that joins `account_members → profiles → auth.users.email` for team-list rendering. See §13 entry.
-- `0028_trend_signals` — new `trend_signals` table + indexes + RLS (agency-only read; service-role write) + `prune_expired_trend_signals()` cleanup helper. Backs the new Trends Radar surface; first writer is the `fetch-trends` edge function. See §13 entry.
+- `0028_trend_signals` — new `trend_signals` table + indexes + RLS (agency-only read; service-role write) + `prune_expired_trend_signals()` cleanup helper. Backs the new Trends Radar surface; first writer is the Vercel route `web/api/fetch-trends.ts`. See §13 entry.
 
 ---
 
@@ -632,28 +638,31 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
   --project-ref vmfwnfflhvskadkfnvds
 ```
 
-### `fetch-trends`
+### `/api/fetch-trends` (Vercel serverless route)
 
-External-trend scraper that writes into `trend_signals`. Single function, dispatches by `source` in the request body.
+External-trend scraper that writes into `trend_signals`. **Lives on Vercel, not Supabase Edge Functions** — see the Recent Changes log entry from 2026-05-02 for the rationale (the Supabase multipart deploy endpoint started 403'ing for our PAT despite Owner role + MFA + full-scope tokens, and the Vercel route co-deploys with the SPA on every push to main with zero friction).
+
+Source code: [web/api/fetch-trends.ts](web/api/fetch-trends.ts). Runtime: Node 20. Max duration: 60s.
 
 | Source | Purpose | Status |
 |---|---|---|
-| `tiktok` | TikTok Creative Center hashtags + sounds (no extra API key — Firecrawl only) | **Live** in Phase 1. Default regions: US, IN, GB, CA, AU. |
-| `twitter` *(planned)* | Apify Twitter Trends Scraper (`apify.com/automation-lab/twitter-trends-scraper`) | Phase 2 — needs `APIFY_API_TOKEN`. |
+| `tiktok` | TikTok Creative Center hashtags + sounds (Firecrawl only — no extra API key) | **Live** in Phase 1. Default regions: US, IN, GB, CA, AU. |
+| `twitter` *(planned)* | Apify Twitter Trends Scraper (`apify.com/automation-lab/twitter-trends-scraper`) | Phase 2 — needs `APIFY_API_TOKEN` env var added to Vercel. |
 | `instagram` *(planned)* | Apify Instagram Hashtag Trends or EnsembleData Instagram API | Phase 3 — per-brand, populates rows with `account_id` set. |
 | `linkedin` *(maybe)* | Taplio scrape or partnership data — ToS-sensitive | Not committed. |
 
 #### Auth
 
-- `verify_jwt = true` (per [config.toml](supabase/config.toml)).
-- The function additionally reads `profiles.is_agency` for the caller via the service-role client and **403s if false** — feature is fully agency-only at the API surface, in addition to the table's RLS gate.
+- Caller MUST send `Authorization: Bearer <user JWT>`. The handler verifies it server-side via `supabase.auth.getUser()` (anon-key client, the user's JWT scoped in).
+- The handler additionally reads `profiles.is_agency` for the caller via the service-role client and **403s if false** — feature is fully agency-only at the API surface, in addition to the table's RLS gate.
 - Writes use the service-role client (the table's RLS denies authenticated INSERT).
 
 #### Request shape
 
 ```js
-POST /functions/v1/fetch-trends
-Authorization: Bearer <user JWT>
+POST /api/fetch-trends
+Authorization: Bearer <user JWT>            // from supabase.auth.getSession()
+Content-Type: application/json
 {
   "source": "tiktok",
   "regions": ["US", "IN"],   // optional; defaults to ["US","IN","GB","CA","AU"]
@@ -662,6 +671,8 @@ Authorization: Bearer <user JWT>
 // → 200 { ok: true, source, window, regions, written, summaries: [...] }
 // → 4xx/5xx { error }
 ```
+
+Client wrapper: `refreshTrends({source, regions, window})` in [db.js](web/src/lib/db.js).
 
 #### Firecrawl call shape (per region, per kind)
 
@@ -682,20 +693,24 @@ The schema captures `{ trends: [{ rank, title, subtitle, url, thumbnail_url, met
 
 `upsertTrends` upserts into `trend_signals` using the unique index `(platform, kind, region, title, trend_window, account_id)`. Re-runs refresh `captured_at` and push `expires_at` forward by 14 days, so a daily cron extends row lifetime instead of churning IDs.
 
-#### Environment variables
+#### Vercel routing
 
-| Name | Required | Notes |
+`web/vercel.json` excludes `/api/*` from the SPA fallback rewrite (`/((?!api/).*)` instead of `/(.*)`). Without that exclusion the rewrite would catch every request including API calls and serve `index.html` instead of invoking the function.
+
+#### Environment variables (set in Vercel Project Settings → Environment Variables)
+
+| Name | Required | Where to get it |
 |---|---|---|
-| `FIRECRAWL_API_KEY` | yes | Same `fc-…` key already used by `enrich-brand-kit` — no new secret needed. |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_ANON_KEY` | yes | auto-injected. |
+| `FIRECRAWL_API_KEY` | yes | Same `fc-…` key already in use by the `enrich-brand-kit` Supabase function — copy from Supabase project secrets, or grab a fresh key from https://www.firecrawl.dev/app/api-keys. |
+| `SUPABASE_URL` | yes | `https://vmfwnfflhvskadkfnvds.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | Supabase Dashboard → Project Settings → API → "service_role" key (`sb_secret_...`). **Server-side only — never expose to the client bundle.** |
+| `SUPABASE_ANON_KEY` | yes | Same publishable key the SPA uses — copy from `web/.env.local` (`VITE_SUPABASE_PUBLISHABLE_KEY`) or Supabase Dashboard → Project Settings → API → "publishable" key. |
 
-#### Deploying the edge function
+Add each variable for **Production, Preview, and Development** environments in Vercel. After adding, redeploy (Vercel does this automatically on the next push, or trigger manually from the Vercel Deployments tab).
 
-```sh
-SUPABASE_ACCESS_TOKEN=<PAT> \
-  supabase functions deploy fetch-trends \
-  --project-ref vmfwnfflhvskadkfnvds
-```
+#### Deploying
+
+No CLI / no manual step. Push to the branch, Vercel preview deploys; merge to main, prod deploys. The route is bundled and served alongside the SPA.
 
 No `supabase secrets set` step needed if `FIRECRAWL_API_KEY` is already configured (it should be — `enrich-brand-kit` has been live for a while).
 

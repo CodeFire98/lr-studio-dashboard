@@ -16,8 +16,9 @@ verify_jwt = true
 # access to), then dispatches via Resend server-side.
 verify_jwt = true
 
-[functions.fetch-trends]
-# Verify the caller's JWT. The function additionally checks
-# profiles.is_agency = true on the caller before scraping anything,
-# so this is fully agency-gated at the API surface.
-verify_jwt = true
+# fetch-trends does NOT live here — it's a Vercel serverless function at
+# web/api/fetch-trends.ts. We deliberately moved it off Supabase Edge
+# Functions on 2026-05-02 because the multipart deploy endpoint started
+# 403'ing for our PAT and the deploy friction was costing us hours per
+# iteration. Vercel co-deploys the API with the SPA on every push, so
+# Trends Radar phases (Twitter/IG/LinkedIn) drop in via the same path.

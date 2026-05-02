@@ -1940,18 +1940,47 @@ export async function loadTrendSignals({ platform, region, kind, limit = 200 } =
   return (data || []).map(mapTrendSignalRow).filter(Boolean);
 }
 
-// Trigger the fetch-trends edge function for the given source. Agency-only
-// at the edge — non-agency callers get a 403 even if they bypass UI gating.
+// Trigger the fetch-trends Vercel serverless function for the given source.
+// Agency-only on the server — non-agency callers get a 403 even if they
+// bypass UI gating. Lives at /api/fetch-trends in the same Vercel deploy
+// as the SPA, so it's a relative URL and CORS isn't a concern.
 export async function refreshTrends({ source, regions, window: trendWindow } = {}) {
   if (!source) throw new Error('refreshTrends: source is required');
   const body = { source };
   if (regions && regions.length > 0) body.regions = regions;
   if (trendWindow) body.window = trendWindow;
-  const { data, error } = await supabase.functions.invoke('fetch-trends', { body });
-  if (error) throw error;
-  if (data && typeof data === 'object' && 'error' in data && data.error) {
-    throw new Error(String(data.error));
+
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error('refreshTrends: not signed in');
+
+  let res;
+  try {
+    res = await fetch('/api/fetch-trends', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (ex) {
+    throw new Error(`Could not reach trends API: ${ex?.message || ex}`);
   }
-  return data;
+
+  let payload;
+  try {
+    payload = await res.json();
+  } catch {
+    payload = null;
+  }
+  if (!res.ok) {
+    const msg = (payload && payload.error) || `HTTP ${res.status}`;
+    throw new Error(String(msg));
+  }
+  if (payload && typeof payload === 'object' && 'error' in payload && payload.error) {
+    throw new Error(String(payload.error));
+  }
+  return payload;
 }
 
