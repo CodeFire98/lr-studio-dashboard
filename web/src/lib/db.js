@@ -790,14 +790,6 @@ export async function sendInviteEmail(invitationId) {
   return data;
 }
 
-// Bulk-accept any invitations whose email matches the signed-in user. Safe to
-// call on every login — returns [] when nothing is pending.
-export async function autoAcceptPendingInvitations() {
-  const { data, error } = await supabase.rpc('auto_accept_pending_invitations');
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-}
-
 // Check whether this email has any pending invitations waiting. Used to warn
 // a user who signed in with the "wrong" email that invites exist elsewhere.
 // Anon-safe — policy allows reading rows by email (case-insensitive).

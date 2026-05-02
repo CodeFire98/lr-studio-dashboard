@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-01 (Resend Tier 1 + invitation redemption fixes)
+**Last updated:** 2026-05-02 (Auto-accept removed — invites must be explicitly redeemed via the email link)
 
 ---
 
@@ -11,6 +11,13 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-02 — Email-match auto-accept removed (invites require explicit redemption)
+- The `auto_accept_pending_invitations()` RPC (migration 0010) was being called on every session refresh from [auth.js:162](web/src/lib/auth.js:162). It silently joined any signed-in user to every pending invite whose `email` field matched their auth email — so invitees never had to click the link in the email, *and* an existing-account user invited via that account's email would be silently granted access on their next sign-in.
+- Three problems with that: (1) **silent grant for existing users** — invite an existing brand owner to the agency and they got agency access on their next normal sign-in with no acknowledgment; (2) **mistyped invite emails became dangerous** — typo `someone@gmail.con`, the wrong existing account silently inherits access; (3) **the email's "Accept invite" CTA was theater** — clicking it changed nothing.
+- Fix: stop calling the RPC. The token-based redemption flow ([App.jsx:377](web/src/App.jsx:377) → `accept_invitation(token)`) is now the only redemption path. The SQL function is left in place defensively (in case any cached client still calls it; safe to drop in a follow-up migration once that risk is past).
+- Also stripped: the dead `newlyJoinedAccountIds` welcome-banner useEffect in App.jsx that was reachable only via auto-accept; the unused `autoAcceptPendingInvitations()` export in db.js. The token redemption already shows its own "Invite accepted — welcome to the workspace." banner, so UX is unchanged for the canonical flow.
+- Sections touched: §6 RPCs list (auto-accept marked deprecated), §7 Sign-in paths (auto-accept line removed), §13 new decision-log entry, Recent changes log.
 
 ### 2026-05-01 — Invitation redemption fixes (accept idempotency + is_agency reset)
 Two pre-existing bugs surfaced during Tier 1 invitation testing. Both ship as migrations applied to prod via the Management API SQL endpoint.
@@ -267,7 +274,7 @@ internally because it bypasses RLS:
 - `remove_team_member(p_user_id, p_account_id)` — owner-only
 - `change_member_role(p_user_id, p_account_id, p_new_role)` — owner-only
 - `accept_invitation(p_token)` — redeem an invite
-- `auto_accept_pending_invitations()` — runs on every session refresh; matches by email
+- ~~`auto_accept_pending_invitations()`~~ *(deprecated 2026-05-02)* — was called on every session refresh and matched by email. Removed because it silently granted access to existing-account invitees and made mistyped invite emails dangerous. Function still exists on prod (defensive — in case of cached clients), no longer called from anywhere in the app. Safe to drop in a follow-up migration.
 
 ### Migrations
 
@@ -294,7 +301,7 @@ Recent batch:
 
 1. **Email/password** — `signInWithPassword`
 2. **Google OAuth** — `signInWithGoogle`; `redirectTo` uses `window.location.origin` so it stays on the current domain
-3. **Invite token** — `accept_invitation` RPC after sign-in if `localStorage.lr_pending_invite` is set
+3. **Invite token** — `accept_invitation` RPC after sign-in if `localStorage.lr_pending_invite` is set. **This is now the only invite-redemption path** — the previous email-match auto-accept was removed 2026-05-02.
 
 ### Sign-up paths
 
@@ -641,6 +648,7 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Email-match auto-accept removed; invites require an explicit token click.** The `auto_accept_pending_invitations()` RPC was introduced in 0010 with the goal of letting invitees skip the click — sign in with the matching email and you're in. Removed 2026-05-02 because the silent-grant cases (existing-account invitees, typos in the invite email) outweighed the QoL benefit. Considered: (a) keep auto-accept but only when `lr_pending_invite` localStorage is set — equivalent to just using the token flow, so redundant; (b) gate auto-accept on signup-event vs every session refresh — narrower, but still silent for the existing-account case which was the main complaint. Chose to remove entirely. Token flow is the single redemption path. The SQL function is intentionally left in place on prod for defensive compatibility with any cached client; safe to drop in a follow-up migration.
 - **`accept_invitation` is idempotent for the auto-accept race.** The token-based `accept_invitation` runs *after* the email-based `auto_accept_pending_invitations` in the auth refresh chain. If the user's email matches the invite (which it does for any normal invite flow), auto-accept redeems the row first and then the token-based accept finds `accepted_at` non-null. Original RPC raised "invalid or expired" in this case even though the user was already a member. Fix (0025): look up the row regardless of `accepted_at`, then return success if the caller is already a member of the target account. Considered alternatives — (a) gate the App.jsx token-redemption useEffect on `auth.newlyJoinedAccountIds` being empty (works but only patches the symptom in one client path), (b) drop one of the two redemption paths entirely. Chose the SQL fix because it's robust against any future client path that calls `accept_invitation` on an already-accepted row, not just this one.
 - **`remove_team_member` resets `profiles.is_agency` when the last agency membership goes.** The flag was being set on join (in `accept_invitation` since 0002) but never cleared on removal, leaving stale `is_agency=true` rows and putting brand-only users in agency mode after they'd been removed from the agency. Considered: (a) compute `is_agency` on the read path as `memberships.some(m => m.accounts.type === 'agency')` instead of trusting the stored flag — cleanest but a behavior change touching every `auth.isAgency` read and the RLS helper `is_agency_user()`. (b) trigger on `account_members` DELETE that recomputes the flag — broader scope (covers any future delete path). (c) fix the specific RPC. Chose (c) for now because there's only one delete path in the app today; revisit (b) if a second appears. The migration also includes a one-shot backfill for rows that were already in the broken state.
 - **Email sending uses one edge function with `template` dispatch, not per-template functions.** Considered separate functions per email type (`send-team-invite`, `send-task-delivered`, etc. — clean isolation). Chose a single `send-email` function that switches on `body.template` because: (a) one Resend client, one set of secrets, one cold-start; (b) shared template-rendering helpers (HTML scaffolding, `escapeHtml`, From/Reply-To logic) live in one file instead of being copy-pasted; (c) we'll add Tier 2 templates (post-plan status, comments) without each one needing its own deploy. Each template still gets its own request shape and its own auth check inside the function — the dispatcher is just a switch, not a `eval`-like surface.

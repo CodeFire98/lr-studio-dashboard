@@ -394,31 +394,11 @@ const App = () => {
     })();
   }, [auth?.id]);
 
-  // Email-based auto-accept: when auto_accept_pending_invitations() ran in
-  // auth.js and redeemed any invites, `newlyJoinedAccountIds` is present on
-  // the fresh auth profile. Show a welcome banner + switch to the first one.
-  useEffect(() => {
-    const ids = auth?.newlyJoinedAccountIds;
-    if (!ids || ids.length === 0) return;
-    const count = ids.length;
-    const text = count === 1
-      ? "Welcome — you've been added to a new workspace."
-      : `Welcome — you've been added to ${count} new workspaces.`;
-    setInviteBanner({ status: 'done', text });
-    (async () => {
-      try { await setActiveBrand(ids[0]); } catch {}
-    })();
-    // Clear the flag so this effect doesn't re-fire on future auth changes.
-    try {
-      const raw = localStorage.getItem('lr_auth');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        delete parsed.newlyJoinedAccountIds;
-        localStorage.setItem('lr_auth', JSON.stringify(parsed));
-      }
-    } catch {}
-    setTimeout(() => setInviteBanner(null), 4000);
-  }, [auth?.id, auth?.newlyJoinedAccountIds?.length]);
+  // (Removed 2026-05-02: the email-match auto-accept welcome banner that
+  // surfaced when auto_accept_pending_invitations() granted membership
+  // silently. Now that auto-accept is gone, the only redemption path is the
+  // token-based flow above, which already shows its own "Invite accepted"
+  // banner. This effect was unreachable and stripped for clarity.)
 
   // Brand-onboarding gate: when a brand owner lands on a brand they've
   // never set up, show the welcome modal once. Skip for agency users
