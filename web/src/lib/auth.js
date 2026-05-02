@@ -295,15 +295,38 @@ async function signUpForInvite({ email, password, displayName }) {
     throw new Error('No invitation token found — open the invite link from your email again.');
   }
 
-  const { data, error } = await supabase.functions.invoke('signup-for-invite', {
-    body: { token, password, displayName: displayName || '' },
-  });
-  if (error) throw error;
-  if (data && typeof data === 'object' && 'error' in data && data.error) {
-    const code = data.code;
-    const msg = String(data.error);
-    const ex = new Error(msg);
-    if (code) ex.code = code;
+  // We invoke via raw fetch instead of `supabase.functions.invoke()` so we
+  // can read the function's JSON error body on non-2xx. The SDK helper
+  // wraps any non-2xx as a generic "Edge Function returned a non-2xx
+  // status code" error and doesn't surface the body — which means we lose
+  // our `code: "user_exists"` signal that's supposed to pivot the modal
+  // to sign-in mode.
+  const baseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/functions/v1/signup-for-invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Supabase's function gateway requires apikey + Authorization for
+        // anon-callable functions (verify_jwt = false). Both can be the
+        // anon publishable key.
+        'apikey': anonKey,
+        'Authorization': `Bearer ${anonKey}`,
+      },
+      body: JSON.stringify({ token, password, displayName: displayName || '' }),
+    });
+  } catch (netErr) {
+    throw new Error('Network error — please retry.');
+  }
+
+  let body = null;
+  try { body = await response.json(); } catch { /* leave null */ }
+
+  if (!response.ok) {
+    const ex = new Error(body?.error || `Signup failed (HTTP ${response.status})`);
+    if (body?.code) ex.code = body.code;
     throw ex;
   }
 
