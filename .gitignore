@@ -8,3 +8,4 @@ supabase/.temp/
 .env
 .env.local
 .env.*.local
+.claude/local-secrets.env

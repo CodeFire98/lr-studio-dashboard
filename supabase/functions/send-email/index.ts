@@ -7,11 +7,17 @@
 //   team-invite — notify a new teammate that they've been invited to a
 //   workspace, with the invite link they need to redeem.
 //
+//   agency-update — agency staff sends a free-form summary message to all
+//   members of a brand workspace. Used for "here's a batch of calendar
+//   updates" kind of messages so the agency can avoid spamming brands
+//   with one email per change.
+//
 // Auth model:
 //   - Caller's JWT is verified by the platform (verify_jwt = true).
-//   - We use a JWT-scoped client to read the invitation through RLS, so
-//     the caller can only trigger an email for an invite they have access
-//     to (i.e. one they created or one in their account).
+//   - We use a JWT-scoped client to read protected data through RLS so
+//     the caller can only trigger emails for things they have access to.
+//   - team-invite: caller must be a member of the inviting account.
+//   - agency-update: caller must be agency staff (is_agency_user()).
 //   - The Resend API call itself happens server-side only.
 //
 // Env vars (set with `supabase secrets set ...`):
@@ -41,7 +47,14 @@ type TeamInviteRequest = {
   invitationId: string;
 };
 
-type SendEmailRequest = TeamInviteRequest;
+type AgencyUpdateRequest = {
+  template: "agency-update";
+  accountId: string;
+  message: string;
+  subject?: string;
+};
+
+type SendEmailRequest = TeamInviteRequest | AgencyUpdateRequest;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -140,87 +153,87 @@ function renderTeamInvite(args: {
   return { subject, html, text };
 }
 
-Deno.serve(async (req) => {
-  const opt = handleOptions(req);
-  if (opt) return opt;
-  if (req.method !== "POST") {
-    return jsonResponse({ error: "POST required" }, 405);
-  }
+function renderAgencyUpdate(args: {
+  accountName: string;
+  senderName: string;
+  message: string;
+  calendarUrl: string;
+  customSubject?: string;
+}): { subject: string; html: string; text: string } {
+  const { accountName, senderName, message, calendarUrl, customSubject } = args;
+  const subject = (customSubject?.trim()) || `Update on ${accountName} from L+R Agency`;
+  const text =
+    `Hi ${accountName} team,\n\n` +
+    `${message}\n\n` +
+    `— ${senderName}, L+R Agency\n\n` +
+    `Open the Social Calendar: ${calendarUrl}`;
 
-  if (!RESEND_API_KEY) {
-    return jsonResponse(
-      { error: "RESEND_API_KEY not configured. Run: supabase secrets set RESEND_API_KEY=..." },
-      500,
-    );
-  }
-  if (!EMAIL_FROM) {
-    return jsonResponse(
-      { error: "EMAIL_FROM not configured. Run: supabase secrets set EMAIL_FROM=..." },
-      500,
-    );
-  }
+  // Preserve newlines in the user-typed message by converting them to <br>
+  // after escaping. Multiple consecutive newlines become paragraph breaks.
+  const safeAccount = escapeHtml(accountName);
+  const safeSender = escapeHtml(senderName);
+  const safeUrl = escapeHtml(calendarUrl);
+  const safeMessage = escapeHtml(message)
+    .split(/\n{2,}/)
+    .map((para) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.65;color:#1a1a1a;white-space:pre-line">${para}</p>`)
+    .join("");
 
-  let body: SendEmailRequest;
-  try {
-    body = (await req.json()) as SendEmailRequest;
-  } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400);
-  }
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1a1a">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f7f5f2;padding:40px 16px">
+      <tr>
+        <td align="center">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:12px;padding:40px 36px;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
+            <tr><td>
+              <p style="margin:0 0 24px;font-size:13px;letter-spacing:0.10em;text-transform:uppercase;color:#7a7370">L+R Agency · update for ${safeAccount}</p>
+              <h1 style="margin:0 0 24px;font-size:22px;line-height:1.3;font-weight:600;color:#1a1a1a">A note from your agency</h1>
+              ${safeMessage}
+              <p style="margin:24px 0 32px">
+                <a href="${safeUrl}" style="display:inline-block;background:#1a1a1a;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-size:15px;font-weight:500">Open Social Calendar</a>
+              </p>
+              <p style="margin:0 0 4px;font-size:14px;line-height:1.6;color:#454040">— ${safeSender}</p>
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#9a9290">L+R Agency</p>
+              <hr style="border:none;border-top:1px solid #ece8e4;margin:28px 0">
+              <p style="margin:0;font-size:12px;line-height:1.5;color:#9a9290">You're receiving this because you're a member of the ${safeAccount} workspace on L+R Agency. Reply directly to this email to reach ${safeSender}.</p>
+            </td></tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+  return { subject, html, text };
+}
 
-  if (body?.template !== "team-invite") {
-    return jsonResponse({ error: `Unsupported template: ${body?.template}` }, 400);
-  }
+async function handleTeamInvite(
+  body: TeamInviteRequest,
+  userClient: ReturnType<typeof createClient>,
+  user: { id: string; email?: string },
+): Promise<Response> {
   if (!body.invitationId) {
     return jsonResponse({ error: "invitationId is required" }, 400);
   }
 
-  const authHeader = req.headers.get("Authorization") ?? "";
-  if (!authHeader) {
-    return jsonResponse({ error: "Missing Authorization header" }, 401);
-  }
-
-  const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-  });
-
-  const {
-    data: { user },
-    error: userErr,
-  } = await userClient.auth.getUser();
-  if (userErr || !user) {
-    return jsonResponse({ error: "Unauthorized" }, 401);
-  }
-
   // RLS-scoped read: the caller can only see invitations for accounts they
-  // belong to (per the existing invitations RLS), so this check doubles as
-  // authorization.
+  // belong to (per the existing invitations RLS), so this doubles as authz.
   const { data: invitation, error: invErr } = await userClient
     .from("invitations")
     .select("id, account_id, email, role, token, expires_at, accepted_at")
     .eq("id", body.invitationId)
     .maybeSingle();
   if (invErr) return jsonResponse({ error: invErr.message }, 400);
-  if (!invitation) {
-    return jsonResponse({ error: "Invitation not found or not accessible" }, 404);
-  }
-  if (invitation.accepted_at) {
-    return jsonResponse({ error: "Invitation already accepted" }, 410);
-  }
+  if (!invitation) return jsonResponse({ error: "Invitation not found or not accessible" }, 404);
+  if (invitation.accepted_at) return jsonResponse({ error: "Invitation already accepted" }, 410);
 
-  // Account name for the email body. RLS lets members SELECT their accounts.
   const { data: account, error: accErr } = await userClient
     .from("accounts")
     .select("id, name")
     .eq("id", invitation.account_id)
     .maybeSingle();
   if (accErr) return jsonResponse({ error: accErr.message }, 400);
-  if (!account) {
-    return jsonResponse({ error: "Account not accessible to caller" }, 403);
-  }
+  if (!account) return jsonResponse({ error: "Account not accessible to caller" }, 403);
 
-  // Inviter name comes from the caller's profile. Service-role read so we
-  // don't have to depend on a profiles SELECT policy that might be tighter
-  // than we expect.
   const serviceClient = createClient(SUPABASE_URL, SERVICE_ROLE);
   const { data: profile } = await serviceClient
     .from("profiles")
@@ -252,4 +265,153 @@ Deno.serve(async (req) => {
   } catch (ex) {
     return jsonResponse({ error: (ex as Error).message }, 502);
   }
+}
+
+async function handleAgencyUpdate(
+  body: AgencyUpdateRequest,
+  userClient: ReturnType<typeof createClient>,
+  user: { id: string; email?: string },
+): Promise<Response> {
+  if (!body.accountId) return jsonResponse({ error: "accountId is required" }, 400);
+  const message = (body.message ?? "").trim();
+  if (!message) return jsonResponse({ error: "message is required" }, 400);
+  if (message.length > 8000) return jsonResponse({ error: "message too long (max 8000 chars)" }, 400);
+
+  const serviceClient = createClient(SUPABASE_URL, SERVICE_ROLE);
+
+  // Authz: caller must be agency staff. Read profile via service role so we
+  // don't depend on the public profiles SELECT policy.
+  const { data: callerProfile, error: profileErr } = await serviceClient
+    .from("profiles")
+    .select("display_name, is_agency")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (profileErr) return jsonResponse({ error: profileErr.message }, 500);
+  if (!callerProfile?.is_agency) {
+    return jsonResponse({ error: "agency-update requires agency staff access" }, 403);
+  }
+
+  // Account name + slug for subject + calendar link.
+  const { data: account, error: accErr } = await serviceClient
+    .from("accounts")
+    .select("id, name, slug, type")
+    .eq("id", body.accountId)
+    .maybeSingle();
+  if (accErr) return jsonResponse({ error: accErr.message }, 400);
+  if (!account) return jsonResponse({ error: "Account not found" }, 404);
+
+  // Recipients via the existing account_members_with_email RPC, called with
+  // the JWT-scoped client. The RPC's authz lets agency staff read members
+  // for any account, so this works.
+  const { data: members, error: memErr } = await userClient.rpc(
+    "account_members_with_email",
+    { p_account_id: body.accountId },
+  );
+  if (memErr) return jsonResponse({ error: memErr.message }, 400);
+  const recipients: string[] = Array.from(
+    new Set(
+      (members as Array<{ email: string | null }> | null)
+        ?.map((m) => (m.email ?? "").trim().toLowerCase())
+        .filter((e) => e && e.includes("@")) ?? [],
+    ),
+  );
+  if (recipients.length === 0) {
+    return jsonResponse({ error: "No member emails found for this account" }, 404);
+  }
+
+  const senderName =
+    (callerProfile.display_name as string | undefined)?.trim() ||
+    user.email?.split("@")[0] ||
+    "L+R Agency";
+
+  const slug = (account.slug as string | undefined)?.trim();
+  const calendarUrl = slug
+    ? `${APP_URL.replace(/\/+$/, "")}/c/${slug}/calendar`
+    : `${APP_URL.replace(/\/+$/, "")}/calendar`;
+
+  const rendered = renderAgencyUpdate({
+    accountName: account.name as string,
+    senderName,
+    message,
+    calendarUrl,
+    customSubject: body.subject,
+  });
+
+  // Send one email per recipient so members don't see each other's addresses.
+  const sentIds: string[] = [];
+  const failures: Array<{ to: string; error: string }> = [];
+  for (const to of recipients) {
+    try {
+      const result = await callResend({
+        to,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
+        replyTo: user.email ?? undefined,
+      });
+      sentIds.push(result.id);
+    } catch (ex) {
+      failures.push({ to, error: (ex as Error).message });
+    }
+  }
+
+  if (sentIds.length === 0) {
+    return jsonResponse({ ok: false, sent: 0, failed: failures }, 502);
+  }
+  return jsonResponse({ ok: true, sent: sentIds.length, ids: sentIds, failed: failures });
+}
+
+Deno.serve(async (req) => {
+  const opt = handleOptions(req);
+  if (opt) return opt;
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "POST required" }, 405);
+  }
+
+  if (!RESEND_API_KEY) {
+    return jsonResponse(
+      { error: "RESEND_API_KEY not configured. Run: supabase secrets set RESEND_API_KEY=..." },
+      500,
+    );
+  }
+  if (!EMAIL_FROM) {
+    return jsonResponse(
+      { error: "EMAIL_FROM not configured. Run: supabase secrets set EMAIL_FROM=..." },
+      500,
+    );
+  }
+
+  let body: SendEmailRequest;
+  try {
+    body = (await req.json()) as SendEmailRequest;
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  const authHeader = req.headers.get("Authorization") ?? "";
+  if (!authHeader) {
+    return jsonResponse({ error: "Missing Authorization header" }, 401);
+  }
+
+  const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+    global: { headers: { Authorization: authHeader } },
+  });
+  const {
+    data: { user },
+    error: userErr,
+  } = await userClient.auth.getUser();
+  if (userErr || !user) {
+    return jsonResponse({ error: "Unauthorized" }, 401);
+  }
+
+  if (body?.template === "team-invite") {
+    return handleTeamInvite(body, userClient, user);
+  }
+  if (body?.template === "agency-update") {
+    return handleAgencyUpdate(body, userClient, user);
+  }
+  return jsonResponse(
+    { error: `Unsupported template: ${(body as { template?: string } | null)?.template ?? "(missing)"}` },
+    400,
+  );
 });

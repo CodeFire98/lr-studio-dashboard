@@ -471,6 +471,15 @@ const App = () => {
   })();
   const calendarAccountId = scopeAccountId; // alias preserved for readability downstream
   const calendarRoleIsAdmin = !!auth?.isAgency;
+  // Display name for the active brand — used by surfaces (e.g. CalendarView's
+  // "Send update" modal) that want to label the brand they're acting on.
+  const calendarAccountName = (() => {
+    if (!calendarAccountId) return null;
+    if (auth?.isAgency) {
+      return brandAccounts.find((b) => b.id === calendarAccountId)?.name || null;
+    }
+    return auth?.account?.name || null;
+  })();
 
   // Load tasks from Supabase whenever we have an auth session; clear on sign-out.
   // Filter by `scopeAccountId` — agency in All-clients mode sees everything;
@@ -825,6 +834,7 @@ const App = () => {
       <CalendarView
         postPlans={auth ? postPlans : []}
         accountId={auth ? calendarAccountId : null}
+        accountName={auth ? calendarAccountName : null}
         userId={auth?.id}
         mode={calendarRoleIsAdmin ? 'admin' : 'customer'}
         setRoute={setRoute}

@@ -801,6 +801,28 @@ export async function sendInviteEmail(invitationId) {
   return data;
 }
 
+// Agency-only: send a free-form summary message to all members of a brand
+// workspace. The edge function authz-checks that the caller is agency staff
+// (is_agency = true on profiles) — so this call from a non-agency client
+// will return a 403. Returns { ok, sent, ids, failed } on success.
+export async function sendAgencyUpdateEmail({ accountId, message, subject } = {}) {
+  if (!accountId) throw new Error('sendAgencyUpdateEmail: accountId is required');
+  if (!message || !message.trim()) throw new Error('sendAgencyUpdateEmail: message is required');
+  const { data, error } = await supabase.functions.invoke('send-email', {
+    body: {
+      template: 'agency-update',
+      accountId,
+      message: message.trim(),
+      ...(subject ? { subject: subject.trim() } : {}),
+    },
+  });
+  if (error) throw error;
+  if (data && typeof data === 'object' && 'error' in data && data.error) {
+    throw new Error(String(data.error));
+  }
+  return data;
+}
+
 // Check whether this email has any pending invitations waiting. Used to warn
 // a user who signed in with the "wrong" email that invites exist elsewhere.
 // Anon-safe — policy allows reading rows by email (case-insensitive).

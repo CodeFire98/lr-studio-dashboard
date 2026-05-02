@@ -10,6 +10,7 @@ import { Icon } from './Icon.jsx';
 import { PlatformChip, STATUS_CONFIG } from './postPlanShared.jsx';
 import { createPostPlan, duplicatePostPlan } from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
+import { UpdateBrandModal } from './UpdateBrandModal.jsx';
 
 const HEADING_FMT   = { month: 'short', year: 'numeric' };
 const WEEKDAY_LABEL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -281,6 +282,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
 const CalendarView = ({
   postPlans = [],
   accountId,
+  accountName,
   userId,
   mode,         // 'admin' | 'customer'
   setRoute,
@@ -301,6 +303,8 @@ const CalendarView = ({
   const [ctxMenu, setCtxMenu] = useState(null); // { x, y, plan }
   // Duplicate date picker state (opened from context menu).
   const [dupSource, setDupSource] = useState(null); // plan or null
+  // Send-update modal state (agency-only).
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
 
   const filteredPostPlans = useMemo(
     () => statusFilter === 'all' ? postPlans : postPlans.filter((p) => p.status === statusFilter),
@@ -377,8 +381,11 @@ const CalendarView = ({
     setRoute?.({ view: 'plan', id: post.id });
   };
 
-  // Context menu handlers for chip right-click.
+  // Context menu handlers for chip right-click. Brand users get the
+  // browser default menu — they can't duplicate plans (no edit access),
+  // so the only menu item we'd show would be a no-op.
   const handleChipContextMenu = (e, post) => {
+    if (!isAdmin) return;
     setCtxMenu({ x: e.clientX, y: e.clientY, plan: post });
   };
 
@@ -446,7 +453,16 @@ const CalendarView = ({
           </div>
         </div>
         {isAdmin && (
-          <div className="actions">
+          <div className="actions" style={{ display: 'flex', gap: 8 }}>
+            {accountId && (
+              <button
+                className="btn btn-sm"
+                onClick={() => setUpdateModalOpen(true)}
+                title="Send a summary message to everyone on this brand"
+              >
+                <Icon name="mail" size={13}/>Send update
+              </button>
+            )}
             <button className="btn btn-primary btn-sm" onClick={openCreateNow}>
               <Icon name="plus" size={13}/>New post plan
             </button>
@@ -581,6 +597,13 @@ const CalendarView = ({
         onConfirm={handleDuplicateConfirm}
         onCancel={() => setDupSource(null)}
         sourcePlan={dupSource}
+      />
+
+      <UpdateBrandModal
+        open={updateModalOpen}
+        accountId={accountId}
+        accountName={accountName}
+        onClose={() => setUpdateModalOpen(false)}
       />
 
     </div></div>
