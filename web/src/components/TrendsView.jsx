@@ -9,6 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { loadTrendSignals, refreshTrends } from '../lib/db.js';
+import { TurnIntoPostPlanModal } from './TurnIntoPostPlanModal.jsx';
 
 // Country code → display label. Easy to extend; the same codes drive the
 // edge function's region whitelist.
@@ -69,30 +70,45 @@ function formatMetric(value, label) {
   return label ? `${formatted} ${label}` : formatted;
 }
 
-function TrendCard({ trend }) {
+function TrendCard({ trend, onTurnIntoPostPlan }) {
   const isHashtag = trend.kind === 'hashtag';
   const display = isHashtag ? `#${trend.title}` : trend.title;
   const metric = formatMetric(trend.metricValue, trend.metricLabel);
   return (
-    <a
-      className="trend-card"
-      href={trend.url || undefined}
-      target={trend.url ? '_blank' : undefined}
-      rel={trend.url ? 'noreferrer noopener' : undefined}
-      aria-disabled={!trend.url}
-      onClick={(e) => { if (!trend.url) e.preventDefault(); }}
-    >
-      <div className="trend-card-rank">{trend.rank ? `#${trend.rank}` : ''}</div>
-      <div className="trend-card-body">
-        <div className="trend-card-title">{display}</div>
-        {trend.subtitle && (
-          <div className="trend-card-sub">{trend.subtitle}</div>
-        )}
-        {metric && (
-          <div className="trend-card-metric">{metric}</div>
-        )}
-      </div>
-    </a>
+    <div className="trend-card-wrap">
+      <a
+        className="trend-card"
+        href={trend.url || undefined}
+        target={trend.url ? '_blank' : undefined}
+        rel={trend.url ? 'noreferrer noopener' : undefined}
+        aria-disabled={!trend.url}
+        onClick={(e) => { if (!trend.url) e.preventDefault(); }}
+      >
+        <div className="trend-card-rank">{trend.rank ? `#${trend.rank}` : ''}</div>
+        <div className="trend-card-body">
+          <div className="trend-card-title">{display}</div>
+          {trend.subtitle && (
+            <div className="trend-card-sub">{trend.subtitle}</div>
+          )}
+          {metric && (
+            <div className="trend-card-metric">{metric}</div>
+          )}
+        </div>
+      </a>
+      <button
+        className="trend-card-action"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onTurnIntoPostPlan?.(trend);
+        }}
+        title="Turn into post plan"
+        aria-label={`Turn ${display} into a post plan`}
+      >
+        <Icon name="plus" size={14} />
+        <span>Post plan</span>
+      </button>
+    </div>
   );
 }
 
@@ -122,15 +138,24 @@ function EmptyState({ onRefresh, refreshing, hasError }) {
   );
 }
 
-const TrendsView = () => {
+const TrendsView = ({
+  // From App.jsx — used by the Turn-into-post-plan modal so the user can
+  // pick which brand the new post plan should land on.
+  brandAccounts = [],
+  defaultAccountId = null,
+  userId = null,
+  navigateToPlan,        // (planId, brandSlug) => void
+}) => {
   const [activePlatform, setActivePlatform] = useState('tiktok');
   const [activeRegion, setActiveRegion] = useState('US');
-  const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound'
+  const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound' | 'topic'
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshSummary, setRefreshSummary] = useState(null);
   const [refreshError, setRefreshError] = useState(null);
+  // Phase 5: Turn-into-post-plan modal state.
+  const [turnTrend, setTurnTrend] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -300,7 +325,11 @@ const TrendsView = () => {
                 </h3>
                 <div className="trends-grid">
                   {items.map((t) => (
-                    <TrendCard key={t.id} trend={t} />
+                    <TrendCard
+                      key={t.id}
+                      trend={t}
+                      onTurnIntoPostPlan={(trend) => setTurnTrend(trend)}
+                    />
                   ))}
                 </div>
               </section>
@@ -308,6 +337,25 @@ const TrendsView = () => {
           </>
         )}
       </div>
+
+      <TurnIntoPostPlanModal
+        open={!!turnTrend}
+        trend={turnTrend}
+        brandAccounts={brandAccounts}
+        defaultAccountId={defaultAccountId}
+        userId={userId}
+        onClose={() => setTurnTrend(null)}
+        onCreated={(plan) => {
+          // Land the user in the new post plan's detail view inside the
+          // brand we just scheduled it for. We can't use the parent's
+          // setRoute because Trends Radar is agency-level (no implicit
+          // brand context); navigateToPlan resolves the slug from the
+          // plan's own accountId so we land on /c/:slug/calendar/:id.
+          setTurnTrend(null);
+          const brand = brandAccounts.find((b) => b.id === plan.accountId);
+          navigateToPlan?.(plan.id, brand?.slug);
+        }}
+      />
     </div>
   );
 };
