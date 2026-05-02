@@ -365,11 +365,38 @@ const TrendsView = ({
           </div>
         </div>
 
-        {refreshSummary && (
-          <div className="trends-flash">
-            Wrote {refreshSummary.written ?? 0} signals across {refreshSummary.regions?.length ?? 0} region(s).
-          </div>
-        )}
+        {refreshSummary && (() => {
+          // Collect every error message from per-region / per-kind summaries
+          // so the agency can see what failed on the server (Apify timed out,
+          // Firecrawl bot-walled, parse error, etc.). Without this surfacing,
+          // a totally-failed refresh just shows "Wrote 0 signals" with no
+          // hint why — which is exactly what bit us during diagnosis.
+          const perRegionErrors = (refreshSummary.summaries || [])
+            .flatMap((s) => {
+              const tag = s.region || s.hashtag || '?';
+              const errs = Array.isArray(s.errors) ? s.errors : [];
+              return errs.map((e) => `${tag}: ${e}`);
+            });
+          const totalWritten = refreshSummary.written ?? 0;
+          const isAllZero = totalWritten === 0 && perRegionErrors.length > 0;
+          return (
+            <div className={'trends-flash' + (isAllZero ? ' error' : '')}>
+              <div>
+                Wrote {totalWritten} signals across {refreshSummary.regions?.length ?? 0} region(s).
+              </div>
+              {perRegionErrors.length > 0 && (
+                <details className="trends-flash-details">
+                  <summary>{perRegionErrors.length} error{perRegionErrors.length === 1 ? '' : 's'} (click to expand)</summary>
+                  <ul>
+                    {perRegionErrors.map((msg, i) => (
+                      <li key={i}>{msg}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          );
+        })()}
         {refreshError && (
           <div className="trends-flash error">
             Refresh failed: {refreshError}

@@ -3129,6 +3129,30 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
+.trends-flash-details {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.trends-flash-details summary {
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.85;
+}
+.trends-flash-details summary:hover {
+  opacity: 1;
+}
+.trends-flash-details ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: inherit;
+  word-break: break-word;
+}
+.trends-flash-details li {
+  margin-bottom: 2px;
+}
 
 /* ----- Body / sections / grid ------------------------------------- */
 .trends-body {
