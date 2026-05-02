@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-02 (remove_team_member: account owners — not just agency — can remove from their own team)
+**Last updated:** 2026-05-02 (invitee signup skips Supabase email confirmation — new signup-for-invite edge function)
 
 ---
 
@@ -11,6 +11,15 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-02 — Invitee signup skips Supabase email confirmation (new `signup-for-invite` edge function)
+- **Bug:** when an invitee clicked "Accept invite" in the email and signed up via the signup form (email + password), Supabase's standard `auth.signUp()` queued a confirmation email and the modal showed "Check your email to confirm your account, then sign in to accept the invite." That confirmation email was a redundant friction step — receiving the original invite at that address is already proof of email ownership — and on top of that the project's confirmation email wasn't reaching inboxes reliably, so the user was stuck.
+- **Fix:** new edge function `signup-for-invite` ([signup-for-invite/index.ts](supabase/functions/signup-for-invite/index.ts)) — anon-callable (verify_jwt = false) since the invitee has no session yet. The invitation token IS the credential. The function reads the invitation server-side, validates it (unaccepted, unexpired), then calls `supabase.auth.admin.createUser({ email, password, email_confirm: true, user_metadata })` to create the user with email already confirmed.
+- `signUpForInvite()` in [auth.js](web/src/lib/auth.js) now invokes the edge function instead of `auth.signUp()`, then calls `signInWithPassword()` to establish the session. App.jsx's existing pending-invite useEffect redeems the token via `accept_invitation(p_token)` and lands the user in the workspace. The "Check your email" branch is removed from the LoginModal invitee flow — it's no longer reachable.
+- **`user_exists` error code:** if the invitee tries to sign up with an email that already has an account, the edge function returns `{error, code: "user_exists"}` (HTTP 409). LoginModal catches that and pivots to sign-in mode with the message "You already have an account with this email. Sign in below to accept the invite."
+- The email is sourced from the **invitation row**, never from the request body — so even if the client somehow sent a different email, the auth user can only be created under the address the invite was sent to. Substitution attacks aren't possible.
+- **Brand-owner self-signup is unchanged.** That flow still goes through `signUpBrand()` → `auth.signUp()` and still asks for email confirmation. We only bypass confirmation when there's a valid invite token, since the invite is what proves email ownership in that case.
+- Sections touched: Recent changes log; §10 Edge functions (new function table row); §13 new decision-log entry.
 
 ### 2026-05-02 — `remove_team_member` allows account owners (was agency-only)
 - **Bug:** since the original `remove_team_member` in 0002, the gate has been `if not public.is_agency_user() then raise ...` — meaning ONLY agency staff could remove anyone from any team. A brand owner trying to remove a teammate from *their own brand* hit "only agency staff can remove team members" — even though the UI enabled the Remove button for owners. The 0026 patch fixed `is_agency` reset but didn't touch the gating.
@@ -622,6 +631,40 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
   supabase functions deploy send-email \
   --project-ref vmfwnfflhvskadkfnvds
 ```
+
+### `signup-for-invite`
+
+Creates an auth user with `email_confirm = true` for invited teammates,
+bypassing Supabase's standard "click the link in your inbox" confirmation
+step. The invitation row itself is the proof of email ownership.
+
+#### Auth
+
+- `verify_jwt = false` — caller is the invitee, who doesn't have a session yet.
+- The invitation token is the credential; we only proceed when the row is unaccepted, unexpired, and findable by token.
+- The email used for `createUser` is read from the invitation row server-side, never from the request body. So a typo or substitution attempt in the client can't create an auth user under a different address than the invite.
+
+#### Request shape
+
+```js
+POST /functions/v1/signup-for-invite
+// (no Authorization header — anon-callable)
+{
+  "token": "<invitation token from URL or localStorage>",
+  "password": "<at least 6 chars>",
+  "displayName": "<optional name for user_metadata.display_name>"
+}
+// → 200 { ok: true, userId, email }
+// → 409 { error: "...exists...", code: "user_exists" }   // pivot to sign-in
+// → 404 { error: "Invitation not found" }
+// → 410 { error: "Invitation expired" } | { error: "Invitation already accepted" }
+```
+
+#### Client integration
+
+`signUpForInvite()` in [auth.js](web/src/lib/auth.js) reads the token from `localStorage.lr_pending_invite`, calls this function, then `signInWithPassword()` to establish the session. The existing pending-invite useEffect in App.jsx redeems the token and lands the user on the workspace. Net UX: invitee enters name + password, hits Create, lands directly in the workspace — no second email.
+
+[LoginModal.jsx](web/src/components/LoginModal.jsx) catches the `user_exists` error code and pivots the modal to sign-in mode with a friendly message instead of surfacing a raw error.
 
 ---
 

@@ -275,18 +275,49 @@ async function signUpBrand({ email, password, displayName, brandName }) {
 // Bare signup used when the user is accepting an invitation — no workspace
 // creation here, because accept_invitation will add them to the invited
 // account atomically after the auth row exists.
+//
+// We bypass Supabase's standard auth.signUp() (which queues a "click the
+// link in your email" confirmation step) and instead call the
+// `signup-for-invite` edge function. That function uses the admin API
+// to create the auth user with `email_confirm: true` — the invitation row
+// itself is already proof the user owns the email, so a second
+// confirmation just adds friction.
+//
+// After the user is created, we sign them in with the same password to
+// establish a session. App.jsx's existing pending-invite useEffect then
+// redeems the token via accept_invitation(p_token) and lands them on the
+// workspace.
 async function signUpForInvite({ email, password, displayName }) {
-  const { data, error } = await supabase.auth.signUp({
-    email: email.trim(),
-    password,
-    options: {
-      data: { display_name: displayName?.trim() || '' },
-    },
+  const token = (() => {
+    try { return localStorage.getItem('lr_pending_invite'); } catch { return null; }
+  })();
+  if (!token) {
+    throw new Error('No invitation token found — open the invite link from your email again.');
+  }
+
+  const { data, error } = await supabase.functions.invoke('signup-for-invite', {
+    body: { token, password, displayName: displayName || '' },
   });
   if (error) throw error;
-  if (!data.session) return { pendingConfirmation: true, user: data.user };
+  if (data && typeof data === 'object' && 'error' in data && data.error) {
+    const code = data.code;
+    const msg = String(data.error);
+    const ex = new Error(msg);
+    if (code) ex.code = code;
+    throw ex;
+  }
+
+  // User now exists with email_confirm=true. Sign them in to establish
+  // a session — this fires the same auth state-change events that a
+  // normal signin would, including App.jsx's invite-redemption useEffect.
+  const { error: signinErr } = await supabase.auth.signInWithPassword({
+    email: email.trim(),
+    password,
+  });
+  if (signinErr) throw signinErr;
+
   await refreshFromSession();
-  return { pendingConfirmation: false, user: data.user, profile: _cachedAuth };
+  return { pendingConfirmation: false, profile: _cachedAuth };
 }
 
 async function signOut() {
