@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-02 (Trends Radar Phase 0+1 — trend_signals table + Vercel /api/fetch-trends + agency-only TrendsView, merged on top of invitee-signup-skips-confirmation + remove_team_member owner-rule)
+**Last updated:** 2026-05-02 (Trends Radar Phases 2 + 3 + 5 — Twitter via Apify, per-brand Instagram via Apify, "Turn into post plan" agentic loop)
 
 ---
 
@@ -11,6 +11,34 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-02 — Trends Radar Phases 2 + 3 + 5 (Twitter, Instagram per-brand, Turn-into-post-plan)
+Three more phases on top of the Phase 0+1 foundation. Same `trend_signals` table, same `/api/fetch-trends` Vercel route, same `TrendsView` shell — each phase drops in as additive code without restructuring anything that already shipped.
+
+**Phase 2 — X / Twitter via Apify**
+- New `handleTwitter` in [`/api/fetch-trends`](web/api/fetch-trends.ts). Calls Apify's `automation-lab/twitter-trends-scraper` actor via `run-sync-get-dataset-items` (one POST → all regions back). Default regions: US, IN, GB, CA, AU; we translate ISO-3166 alpha-2 to Apify's location codes at the API boundary (only `GB → UK` differs in practice).
+- Items starting with `#` land as `kind: 'hashtag'` (title stripped + lowercased to match TikTok normalisation); everything else is `kind: 'topic'`. `trend_window` is `'now'` since X trends are real-time.
+- `tweet_volume` (or any of the alternate spellings the various scrapers use — `tweetVolume`, `volume`) becomes `metric_value` with label `tweets`.
+- Subtitle is the volume rendered as e.g. `1,234 tweets`. Defensive parser tolerates several known shapes; raw response stashed in `raw_payload` so we can re-derive fields without re-scraping if the actor's output changes.
+- Requires `APIFY_API_TOKEN` env var on the `lr-studio-dashboard-3kkp` Vercel project (server-side, no `VITE_` prefix).
+- UI: TrendsView's `PLATFORMS[]` flips Twitter from `available: false` to `available: true`. New `PLATFORM_KINDS` map drives the kind filter pills per platform — Twitter shows `All / Hashtags / Topics`, TikTok still shows `All / Hashtags / Sounds`. Switching platforms resets the active kind to `all` so the user doesn't land on an empty grid because the filter doesn't apply to the new source.
+
+**Phase 3 — Instagram per-brand via Apify**
+- New migration `0030_brand_trend_hashtags` adds `brand_kits.trend_hashtags text[] not null default '{}'`. Each brand declares 3-10 hashtags relevant to its category (e.g. for a coffee brand: `["specialtycoffee","coffeeshop","latteart"]`). RLS on `brand_kits` already covers reads + writes for this column — no policy changes.
+- New `handleInstagram` in `/api/fetch-trends`. Required `accountId` in the request body. Reads the brand's `trend_hashtags` via the service-role client, calls Apify's `apify/instagram-hashtag-scraper` with the array, parses each post into a `trend_signals` row tagged with the same `account_id` — the unique dedupe index `(platform, kind, region, title, trend_window, account_id)` means a global TikTok `#foo` row and a brand-scoped IG `#foo` row peacefully coexist.
+- Each post's title = caption snippet (first 140 chars), subtitle = `@username · #hashtag · 1,234 likes`, metric_value = likesCount or videoViewCount, region = `'global'` (IG posts aren't region-scoped per row).
+- New `TrendHashtagsCard` in [BrandKitView](web/src/components/BrandKitView.jsx) — a small card after the Voice & messaging section. Chips for current hashtags + an InlineList editor for adding/removing. Save normalises (strip `#`, lowercase, dedupe, drop invalid chars, cap at 10).
+- TrendsView IG tab: when active, the filter row swaps the Region <select> for a Brand <select>. `loadTrendSignals` and `refreshTrends` both gain an `accountId` param. Global sources explicitly pass `account_id IS NULL` so an "All-clients" view never bleeds brand-scoped IG rows next to Twitter trends.
+- New EmptyState variants: TikTok / X / IG each get their own headline + body copy. Specific "Pick a brand to see Instagram trends" state for the per-brand-no-brand-picked case.
+
+**Phase 5 — Turn this trend into a post plan (the agentic loop)**
+- New [TurnIntoPostPlanModal](web/src/components/TurnIntoPostPlanModal.jsx). Each trend card grows a `+ Post plan` action pill (always visible on touch, hover-revealed on desktop). Click → modal pre-fills brand selector, schedule date, platforms, and concept; user adjusts the four things they actually need to choose; submit creates a `post_plans` row and lands them in the new plan's detail view.
+- Defaults: brand = agency's currently-active brand if any (else first in `brandAccounts`); schedule = today + 3 days at 09:00 local (matches `duplicatePostPlan` convention); platforms inferred from the trend source (TikTok → IG since trends bleed to Reels; X → X; etc.); concept = `Use #<hashtag>` or `Use <topic>`.
+- `copy_variants` is seeded per platform with the trend display name + source URL — gives the lead something concrete to anchor copy on instead of an empty textarea.
+- Post-create navigation: TrendsView calls a new `navigateToPlan(planId, brandSlug)` prop from App.jsx that builds `/c/:slug/calendar/:id` with the **plan's actual brand slug** rather than `setRoute`'s `currentBrandSlug` (TrendsView is agency-level so the URL has no implicit brand context at click time).
+- This is the moneymaker: spot trend → 2 clicks → live in the brand's calendar with concept + source + suggested platforms pre-filled. Compounds across every brand the agency runs.
+
+**Sections touched:** Recent changes log; Glossary (Phase 5 entries — see Trend Radar / Post plan glue); §6 Data model (new `brand_kits.trend_hashtags` column note); §6 Migrations (0030 row); §10 Edge functions / integrations (handleTwitter + handleInstagram described in the existing fetch-trends section).
 
 ### 2026-05-02 — Trends Radar Phase 0+1 (trend_signals + Vercel /api/fetch-trends + TikTok scraper)
 First slice of the Trends Radar feature. Compartmentalized so it can evolve in isolation from the rest of the dashboard — every new identifier is prefixed (`trend_signals`, `fetch-trends`, `TrendsView`, `.trends-*` CSS) and nothing existing was renamed or restructured.
@@ -192,7 +220,9 @@ something looks confusingly named.
 | **Unread activity** | Red dot on a calendar chip + badge count on sidebar — fires when comments, attachments, or plan edits by other users happened since the viewer's `last_seen_at` | `post_plan_views`, `loadPostPlanUnreadCounts` in `db.js` |
 | **Mark seen** | Stamp `post_plan_views.last_seen_at = now()` for the viewer | `markPostPlanSeen`, called on detail-view mount, on tab focus, and after every `persist()` |
 | **Trends Radar** | Agency-only "what's trending right now" pool — TikTok / IG / X / LinkedIn signals scraped on demand | `trend_signals` table, `TrendsView`, route `"trends"`, Vercel API route `web/api/fetch-trends.ts` |
-| **Trend signal** | One trending hashtag / sound / topic row in the pool | `trend_signals` row; mapped via `mapTrendSignalRow` in `db.js` |
+| **Trend signal** | One trending hashtag / sound / topic / post row in the pool | `trend_signals` row; mapped via `mapTrendSignalRow` in `db.js` |
+| **Trend hashtags** | Per-brand list of IG hashtags the brand wants tracked, drives Phase 3 IG scrape | `brand_kits.trend_hashtags` (text[]); edited via TrendHashtagsCard in `BrandKitView` |
+| **Turn into post plan** | Phase 5 action — convert any trend signal into a pre-filled post_plan row in a brand's calendar | `TurnIntoPostPlanModal`; `+ Post plan` pill on each TrendCard |
 
 ---
 
@@ -356,7 +386,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0029_trend_signals.sql`.
+Most recent: `0030_brand_trend_hashtags.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -368,6 +398,7 @@ Recent batch:
 - `0027_account_members_with_email` — `account_members_with_email(p_account_id)` SECURITY DEFINER RPC that joins `account_members → profiles → auth.users.email` for team-list rendering. See §13 entry.
 - `0028_remove_team_member_owner_can_remove` — replaces the agency-only gate on `remove_team_member` with an account-owner check (matches `change_member_role`). Brand owners can now remove members of their own brand. See §13 entry.
 - `0029_trend_signals` — new `trend_signals` table + indexes + RLS (agency-only read; service-role write) + `prune_expired_trend_signals()` cleanup helper. Backs the new Trends Radar surface; first writer is the Vercel route `web/api/fetch-trends.ts`. See §13 entry.
+- `0030_brand_trend_hashtags` — adds `brand_kits.trend_hashtags text[] not null default '{}'`. Per-brand hashtag list driving the Trends Radar Instagram scrape. Existing RLS on `brand_kits` already covers it — no policy changes.
 
 ---
 
@@ -704,8 +735,8 @@ Source code: [web/api/fetch-trends.ts](web/api/fetch-trends.ts). Runtime: defaul
 | Source | Purpose | Status |
 |---|---|---|
 | `tiktok` | TikTok Creative Center hashtags + sounds (Firecrawl only — no extra API key) | **Live** in Phase 1. Default regions: US, IN, GB, CA, AU. |
-| `twitter` *(planned)* | Apify Twitter Trends Scraper (`apify.com/automation-lab/twitter-trends-scraper`) | Phase 2 — needs `APIFY_API_TOKEN` env var added to Vercel. |
-| `instagram` *(planned)* | Apify Instagram Hashtag Trends or EnsembleData Instagram API | Phase 3 — per-brand, populates rows with `account_id` set. |
+| `twitter` | Apify Twitter Trends Scraper (`apify.com/automation-lab/twitter-trends-scraper`). Single multi-region call returns trending topics + hashtags + tweet volumes. | **Live** in Phase 2. Default regions: US, IN, GB, CA, AU (GB → UK at the API boundary). |
+| `instagram` | Apify Instagram Hashtag Scraper (`apify/instagram-hashtag-scraper`). Per-brand: reads `brand_kits.trend_hashtags` for the requested `accountId`, scrapes recent top posts for each hashtag. | **Live** in Phase 3. `accountId` required in request body. Posts stored with `account_id` set so RLS exposes them only to that brand + agency. |
 | `linkedin` *(maybe)* | Taplio scrape or partnership data — ToS-sensitive | Not committed. |
 
 #### Auth
@@ -756,14 +787,15 @@ The schema captures `{ trends: [{ rank, title, subtitle, url, thumbnail_url, met
 
 #### Environment variables (set on the `lr-studio-dashboard-3kkp` Vercel project, all 3 environment toggles ticked)
 
-| Name | Required | Where to get it |
+| Name | Required for | Where to get it |
 |---|---|---|
-| `VITE_SUPABASE_URL` | yes | `https://vmfwnfflhvskadkfnvds.supabase.co` — already there for the SPA. |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | yes | Same publishable key already there for the SPA. |
-| `FIRECRAWL_API_KEY` | yes | Same `fc-…` key already in use by the `enrich-brand-kit` Supabase function — copy from Supabase project secrets, or grab a fresh key from https://www.firecrawl.dev/app/api-keys. |
-| `SUPABASE_URL` | yes | Same value as `VITE_SUPABASE_URL`. The non-`VITE_` version is what the API route reads at runtime (Vercel only injects non-`VITE_` env vars into Node serverless functions). |
-| `SUPABASE_ANON_KEY` | yes | Same publishable key as `VITE_SUPABASE_PUBLISHABLE_KEY`, mirrored under a non-`VITE_` name for the API route. |
-| `SUPABASE_SERVICE_ROLE_KEY` | yes | Supabase Dashboard → Project Settings → API → "service_role" key (`sb_secret_...`). **Server-side only — never `VITE_` prefixed, never exposed to the client bundle.** |
+| `VITE_SUPABASE_URL` | SPA build | `https://vmfwnfflhvskadkfnvds.supabase.co` — already there for the SPA. |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | SPA build | Same publishable key already there for the SPA. |
+| `FIRECRAWL_API_KEY` | `tiktok` source | Same `fc-…` key already in use by the `enrich-brand-kit` Supabase function — copy from Supabase project secrets, or grab a fresh key from https://www.firecrawl.dev/app/api-keys. |
+| `APIFY_API_TOKEN` | `twitter` + `instagram` sources | Apify console → https://console.apify.com/settings/integrations. Free tier ($5 starter credit) is enough for Phase 2 + 3 testing. |
+| `SUPABASE_URL` | every API route call | Same value as `VITE_SUPABASE_URL`. The non-`VITE_` version is what the API route reads at runtime (Vercel only injects non-`VITE_` env vars into Node serverless functions). |
+| `SUPABASE_ANON_KEY` | every API route call | Same publishable key as `VITE_SUPABASE_PUBLISHABLE_KEY`, mirrored under a non-`VITE_` name for the API route. |
+| `SUPABASE_SERVICE_ROLE_KEY` | every API route call | Supabase Dashboard → Project Settings → API → "service_role" key (`sb_secret_...`). **Server-side only — never `VITE_` prefixed, never exposed to the client bundle.** |
 
 #### Deploying
 
