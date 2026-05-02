@@ -111,12 +111,33 @@ Deno.serve(async (req) => {
       msg.includes("registered") ||
       msg.includes("duplicate")
     ) {
-      // Distinct error code so the client can pivot the UI to "Sign in
-      // with your existing account instead" — same email, different
-      // expectation.
+      // Look up the existing user's identity providers so the client can
+      // route them correctly. A Google-OAuth-only user has no password
+      // identity — telling them to "sign in below" is misleading because
+      // signInWithPassword will always fail with "Invalid credentials".
+      // We surface the providers so the modal can prompt them to use
+      // Continue with Google (or Forgot? to add a password).
+      let providers: string[] = [];
+      try {
+        // listUsers paginates; with our small user set this is fine. If
+        // the project ever grows, switch to a SECURITY DEFINER RPC that
+        // joins auth.users + auth.identities by email server-side.
+        const { data: list } = await serviceClient.auth.admin.listUsers({
+          page: 1,
+          perPage: 1000,
+        });
+        const existing = (list?.users || []).find(
+          (u) => (u.email || "").toLowerCase() === email,
+        );
+        providers = ((existing?.identities || []) as Array<{ provider?: string }>)
+          .map((i) => i.provider)
+          .filter((p): p is string => typeof p === "string");
+      } catch { /* leave providers empty — modal falls back to generic copy */ }
+
       return jsonResponse({
         error: "An account with this email already exists. Sign in to accept the invite.",
         code: "user_exists",
+        providers,
       }, 409);
     }
     return jsonResponse({ error: createErr.message || "createUser failed" }, 500);

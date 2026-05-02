@@ -140,12 +140,22 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
     } catch (caught) {
       setLoading(false);
       // Invitee tried to sign up with an email that already has an account
-      // — pivot them to the sign-in tab with a helpful message instead of
-      // showing the raw "user already exists" error.
+      // — pivot them to the sign-in tab with guidance tailored to how that
+      // existing account was created. A Google-OAuth-only account has no
+      // password to sign in with, so telling them "sign in below" sends
+      // them straight to "Invalid credentials". We use the `providers`
+      // array the edge function surfaces to route them correctly.
       if (caught?.code === 'user_exists' && invitePreview) {
         setMode('signin');
         setErr('');
-        setInfo('You already have an account with this email. Sign in below to accept the invite.');
+        const providers = Array.isArray(caught.providers) ? caught.providers : [];
+        const hasEmail = providers.includes('email');
+        const hasGoogle = providers.includes('google');
+        if (hasGoogle && !hasEmail) {
+          setInfo("You signed up with Google. Click \"Continue with Google\" above to accept the invite — or hit \"Forgot?\" below to set a password first.");
+        } else {
+          setInfo('You already have an account with this email. Sign in below to accept the invite.');
+        }
         return;
       }
       setErr(caught?.message || "Something went wrong. Try again.");

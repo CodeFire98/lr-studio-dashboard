@@ -327,6 +327,7 @@ async function signUpForInvite({ email, password, displayName }) {
   if (!response.ok) {
     const ex = new Error(body?.error || `Signup failed (HTTP ${response.status})`);
     if (body?.code) ex.code = body.code;
+    if (Array.isArray(body?.providers)) ex.providers = body.providers;
     throw ex;
   }
 
