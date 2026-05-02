@@ -60,6 +60,11 @@ type FetchTrendsRequest = {
   source: Platform;
   regions?: string[];
   window?: "7d" | "30d";
+  // For source=instagram only: which brand to scope the scrape to.
+  // The handler reads brand_kits.trend_hashtags for this account_id and
+  // writes trend_signals rows tagged with this same account_id (per-brand
+  // visibility). Required for Instagram; ignored for other sources.
+  accountId?: string;
 };
 
 const TIKTOK_TREND_SCHEMA = {
@@ -197,6 +202,10 @@ type TrendInsertRow = {
   rank?: number | null;
   trend_window: string;
   raw_payload?: unknown;
+  // Set only for per-brand sources (Instagram). Null for global rows
+  // (TikTok, Twitter). The unique dedupe index includes account_id, so
+  // a global TikTok #foo and a brand-scoped IG #foo are different rows.
+  account_id?: string | null;
 };
 
 function normaliseTitle(input: string | null | undefined, kind: TrendKind): string | null {
@@ -596,6 +605,242 @@ async function handleTwitter(
 }
 
 // =====================================================================
+// Instagram handler — Apify apify/instagram-hashtag-scraper
+//
+// Per-brand: the request body must include accountId. We read the
+// brand's trend_hashtags column (set in BrandKitView) and scrape recent
+// top posts for each hashtag, tagging the resulting trend_signals rows
+// with the same account_id. RLS on trend_signals already opens read
+// access to that account's members + agency staff.
+//
+// Authz: the API surface still requires agency staff (caller-side
+// is_agency check above). The agency user picks which brand to fetch
+// for; brand owners don't trigger this directly in v1.
+// =====================================================================
+
+type ApifyInstagramPost = {
+  id?: string;
+  shortCode?: string;
+  type?: string;
+  caption?: string;
+  url?: string;
+  displayUrl?: string;
+  likesCount?: number;
+  commentsCount?: number;
+  videoViewCount?: number;
+  timestamp?: string;
+  ownerUsername?: string;
+  hashtags?: string[];
+  // Some scrapers expose the source hashtag the post matched against.
+  // We tolerate either spelling.
+  hashtag?: string;
+  inputHashtag?: string;
+  searchHashtag?: string;
+  [key: string]: unknown;
+};
+
+type InstagramFetchSummary = {
+  hashtag: string;
+  fetched: number;
+  written: number;
+  errors: string[];
+};
+
+function captionSnippet(caption: string | undefined | null, max = 140): string | null {
+  if (!caption) return null;
+  const oneLine = caption.replace(/\s+/g, " ").trim();
+  if (!oneLine) return null;
+  if (oneLine.length <= max) return oneLine;
+  return oneLine.slice(0, max - 1) + "…";
+}
+
+function parseInstagramPost(
+  post: ApifyInstagramPost,
+  hashtag: string,
+  accountId: string,
+  fallbackRank: number,
+): TrendInsertRow | null {
+  const url = post.url ?? (post.shortCode ? `https://www.instagram.com/p/${post.shortCode}/` : null);
+  if (!url && !post.id) return null; // Need at least one stable identifier.
+
+  // Title preference: caption snippet → username post → fallback.
+  // We keep the source hashtag in subtitle so the agency can tell which
+  // of the brand's tracked hashtags surfaced this post.
+  const username = post.ownerUsername ? `@${post.ownerUsername}` : "anonymous";
+  const snippet = captionSnippet(post.caption);
+  const title = snippet || `${username} post`;
+
+  const likes =
+    typeof post.likesCount === "number"
+      ? post.likesCount
+      : typeof post.videoViewCount === "number"
+      ? post.videoViewCount
+      : null;
+
+  const subtitleParts = [
+    username,
+    `#${hashtag}`,
+    likes != null ? `${likes.toLocaleString()} ${post.videoViewCount ? "views" : "likes"}` : null,
+  ].filter(Boolean);
+
+  return {
+    platform: "instagram",
+    kind: "post",
+    region: "global", // IG posts aren't region-scoped per row
+    title: title.slice(0, 280),
+    subtitle: subtitleParts.join(" · "),
+    url,
+    thumbnail_url: post.displayUrl ?? null,
+    metric_value: likes,
+    metric_label: likes != null
+      ? (post.videoViewCount ? "views" : "likes")
+      : null,
+    rank: fallbackRank,
+    trend_window: "now",
+    raw_payload: post,
+  };
+}
+
+async function handleInstagram(
+  body: FetchTrendsRequest,
+  serviceClient: SupabaseClient,
+): Promise<{ status: number; payload: unknown }> {
+  if (!body.accountId) {
+    return {
+      status: 400,
+      payload: { error: "accountId is required for source=instagram" },
+    };
+  }
+
+  // Read the brand's tracked hashtags.
+  const { data: kit, error: kitErr } = await serviceClient
+    .from("brand_kits")
+    .select("trend_hashtags, account_id")
+    .eq("account_id", body.accountId)
+    .maybeSingle();
+  if (kitErr) {
+    return { status: 500, payload: { error: kitErr.message } };
+  }
+  if (!kit) {
+    return {
+      status: 404,
+      payload: { error: "Brand kit not found for that accountId" },
+    };
+  }
+  const rawHashtags = (kit.trend_hashtags as string[] | null) ?? [];
+  const hashtags = rawHashtags
+    .map((h) => String(h).trim().replace(/^#/, "").toLowerCase())
+    .filter((h) => h.length > 0 && /^[a-z0-9_]+$/i.test(h));
+  if (hashtags.length === 0) {
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        source: "instagram",
+        accountId: body.accountId,
+        written: 0,
+        summaries: [],
+        note:
+          "This brand has no trend_hashtags configured yet. Add some in Brand Intelligence → Trend hashtags before fetching.",
+      },
+    };
+  }
+
+  // Apify Instagram Hashtag Scraper. Single multi-hashtag call where
+  // possible — many actors accept a `hashtags` array directly. We use
+  // the canonical `apify/instagram-hashtag-scraper` slug; if your account
+  // uses a different fork, the actor identifier in the URL is the only
+  // line that needs swapping.
+  const apifyUrl =
+    `https://api.apify.com/v2/acts/apify~instagram-hashtag-scraper` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(apifyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hashtags,
+        resultsLimit: 12, // per hashtag
+        resultsType: "posts",
+      }),
+    });
+  } catch (ex) {
+    return {
+      status: 502,
+      payload: { error: `Apify request failed: ${(ex as Error).message}` },
+    };
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return {
+      status: 502,
+      payload: { error: `Apify ${res.status}: ${text.slice(0, 300)}` },
+    };
+  }
+
+  const items = (await res.json().catch(() => [])) as ApifyInstagramPost[];
+
+  // Group by hashtag (best-effort: some scrapers tag posts with the
+  // source hashtag, others don't and we have to match against the
+  // post's `hashtags` array).
+  const byHashtag = new Map<string, ApifyInstagramPost[]>();
+  for (const tag of hashtags) byHashtag.set(tag, []);
+  for (const post of items) {
+    const explicit = post.hashtag ?? post.inputHashtag ?? post.searchHashtag;
+    let tag: string | null = null;
+    if (typeof explicit === "string") tag = explicit.replace(/^#/, "").toLowerCase();
+    if (!tag && Array.isArray(post.hashtags)) {
+      tag = post.hashtags
+        .map((h) => String(h).replace(/^#/, "").toLowerCase())
+        .find((h) => hashtags.includes(h)) ?? null;
+    }
+    // Fallback: if we can't deduce, attach to the first hashtag the
+    // brand listed so the row isn't lost. raw_payload preserves the
+    // truth either way.
+    const final = tag && hashtags.includes(tag) ? tag : hashtags[0];
+    byHashtag.get(final)!.push(post);
+  }
+
+  const summaries: InstagramFetchSummary[] = [];
+  for (const tag of hashtags) {
+    const list = byHashtag.get(tag) ?? [];
+    const summary: InstagramFetchSummary = {
+      hashtag: tag,
+      fetched: list.length,
+      written: 0,
+      errors: [],
+    };
+    const inserts: TrendInsertRow[] = [];
+    list.forEach((post, i) => {
+      const row = parseInstagramPost(post, tag, body.accountId!, i + 1);
+      if (row) inserts.push({ ...row, account_id: body.accountId });
+    });
+    if (inserts.length > 0) {
+      const { error } = await upsertTrends(serviceClient, inserts);
+      if (error) summary.errors.push(`write: ${error.message}`);
+      else summary.written = inserts.length;
+    }
+    summaries.push(summary);
+  }
+
+  const totalWritten = summaries.reduce((acc, s) => acc + s.written, 0);
+  return {
+    status: 200,
+    payload: {
+      ok: true,
+      source: "instagram",
+      accountId: body.accountId,
+      hashtags,
+      written: totalWritten,
+      summaries,
+    },
+  };
+}
+
+// =====================================================================
 // Handler
 // =====================================================================
 
@@ -709,6 +954,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res
         .status(500)
         .json({ error: `Twitter handler crashed: ${(ex as Error).message}` });
+    }
+  }
+
+  if (body?.source === "instagram") {
+    if (!APIFY_API_TOKEN) {
+      return res.status(500).json({
+        error:
+          "APIFY_API_TOKEN not configured. Add it under Vercel Project Settings → Environment Variables.",
+      });
+    }
+    try {
+      const result = await handleInstagram(body, serviceClient);
+      return res.status(result.status).json(result.payload);
+    } catch (ex) {
+      return res
+        .status(500)
+        .json({ error: `Instagram handler crashed: ${(ex as Error).message}` });
     }
   }
 

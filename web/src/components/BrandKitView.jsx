@@ -1489,6 +1489,57 @@ const VoiceCard = ({ kit, saveField }) => {
   );
 };
 
+// TrendHashtagsCard — the brand declares which IG hashtags to track.
+// Read by /api/fetch-trends source=instagram to scope each scrape.
+// Storage: brand_kits.trend_hashtags (text[]).
+//
+// Inputs are normalised at save time via the saveField → updateBrandKit
+// path: we strip leading # and lowercase. The InlineList component shows
+// one entry per line; the user types `#FoodieIndia` or `foodieindia` and
+// it lands as `foodieindia` on disk.
+const TrendHashtagsCard = ({ kit, saveField }) => {
+  const tags = Array.isArray(kit?.trendHashtags) ? kit.trendHashtags : [];
+
+  // Normalise on save: strip #, lowercase, dedupe, drop anything with
+  // whitespace or non-alphanumeric chars (Instagram won't return results
+  // for those anyway). Limit to 10 — we rate-limit the IG scrape per call.
+  const onSave = async (_field, raw) => {
+    const arr = Array.isArray(raw) ? raw : [];
+    const cleaned = Array.from(
+      new Set(
+        arr
+          .map((s) => String(s).trim().replace(/^#/, '').toLowerCase())
+          .filter((s) => s.length > 0 && /^[a-z0-9_]+$/.test(s))
+      )
+    ).slice(0, 10);
+    return saveField('trend_hashtags', cleaned);
+  };
+
+  return (
+    <div className="card" style={{ padding: 24 }}>
+      <div className="card-title" style={{ fontSize: 14, marginBottom: 6 }}>What to watch</div>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55, margin: '0 0 16px' }}>
+        Hashtags this brand cares about on Instagram. Trends Radar will pull recent
+        top posts for each one and surface them on the brand's IG tab. Lowercase, no
+        leading <code>#</code>. Up to 10.
+      </p>
+      {tags.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+          {tags.map((t) => (
+            <Chip key={t}>#{t}</Chip>
+          ))}
+        </div>
+      )}
+      <InlineList
+        field="trend_hashtags"
+        value={tags}
+        onSave={onSave}
+        hideDisplay
+      />
+    </div>
+  );
+};
+
 // TypographyCard — live type samples in the brand's actual fonts.
 const TypographyCard = ({ kit }) => {
   const stacks = kit.fontStacks || {};
@@ -1843,6 +1894,13 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
           <VoiceCard kit={kit} saveField={saveField} />
         </>
       ) : null}
+
+      {/* Trend Hashtags — feeds the Trends Radar Instagram source for this
+          brand. Always renders so the agency can configure it before any
+          fetch, even on a brand with an empty kit. */}
+      <SectionHead title="Trend hashtags" sub="powers Trends Radar · Instagram"/>
+      <TrendHashtagsCard kit={kit} saveField={saveField} />
+
 
       {/* 7. HOW THEY SHOW UP — search/OG/Twitter previews. Online presence
           itself is already rendered up top; this section keeps the

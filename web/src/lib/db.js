@@ -912,6 +912,7 @@ function mapBrandKitRow(row) {
     palette: Array.isArray(row.palette) ? row.palette : [],
     fonts: Array.isArray(row.fonts) ? row.fonts : [],
     voiceTags: Array.isArray(row.voice_tags) ? row.voice_tags : [],
+    trendHashtags: Array.isArray(row.trend_hashtags) ? row.trend_hashtags : [],
     dos: Array.isArray(row.dos) ? row.dos : [],
     donts: Array.isArray(row.donts) ? row.donts : [],
     photography: Array.isArray(row.photography) ? row.photography : [],
@@ -1922,7 +1923,7 @@ function mapTrendSignalRow(row) {
 
 // Read the current trend pool. RLS is agency-only on this table, so a
 // non-agency caller will just get an empty array.
-export async function loadTrendSignals({ platform, region, kind, limit = 200 } = {}) {
+export async function loadTrendSignals({ platform, region, kind, accountId, limit = 200 } = {}) {
   let q = supabase
     .from('trend_signals')
     .select('*')
@@ -1933,6 +1934,12 @@ export async function loadTrendSignals({ platform, region, kind, limit = 200 } =
   if (platform) q = q.eq('platform', platform);
   if (region)   q = q.eq('region', region);
   if (kind)     q = q.eq('kind', kind);
+  // Per-brand sources (Instagram) write rows with account_id set; global
+  // sources (TikTok / Twitter) leave it null. We always filter explicitly
+  // so an "agency in All-clients" view doesn't accidentally bleed every
+  // brand's Instagram trends together.
+  if (accountId === null)             q = q.is('account_id', null);
+  else if (accountId !== undefined)   q = q.eq('account_id', accountId);
   const { data, error } = await q;
   if (error) {
     console.warn('loadTrendSignals failed', error);
@@ -1945,11 +1952,12 @@ export async function loadTrendSignals({ platform, region, kind, limit = 200 } =
 // Agency-only on the server — non-agency callers get a 403 even if they
 // bypass UI gating. Lives at /api/fetch-trends in the same Vercel deploy
 // as the SPA, so it's a relative URL and CORS isn't a concern.
-export async function refreshTrends({ source, regions, window: trendWindow } = {}) {
+export async function refreshTrends({ source, regions, window: trendWindow, accountId } = {}) {
   if (!source) throw new Error('refreshTrends: source is required');
   const body = { source };
   if (regions && regions.length > 0) body.regions = regions;
   if (trendWindow) body.window = trendWindow;
+  if (accountId)   body.accountId = accountId;
 
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;

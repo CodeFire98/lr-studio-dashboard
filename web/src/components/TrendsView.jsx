@@ -25,9 +25,14 @@ const DEFAULT_REGIONS = Object.keys(REGION_LABELS);
 const PLATFORMS = [
   { key: 'tiktok',    label: 'TikTok',    available: true,  icon: 'sparkles' },
   { key: 'twitter',   label: 'X / Twitter', available: true, icon: 'send' },
-  { key: 'instagram', label: 'Instagram', available: false, icon: 'image' },
+  { key: 'instagram', label: 'Instagram', available: true,  icon: 'image' },
   { key: 'linkedin',  label: 'LinkedIn',  available: false, icon: 'team' },
 ];
+
+// Platforms that scrape per-brand (require an accountId in the request).
+// The TrendsView shows a brand selector when one of these is active and
+// scopes both the read and the refresh to the chosen brand.
+const PER_BRAND_PLATFORMS = new Set(['instagram']);
 
 const KIND_LABEL = {
   hashtag: 'Hashtags',
@@ -112,15 +117,39 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
   );
 }
 
-function EmptyState({ onRefresh, refreshing, hasError }) {
+function EmptyState({ onRefresh, refreshing, hasError, platform, isPerBrand, hasBrand }) {
+  const headline = (() => {
+    if (platform === 'tiktok')    return 'Pull the latest from TikTok Creative Center';
+    if (platform === 'twitter')   return "Pull what's trending on X right now";
+    if (platform === 'instagram') return 'Pull recent posts for this brand’s tracked hashtags';
+    return 'Fetch the latest trends';
+  })();
+  const body = (() => {
+    if (platform === 'tiktok')    return "We'll fetch trending hashtags and sounds for the regions you've selected. First fetch takes ~30s per region.";
+    if (platform === 'twitter')   return 'Real-time trending topics + hashtags by region. Returns in a few seconds.';
+    if (platform === 'instagram') return 'For each hashtag in this brand’s Brand Intelligence → Trend hashtags, we pull the top recent posts so the agency can see what’s landing in their space.';
+    return '';
+  })();
+
+  // For per-brand sources we can't fetch without a brand picked / configured.
+  if (isPerBrand && !hasBrand) {
+    return (
+      <div className="trends-empty">
+        <div className="trends-empty-eyebrow">No brand selected</div>
+        <h3 className="trends-empty-title">Pick a brand to see Instagram trends</h3>
+        <p className="trends-empty-body">
+          Instagram trends are scoped to each brand's tracked hashtags. Pick a brand
+          above, then add hashtags to track in Brand Intelligence → Trend hashtags.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="trends-empty">
       <div className="trends-empty-eyebrow">No trends captured yet</div>
-      <h3 className="trends-empty-title">Pull the latest from TikTok Creative Center</h3>
-      <p className="trends-empty-body">
-        We'll fetch trending hashtags and sounds for the regions you've selected.
-        First fetch takes ~30s per region.
-      </p>
+      <h3 className="trends-empty-title">{headline}</h3>
+      <p className="trends-empty-body">{body}</p>
       <button
         className="trends-refresh-btn primary"
         onClick={onRefresh}
@@ -148,7 +177,10 @@ const TrendsView = ({
 }) => {
   const [activePlatform, setActivePlatform] = useState('tiktok');
   const [activeRegion, setActiveRegion] = useState('US');
-  const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound' | 'topic'
+  const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound' | 'topic' | 'post'
+  // Active brand for per-brand platforms (currently Instagram). Null until
+  // the user picks one — without it we can't read or write IG signals.
+  const [activeAccountId, setActiveAccountId] = useState(defaultAccountId || (brandAccounts[0]?.id ?? null));
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -158,15 +190,39 @@ const TrendsView = ({
   const [turnTrend, setTurnTrend] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
 
+  // Keep activeAccountId reasonable: if the agency switches the active
+  // admin brand from the sidebar, follow them; if no brands exist, null.
+  useEffect(() => {
+    if (defaultAccountId) setActiveAccountId(defaultAccountId);
+    else if (brandAccounts.length > 0) setActiveAccountId((prev) => prev || brandAccounts[0].id);
+  }, [defaultAccountId, brandAccounts]);
+
+  const isPerBrand = PER_BRAND_PLATFORMS.has(activePlatform);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    loadTrendSignals({ platform: activePlatform, region: activeRegion })
+    // For per-brand platforms (IG), filter rows to the picked account so
+    // we never mix Brand A's IG trends into Brand B's view.
+    // For global platforms, pass account_id IS NULL so we never accidentally
+    // pull a brand-scoped row alongside the global ones.
+    const args = {
+      platform: activePlatform,
+      accountId: isPerBrand ? activeAccountId : null,
+    };
+    if (!isPerBrand) args.region = activeRegion;
+    if (isPerBrand && !activeAccountId) {
+      // Per-brand mode but no brand picked yet — nothing to load.
+      setTrends([]);
+      setLoading(false);
+      return () => {};
+    }
+    loadTrendSignals(args)
       .then((rows) => { if (!cancelled) setTrends(rows); })
       .catch((e) => { if (!cancelled) console.warn('loadTrendSignals failed', e); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activePlatform, activeRegion, reloadKey]);
+  }, [activePlatform, activeRegion, activeAccountId, isPerBrand, reloadKey]);
 
   const visibleTrends = useMemo(() => {
     if (activeKind === 'all') return trends;
@@ -200,15 +256,22 @@ const TrendsView = ({
   }, [trends]);
 
   const onRefresh = async () => {
+    if (isPerBrand && !activeAccountId) {
+      setRefreshError('Pick a brand first.');
+      return;
+    }
     setRefreshing(true);
     setRefreshError(null);
     setRefreshSummary(null);
     try {
-      const result = await refreshTrends({
-        source: activePlatform,
-        regions: DEFAULT_REGIONS,
-        window: '7d',
-      });
+      const args = { source: activePlatform };
+      if (isPerBrand) {
+        args.accountId = activeAccountId;
+      } else {
+        args.regions = DEFAULT_REGIONS;
+        args.window = '7d';
+      }
+      const result = await refreshTrends(args);
       setRefreshSummary(result);
       setReloadKey((k) => k + 1);
     } catch (ex) {
@@ -266,19 +329,39 @@ const TrendsView = ({
         </nav>
 
         <div className="trends-filter-row">
-          <div className="trends-filter">
-            <label>Region</label>
-            <select
-              value={activeRegion}
-              onChange={(e) => setActiveRegion(e.target.value)}
-            >
-              {DEFAULT_REGIONS.map((code) => (
-                <option key={code} value={code}>
-                  {REGION_LABELS[code] || code} · {code}
-                </option>
-              ))}
-            </select>
-          </div>
+          {isPerBrand ? (
+            // Per-brand sources show a brand selector instead of a region
+            // dropdown; trends are tied to a single brand's tracked
+            // hashtags rather than to a country.
+            <div className="trends-filter">
+              <label>Brand</label>
+              <select
+                value={activeAccountId || ''}
+                onChange={(e) => setActiveAccountId(e.target.value || null)}
+              >
+                {brandAccounts.length === 0 && (
+                  <option value="">No brands available</option>
+                )}
+                {brandAccounts.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="trends-filter">
+              <label>Region</label>
+              <select
+                value={activeRegion}
+                onChange={(e) => setActiveRegion(e.target.value)}
+              >
+                {DEFAULT_REGIONS.map((code) => (
+                  <option key={code} value={code}>
+                    {REGION_LABELS[code] || code} · {code}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="trends-filter">
             <label>Type</label>
             <div className="trends-kind-pills">
@@ -297,7 +380,9 @@ const TrendsView = ({
 
         {refreshSummary && (
           <div className="trends-flash">
-            Wrote {refreshSummary.written ?? 0} signals across {refreshSummary.regions?.length ?? 0} region(s).
+            {refreshSummary.source === 'instagram'
+              ? `Wrote ${refreshSummary.written ?? 0} posts across ${refreshSummary.hashtags?.length ?? 0} hashtag(s).`
+              : `Wrote ${refreshSummary.written ?? 0} signals across ${refreshSummary.regions?.length ?? 0} region(s).`}
           </div>
         )}
         {refreshError && (
@@ -315,6 +400,9 @@ const TrendsView = ({
             onRefresh={onRefresh}
             refreshing={refreshing}
             hasError={!!refreshError}
+            platform={activePlatform}
+            isPerBrand={isPerBrand}
+            hasBrand={!!activeAccountId}
           />
         ) : (
           <>
