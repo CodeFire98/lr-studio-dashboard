@@ -1074,15 +1074,23 @@ type InstagramRegionSummary = {
   errors: string[];
 };
 
-// Single Apify call: feed N usernames, get back posts across all of them.
-// apify/instagram-profile-scraper accepts a `usernames` array natively
-// and returns posts with all the engagement fields we need.
-async function callApifyInstagramProfiles(args: {
+// Single Apify call: feed N profile URLs, get back POSTS (not account
+// metadata). The general-purpose apify/instagram-scraper returns post
+// objects with caption, likes, displayUrl, etc. when given directUrls
+// pointing at profiles + resultsType="posts".
+//
+// We previously used apify/instagram-profile-scraper with `usernames`
+// — but that actor returns account-level records (bio, follower count,
+// user ID) not posts. Every "post" came back as a single account
+// record per username, parsed as a "post" with no caption + no
+// shortcode + no likesCount, surfacing as "@handle · <last-6-of-user-id>".
+async function callApifyInstagramPosts(args: {
   handles: string[];
   resultsLimit: number;
 }): Promise<{ items: ApifyInstagramPost[]; error?: string }> {
+  const directUrls = args.handles.map((h) => `https://www.instagram.com/${h}/`);
   const url =
-    `https://api.apify.com/v2/acts/apify~instagram-profile-scraper` +
+    `https://api.apify.com/v2/acts/apify~instagram-scraper` +
     `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
   let res: Response;
   try {
@@ -1090,9 +1098,13 @@ async function callApifyInstagramProfiles(args: {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        usernames: args.handles,
-        resultsLimit: args.resultsLimit,
+        directUrls,
         resultsType: "posts",
+        resultsLimit: args.resultsLimit,
+        // Trim the response — these knobs reduce per-post payload and
+        // stay well under Vercel's response size limit.
+        addParentData: false,
+        searchType: "user",
       }),
     });
   } catch (ex) {
@@ -1148,7 +1160,7 @@ async function handleInstagramRegion(
     }
 
     const RESULTS_PER_HANDLE = 4;
-    const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: RESULTS_PER_HANDLE });
+    const { items, error } = await callApifyInstagramPosts({ handles, resultsLimit: RESULTS_PER_HANDLE });
     if (error) summary.errors.push(error);
     summary.fetched = items.length;
 
@@ -1272,7 +1284,7 @@ async function handleInstagramCompetitors(
   };
 
   const RESULTS_PER_HANDLE = 6;
-  const { items, error } = await callApifyInstagramProfiles({ handles, resultsLimit: RESULTS_PER_HANDLE });
+  const { items, error } = await callApifyInstagramPosts({ handles, resultsLimit: RESULTS_PER_HANDLE });
   if (error) summary.errors.push(error);
   summary.fetched = items.length;
 
