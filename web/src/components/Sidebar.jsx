@@ -15,14 +15,20 @@ import { BrandPicker } from './BrandPicker.jsx';
 
 // -------- Nav configurations -------------------------------------------
 
-// Brand-owner / agency-in-a-brand nav. Same items either way; the only
-// differences are "Request" hides for agency users, and agency users see
-// an extra "L+R Team" entry below "Brand team" so the two team surfaces
-// aren't confused with each other.
+// Brand-owner / agency-in-a-brand nav. Differences:
+//   - "Request" hides for agency users
+//   - "Tasks" is agency-only — the brand-side workflow doesn't currently use
+//     the briefs/tasks surface, so we hide it from brand owners' sidebar.
+//     The route still resolves if anyone deep-links to it; this is purely
+//     a sidebar-visibility change. (Deleting the view is deferred.)
+//   - Agency users see "Trends Radar" under Library and an "L+R Team" entry
+//     below "Brand team" so the two team surfaces aren't confused.
 const buildBrandNav = ({ taskCount, calendarUnreadCount, isAgency }) => {
   const primary = [
     { key: "calendar", label: "Social Calendar", icon: "calendar", badge: calendarUnreadCount || undefined },
-    { key: "tasks", label: "Tasks", icon: "folder", badge: taskCount || undefined },
+    ...(isAgency
+      ? [{ key: "tasks", label: "Tasks", icon: "folder", badge: taskCount || undefined }]
+      : []),
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
   ];
