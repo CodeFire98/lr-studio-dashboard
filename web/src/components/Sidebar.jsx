@@ -26,6 +26,12 @@ const buildBrandNav = ({ taskCount, calendarUnreadCount, isAgency }) => {
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
   ];
+  if (isAgency) {
+    // Trends Radar is agency-only and sits directly under Library in the
+    // primary nav — the agency uses it daily as part of their content
+    // workflow, alongside Calendar / Tasks / Brand / Library.
+    primary.push({ key: "trends", label: "Trends Radar", icon: "sparkles" });
+  }
   if (!isAgency) {
     primary.push({ key: "home", label: "Request", icon: "send" });
   }
@@ -34,10 +40,6 @@ const buildBrandNav = ({ taskCount, calendarUnreadCount, isAgency }) => {
     { key: "team", label: "Brand team", icon: "team" },
   ];
   if (isAgency) {
-    // Trends Radar is agency-only and surfaces the latest social trends across
-    // every brand's category. Lives in the secondary block above L+R Team so
-    // the team management entry stays pinned at the bottom.
-    secondary.unshift({ key: "trends", label: "Trends Radar", icon: "sparkles" });
     secondary.push({ key: "members", label: "L+R Team", icon: "team" });
   }
   return { primary, secondary };
@@ -48,12 +50,12 @@ const buildAllClientsNav = (taskCount) => ({
   primary: [
     { key: "home", label: "Inbox", icon: "home" },
     { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
-  ],
-  // Trends Radar is also useful from All-clients mode (cross-brand insight),
-  // so it shows up in both contexts via the secondary block.
-  secondary: [
+    // Trends Radar is also useful from All-clients mode (cross-brand
+    // insight), so it shows up in both contexts. Primary block matches
+    // the placement when an agency user is inside a brand.
     { key: "trends", label: "Trends Radar", icon: "sparkles" },
   ],
+  secondary: [],
 });
 
 const GUEST_NAV = [
