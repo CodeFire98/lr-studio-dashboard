@@ -9,6 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { loadTrendSignals, refreshTrends } from '../lib/db.js';
+import { TurnIntoPostPlanModal } from './TurnIntoPostPlanModal.jsx';
 
 // Country code → display label. Easy to extend; the same codes drive the
 // edge function's region whitelist.
@@ -23,10 +24,16 @@ const DEFAULT_REGIONS = Object.keys(REGION_LABELS);
 
 const PLATFORMS = [
   { key: 'tiktok',    label: 'TikTok',    available: true,  icon: 'sparkles' },
-  { key: 'twitter',   label: 'X / Twitter', available: false, icon: 'send' },
-  { key: 'instagram', label: 'Instagram', available: false, icon: 'image' },
+  { key: 'twitter',   label: 'X / Twitter', available: true, icon: 'send' },
+  { key: 'instagram', label: 'Instagram', available: true,  icon: 'image' },
   { key: 'linkedin',  label: 'LinkedIn',  available: false, icon: 'team' },
 ];
+
+// Platforms that scrape per-brand (require an accountId in the request).
+// Empty for now — Instagram pivoted back to global on 2026-05-02 to match
+// TikTok / Twitter behaviour. Kept as a Set so adding a per-brand source
+// later (e.g. competitor monitoring in Phase 8) is a one-line change.
+const PER_BRAND_PLATFORMS = new Set();
 
 const KIND_LABEL = {
   hashtag: 'Hashtags',
@@ -34,6 +41,16 @@ const KIND_LABEL = {
   topic:   'Topics',
   post:    'Posts',
   creator: 'Creators',
+};
+
+// Per-platform kind filter options. The `all` pseudo-kind is always first.
+// Keep this small and curated so the UI doesn't show empty filter chips for
+// kinds the platform never produces (e.g. "Sounds" on Twitter).
+const PLATFORM_KINDS = {
+  tiktok:    ['all', 'hashtag', 'sound'],
+  twitter:   ['all', 'hashtag', 'topic'],
+  instagram: ['all', 'post'],
+  linkedin:  ['all', 'topic'],
 };
 
 function formatRelative(iso) {
@@ -59,42 +76,75 @@ function formatMetric(value, label) {
   return label ? `${formatted} ${label}` : formatted;
 }
 
-function TrendCard({ trend }) {
+function TrendCard({ trend, onTurnIntoPostPlan }) {
   const isHashtag = trend.kind === 'hashtag';
   const display = isHashtag ? `#${trend.title}` : trend.title;
   const metric = formatMetric(trend.metricValue, trend.metricLabel);
   return (
-    <a
-      className="trend-card"
-      href={trend.url || undefined}
-      target={trend.url ? '_blank' : undefined}
-      rel={trend.url ? 'noreferrer noopener' : undefined}
-      aria-disabled={!trend.url}
-      onClick={(e) => { if (!trend.url) e.preventDefault(); }}
-    >
-      <div className="trend-card-rank">{trend.rank ? `#${trend.rank}` : ''}</div>
-      <div className="trend-card-body">
-        <div className="trend-card-title">{display}</div>
-        {trend.subtitle && (
-          <div className="trend-card-sub">{trend.subtitle}</div>
-        )}
-        {metric && (
-          <div className="trend-card-metric">{metric}</div>
-        )}
-      </div>
-    </a>
+    <div className="trend-card-wrap">
+      <a
+        className="trend-card"
+        href={trend.url || undefined}
+        target={trend.url ? '_blank' : undefined}
+        rel={trend.url ? 'noreferrer noopener' : undefined}
+        aria-disabled={!trend.url}
+        onClick={(e) => { if (!trend.url) e.preventDefault(); }}
+      >
+        <div className="trend-card-rank">{trend.rank ? `#${trend.rank}` : ''}</div>
+        <div className="trend-card-body">
+          <div className="trend-card-title">{display}</div>
+          {trend.subtitle && (
+            <div className="trend-card-sub">{trend.subtitle}</div>
+          )}
+          {metric && (
+            <div className="trend-card-metric">{metric}</div>
+          )}
+        </div>
+      </a>
+      <button
+        className="trend-card-action"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onTurnIntoPostPlan?.(trend);
+        }}
+        title="Turn into post plan"
+        aria-label={`Turn ${display} into a post plan`}
+      >
+        <Icon name="plus" size={14} />
+        <span>Post plan</span>
+      </button>
+    </div>
   );
 }
 
-function EmptyState({ onRefresh, refreshing, hasError }) {
+function EmptyState({ onRefresh, refreshing, hasError, platform, igMode }) {
+  const headline = (() => {
+    if (platform === 'tiktok')    return 'Pull the latest from TikTok';
+    if (platform === 'twitter')   return "Pull what's trending on X right now";
+    if (platform === 'instagram') {
+      return igMode === 'competitors'
+        ? "Pull this brand's competitors' latest posts"
+        : "Pull what top creators are posting in this region";
+    }
+    return 'Fetch the latest trends';
+  })();
+  const body = (() => {
+    if (platform === 'tiktok')    return "We'll fetch trending hashtags and sounds for each region from TikTok Creative Center. Returns in ~10s per region.";
+    if (platform === 'twitter')   return 'Real-time trending topics + hashtags by region. Returns in a few seconds.';
+    if (platform === 'instagram') {
+      return igMode === 'competitors'
+        ? "We'll scrape recent posts from this brand's competitor accounts (configured in Brand Intelligence → Competitors), engagement-sorted."
+        : "We'll scrape recent posts from a curated set of high-engagement creators per region, engagement-sorted. Better signal than discovery hashtags because every account is hand-picked.";
+    }
+    return '';
+  })();
+
   return (
     <div className="trends-empty">
       <div className="trends-empty-eyebrow">No trends captured yet</div>
-      <h3 className="trends-empty-title">Pull the latest from TikTok Creative Center</h3>
-      <p className="trends-empty-body">
-        We'll fetch trending hashtags and sounds for the regions you've selected.
-        First fetch takes ~30s per region.
-      </p>
+      <h3 className="trends-empty-title">{headline}</h3>
+      <p className="trends-empty-body">{body}</p>
       <button
         className="trends-refresh-btn primary"
         onClick={onRefresh}
@@ -112,26 +162,68 @@ function EmptyState({ onRefresh, refreshing, hasError }) {
   );
 }
 
-const TrendsView = () => {
+const TrendsView = ({
+  // From App.jsx — used by the Turn-into-post-plan modal so the user can
+  // pick which brand the new post plan should land on.
+  brandAccounts = [],
+  defaultAccountId = null,
+  userId = null,
+  navigateToPlan,        // (planId, brandSlug) => void
+}) => {
   const [activePlatform, setActivePlatform] = useState('tiktok');
   const [activeRegion, setActiveRegion] = useState('US');
-  const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound'
+  const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound' | 'topic' | 'post'
+  // For Instagram tab only: choose between regional curated creators or
+  // the active brand's competitors. Other platforms ignore this state.
+  const [igMode, setIgMode] = useState('region'); // 'region' | 'competitors'
+  // Active brand for IG competitors mode. Null until the user picks one
+  // — without it we can't read or write per-brand IG signals.
+  const [activeAccountId, setActiveAccountId] = useState(defaultAccountId || (brandAccounts[0]?.id ?? null));
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshSummary, setRefreshSummary] = useState(null);
   const [refreshError, setRefreshError] = useState(null);
+  // Phase 5: Turn-into-post-plan modal state.
+  const [turnTrend, setTurnTrend] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+
+  // Keep activeAccountId reasonable: if the agency switches the active
+  // admin brand from the sidebar, follow them; if no brands exist, null.
+  useEffect(() => {
+    if (defaultAccountId) setActiveAccountId(defaultAccountId);
+    else if (brandAccounts.length > 0) setActiveAccountId((prev) => prev || brandAccounts[0].id);
+  }, [defaultAccountId, brandAccounts]);
+
+  // "Per brand" is a function of (platform, mode) now: only IG in
+  // competitors mode reads/writes brand-scoped rows. Region mode for IG
+  // is global, just like TikTok / Twitter.
+  const isPerBrand = activePlatform === 'instagram' && igMode === 'competitors';
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    loadTrendSignals({ platform: activePlatform, region: activeRegion })
+    const args = {
+      platform: activePlatform,
+      accountId: isPerBrand ? activeAccountId : null,
+    };
+    if (activePlatform === 'instagram' && igMode === 'region') {
+      // IG region mode rows have region set per-row; filter by it.
+      args.region = activeRegion;
+    } else if (!isPerBrand) {
+      args.region = activeRegion;
+    }
+    if (isPerBrand && !activeAccountId) {
+      setTrends([]);
+      setLoading(false);
+      return () => {};
+    }
+    loadTrendSignals(args)
       .then((rows) => { if (!cancelled) setTrends(rows); })
       .catch((e) => { if (!cancelled) console.warn('loadTrendSignals failed', e); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activePlatform, activeRegion, reloadKey]);
+  }, [activePlatform, activeRegion, activeAccountId, isPerBrand, igMode, reloadKey]);
 
   const visibleTrends = useMemo(() => {
     if (activeKind === 'all') return trends;
@@ -165,15 +257,27 @@ const TrendsView = () => {
   }, [trends]);
 
   const onRefresh = async () => {
+    if (isPerBrand && !activeAccountId) {
+      setRefreshError('Pick a brand first.');
+      return;
+    }
     setRefreshing(true);
     setRefreshError(null);
     setRefreshSummary(null);
     try {
-      const result = await refreshTrends({
-        source: activePlatform,
-        regions: DEFAULT_REGIONS,
-        window: '7d',
-      });
+      const args = { source: activePlatform };
+      if (activePlatform === 'instagram') {
+        args.mode = igMode;
+        if (igMode === 'competitors') {
+          args.accountId = activeAccountId;
+        } else {
+          args.regions = DEFAULT_REGIONS;
+        }
+      } else {
+        args.regions = DEFAULT_REGIONS;
+        args.window = '7d';
+      }
+      const result = await refreshTrends(args);
       setRefreshSummary(result);
       setReloadKey((k) => k + 1);
     } catch (ex) {
@@ -214,7 +318,14 @@ const TrendsView = () => {
               aria-selected={activePlatform === p.key}
               disabled={!p.available}
               className={'trends-tab' + (activePlatform === p.key ? ' active' : '')}
-              onClick={() => p.available && setActivePlatform(p.key)}
+              onClick={() => {
+                if (!p.available) return;
+                setActivePlatform(p.key);
+                // Different platforms expose different kinds; reset to "all"
+                // so the user doesn't see an empty grid because the selected
+                // kind doesn't exist on the new platform.
+                setActiveKind('all');
+              }}
             >
               <Icon name={p.icon} size={14} />
               <span>{p.label}</span>
@@ -224,23 +335,64 @@ const TrendsView = () => {
         </nav>
 
         <div className="trends-filter-row">
-          <div className="trends-filter">
-            <label>Region</label>
-            <select
-              value={activeRegion}
-              onChange={(e) => setActiveRegion(e.target.value)}
-            >
-              {DEFAULT_REGIONS.map((code) => (
-                <option key={code} value={code}>
-                  {REGION_LABELS[code] || code} · {code}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Instagram-only mode toggle: pick between regional curated
+              creators and the active brand's competitor list. Renders
+              before the Region/Brand selector so the user sees the
+              choice first. */}
+          {activePlatform === 'instagram' && (
+            <div className="trends-filter">
+              <label>Mode</label>
+              <div className="trends-kind-pills">
+                {[
+                  { key: 'region',      label: 'Top in region' },
+                  { key: 'competitors', label: "Brand's competitors" },
+                ].map((m) => (
+                  <button
+                    key={m.key}
+                    className={'trends-kind-pill' + (igMode === m.key ? ' active' : '')}
+                    onClick={() => setIgMode(m.key)}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isPerBrand ? (
+            <div className="trends-filter">
+              <label>Brand</label>
+              <select
+                value={activeAccountId || ''}
+                onChange={(e) => setActiveAccountId(e.target.value || null)}
+              >
+                {brandAccounts.length === 0 && (
+                  <option value="">No brands available</option>
+                )}
+                {brandAccounts.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="trends-filter">
+              <label>Region</label>
+              <select
+                value={activeRegion}
+                onChange={(e) => setActiveRegion(e.target.value)}
+              >
+                {DEFAULT_REGIONS.map((code) => (
+                  <option key={code} value={code}>
+                    {REGION_LABELS[code] || code} · {code}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="trends-filter">
             <label>Type</label>
             <div className="trends-kind-pills">
-              {['all', 'hashtag', 'sound'].map((k) => (
+              {(PLATFORM_KINDS[activePlatform] || ['all']).map((k) => (
                 <button
                   key={k}
                   className={'trends-kind-pill' + (activeKind === k ? ' active' : '')}
@@ -253,11 +405,38 @@ const TrendsView = () => {
           </div>
         </div>
 
-        {refreshSummary && (
-          <div className="trends-flash">
-            Wrote {refreshSummary.written ?? 0} signals across {refreshSummary.regions?.length ?? 0} region(s).
-          </div>
-        )}
+        {refreshSummary && (() => {
+          // Collect every error message from per-region / per-kind summaries
+          // so the agency can see what failed on the server (Apify timed out,
+          // Firecrawl bot-walled, parse error, etc.). Without this surfacing,
+          // a totally-failed refresh just shows "Wrote 0 signals" with no
+          // hint why — which is exactly what bit us during diagnosis.
+          const perRegionErrors = (refreshSummary.summaries || [])
+            .flatMap((s) => {
+              const tag = s.region || s.hashtag || '?';
+              const errs = Array.isArray(s.errors) ? s.errors : [];
+              return errs.map((e) => `${tag}: ${e}`);
+            });
+          const totalWritten = refreshSummary.written ?? 0;
+          const isAllZero = totalWritten === 0 && perRegionErrors.length > 0;
+          return (
+            <div className={'trends-flash' + (isAllZero ? ' error' : '')}>
+              <div>
+                Wrote {totalWritten} signals across {refreshSummary.regions?.length ?? 0} region(s).
+              </div>
+              {perRegionErrors.length > 0 && (
+                <details className="trends-flash-details">
+                  <summary>{perRegionErrors.length} error{perRegionErrors.length === 1 ? '' : 's'} (click to expand)</summary>
+                  <ul>
+                    {perRegionErrors.map((msg, i) => (
+                      <li key={i}>{msg}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          );
+        })()}
         {refreshError && (
           <div className="trends-flash error">
             Refresh failed: {refreshError}
@@ -273,6 +452,8 @@ const TrendsView = () => {
             onRefresh={onRefresh}
             refreshing={refreshing}
             hasError={!!refreshError}
+            platform={activePlatform}
+            igMode={igMode}
           />
         ) : (
           <>
@@ -283,7 +464,11 @@ const TrendsView = () => {
                 </h3>
                 <div className="trends-grid">
                   {items.map((t) => (
-                    <TrendCard key={t.id} trend={t} />
+                    <TrendCard
+                      key={t.id}
+                      trend={t}
+                      onTurnIntoPostPlan={(trend) => setTurnTrend(trend)}
+                    />
                   ))}
                 </div>
               </section>
@@ -291,6 +476,25 @@ const TrendsView = () => {
           </>
         )}
       </div>
+
+      <TurnIntoPostPlanModal
+        open={!!turnTrend}
+        trend={turnTrend}
+        brandAccounts={brandAccounts}
+        defaultAccountId={defaultAccountId}
+        userId={userId}
+        onClose={() => setTurnTrend(null)}
+        onCreated={(plan) => {
+          // Land the user in the new post plan's detail view inside the
+          // brand we just scheduled it for. We can't use the parent's
+          // setRoute because Trends Radar is agency-level (no implicit
+          // brand context); navigateToPlan resolves the slug from the
+          // plan's own accountId so we land on /c/:slug/calendar/:id.
+          setTurnTrend(null);
+          const brand = brandAccounts.find((b) => b.id === plan.accountId);
+          navigateToPlan?.(plan.id, brand?.slug);
+        }}
+      />
     </div>
   );
 };

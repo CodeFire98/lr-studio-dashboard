@@ -843,7 +843,21 @@ const App = () => {
       return <AdminClientsView onOpenClient={(c) => handleSelectBrand(c.id)}/>;
     }
     if (auth?.isAgency && route.view === "trends") {
-      return <TrendsView />;
+      return (
+        <TrendsView
+          brandAccounts={brandAccounts}
+          defaultAccountId={isAllClientsMode ? null : activeAdminBrandId}
+          userId={auth?.id}
+          navigateToPlan={(planId, brandSlug) => {
+            // The plan may belong to a brand other than the agency's
+            // currently-active one (Trends Radar is agency-level + lets
+            // them pick the destination brand at create-time). So we
+            // construct the URL with the plan's actual brand slug
+            // instead of relying on setRoute's currentBrandSlug.
+            navigate(viewToPath({ view: 'plan', id: planId }, brandSlug || null));
+          }}
+        />
+      );
     }
     if (auth?.isAgency && route.view === "members") {
       return <AdminTeamView auth={auth}/>;

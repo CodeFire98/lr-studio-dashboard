@@ -19,6 +19,7 @@ import {
   removeBrandLogoVariant,
   updateBrandLogoVariant,
   triggerBrandKitEnrichment,
+  findCompetitorsForBrand,
 } from '../lib/db.js';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
@@ -1489,6 +1490,168 @@ const VoiceCard = ({ kit, saveField }) => {
   );
 };
 
+// CompetitorAccountsCard — added 2026-05-03 for Trends Radar IG mode='competitors'.
+// Each brand has a list of competitor / aspiration brands. Each entry is
+// {name, handle, url} — the agency sees the brand's name (more human than
+// "@handle"), Trends Radar uses the handle to scrape recent posts via
+// apify/instagram-profile-scraper.
+//
+// Storage: brand_kits.competitors (jsonb, migration 0033). Auto-populated
+// by enrich-brand-kit when the agency clicks "Fetch Brand" — Firecrawl
+// identifies 3-5 competitors from the brand's website + category context
+// and returns them with both name and handle.
+//
+// Edit format: one line per competitor as `Name @handle` (or just `@handle`
+// — name auto-derived from the handle if missing). The textarea editor
+// makes it easy to bulk-paste from a list.
+function parseCompetitorLines(text) {
+  // Each non-empty line is one competitor. Accepted formats:
+  //   "Glossier @glossier"
+  //   "Drunk Elephant @drunkelephant"
+  //   "@nyt.cooking"   (name auto-derived → "Nyt.Cooking" — user can rename)
+  //   "Glossier"       (no handle — dropped, since we need it for the fetch)
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const out = [];
+  for (const line of lines) {
+    const handleMatch = line.match(/@([a-z0-9._]+)/i);
+    if (!handleMatch) continue;
+    const handle = handleMatch[1].toLowerCase();
+    let name = line.replace(handleMatch[0], '').trim();
+    if (!name) {
+      // Capitalize each segment of the handle for a passable display name.
+      name = handle.split(/[._]/).map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
+    }
+    out.push({
+      name,
+      handle,
+      url: `https://www.instagram.com/${handle}/`,
+    });
+  }
+  // Dedupe by handle, cap at 12 — the IG fetch handler also caps at 12.
+  const seen = new Set();
+  const deduped = [];
+  for (const c of out) {
+    if (seen.has(c.handle)) continue;
+    seen.add(c.handle);
+    deduped.push(c);
+  }
+  return deduped.slice(0, 12);
+}
+
+function competitorsToText(competitors) {
+  if (!Array.isArray(competitors)) return '';
+  return competitors
+    .filter((c) => c && typeof c === 'object' && c.handle)
+    .map((c) => `${c.name || ''} @${c.handle}`.trim())
+    .join('\n');
+}
+
+const CompetitorAccountsCard = ({ kit, saveField }) => {
+  const competitors = Array.isArray(kit?.competitors) ? kit.competitors : [];
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(() => competitorsToText(competitors));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  // Re-seed draft whenever the kit reloads (e.g. after a Fetch Brand run).
+  useEffect(() => {
+    if (!editing) setDraft(competitorsToText(competitors));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(competitors)]);
+
+  const commit = async () => {
+    setSaving(true); setErr('');
+    try {
+      const parsed = parseCompetitorLines(draft);
+      await saveField('competitors', parsed);
+      setEditing(false);
+    } catch (e) {
+      setErr(e?.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setDraft(competitorsToText(competitors));
+    setErr('');
+    setEditing(false);
+  };
+
+  return (
+    <div className="card" style={{ padding: 24 }}>
+      <div className="card-title" style={{ fontSize: 14, marginBottom: 6 }}>Who they compete with</div>
+      <p style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55, margin: '0 0 16px' }}>
+        Brands this one competes with or looks up to. Auto-populated when you click <strong>Fetch Brand</strong> at the top
+        of this page. Trends Radar → Instagram → <strong>Brand's competitors</strong> mode pulls these accounts'
+        recent posts so the agency can see what's actually working in this brand's space.
+      </p>
+
+      {!editing && (
+        <>
+          {competitors.length > 0 ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {competitors.map((c) => (
+                <Chip key={c.handle}>{c.name || `@${c.handle}`}</Chip>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, color: 'var(--ink-4)', marginBottom: 12 }}>
+              No competitors yet. Click Fetch Brand at the top of the page to auto-populate.
+            </div>
+          )}
+          <button
+            className="btn btn-ghost"
+            style={{ fontSize: 13 }}
+            onClick={() => setEditing(true)}
+          >
+            Edit
+          </button>
+        </>
+      )}
+
+      {editing && (
+        <div>
+          <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: '0 0 8px' }}>
+            One per line, format <code>Name @handle</code>. Examples:<br/>
+            <code>Glossier @glossier</code><br/>
+            <code>NYT Cooking @nyt.cooking</code><br/>
+            <code>@drunkelephant</code> (name auto-derived)
+          </p>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            disabled={saving}
+            rows={6}
+            style={{
+              width: '100%',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 13,
+              lineHeight: 1.5,
+              padding: '10px 12px',
+              border: '1px solid var(--line)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface)',
+              color: 'var(--ink)',
+              resize: 'vertical',
+              boxSizing: 'border-box',
+            }}
+          />
+          {err && <div style={{ color: 'var(--accent-ink)', fontSize: 12, marginTop: 6 }}>{err}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button className="btn btn-primary" onClick={commit} disabled={saving} style={{ fontSize: 13 }}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button className="btn btn-ghost" onClick={cancel} disabled={saving} style={{ fontSize: 13 }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // TypographyCard — live type samples in the brand's actual fonts.
 const TypographyCard = ({ kit }) => {
   const stacks = kit.fontStacks || {};
@@ -1655,7 +1818,23 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
       if (!kit?.websiteUrl) {
         await updateBrandKit(accountId, { website_url: url });
       }
-      await triggerBrandKitEnrichment({ accountId, websiteUrl: url });
+      // Run the brand-kit enrichment AND the competitor discovery in
+      // parallel — each writes a different slice of brand_kits, so they
+      // don't conflict, and the user sees both populate together.
+      // Promise.allSettled so a competitor-finder failure (Firecrawl
+      // can't infer any) doesn't fail the whole "Fetch Brand" action.
+      const results = await Promise.allSettled([
+        triggerBrandKitEnrichment({ accountId, websiteUrl: url }),
+        findCompetitorsForBrand({ accountId, websiteUrl: url }),
+      ]);
+      const enrichRes = results[0];
+      if (enrichRes.status === 'rejected') {
+        // Brand enrichment failure is the bigger issue — surface it.
+        throw enrichRes.reason instanceof Error ? enrichRes.reason : new Error(String(enrichRes.reason));
+      }
+      // Competitor failure is silent — we just don't get auto-populated
+      // competitors. The Competitors card shows its own empty state and
+      // the agency can add them manually.
       const row = await loadBrandKit(accountId);
       setKit(row);
     } catch (e) {
@@ -1843,6 +2022,15 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
           <VoiceCard kit={kit} saveField={saveField} />
         </>
       ) : null}
+
+      {/* Competitors — feeds Trends Radar's Instagram > Competitors mode.
+          Always renders so the agency can configure it before any fetch,
+          even on a brand with an empty kit. */}
+      <SectionHead title="Competitors" sub="powers Trends Radar · Instagram"/>
+      <CompetitorAccountsCard kit={kit} saveField={saveField} />
+
+
+
 
       {/* 7. HOW THEY SHOW UP — search/OG/Twitter previews. Online presence
           itself is already rendered up top; this section keeps the

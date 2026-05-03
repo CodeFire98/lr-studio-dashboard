@@ -912,6 +912,14 @@ function mapBrandKitRow(row) {
     palette: Array.isArray(row.palette) ? row.palette : [],
     fonts: Array.isArray(row.fonts) ? row.fonts : [],
     voiceTags: Array.isArray(row.voice_tags) ? row.voice_tags : [],
+    trendHashtags: Array.isArray(row.trend_hashtags) ? row.trend_hashtags : [],
+    // New richer competitors model (migration 0033). Each entry: {name, handle, url}.
+    // Names show in the BrandKit UI; handles drive the IG fetch; url is for
+    // direct linking. Auto-populated by enrich-brand-kit's Fetch Brand action.
+    competitors: Array.isArray(row.competitors) ? row.competitors : [],
+    // Legacy single-string handles (migration 0032). Kept for one cycle so
+    // older rows don't disappear from the IG competitors fetch path.
+    competitorHandles: Array.isArray(row.competitor_handles) ? row.competitor_handles : [],
     dos: Array.isArray(row.dos) ? row.dos : [],
     donts: Array.isArray(row.donts) ? row.donts : [],
     photography: Array.isArray(row.photography) ? row.photography : [],
@@ -1123,6 +1131,41 @@ export async function triggerBrandKitEnrichment({ accountId, websiteUrl }) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body?.error || `Enrichment failed (HTTP ${res.status})`);
   return body;
+}
+
+// Find 3-6 competitor brands for the given account by scraping the
+// brand's website with Firecrawl and asking it to identify peers in
+// the category. Writes to brand_kits.competitors (jsonb). Best-effort:
+// returns { ok, written, competitors } on success or throws on hard
+// failure. The caller (BrandKit Fetch Brand action) runs this in
+// PARALLEL with triggerBrandKitEnrichment so they don't block each other.
+//
+// Lives on Vercel (web/api/find-competitors.ts) rather than as a
+// Supabase edge function because the Supabase deploy path is currently
+// blocked for our PAT — Vercel co-deploys with the SPA cleanly.
+export async function findCompetitorsForBrand({ accountId, websiteUrl } = {}) {
+  if (!accountId) throw new Error('findCompetitorsForBrand: accountId is required');
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error('findCompetitorsForBrand: not signed in');
+
+  const res = await fetch('/api/find-competitors', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      accountId,
+      ...(websiteUrl ? { websiteUrl } : {}),
+    }),
+  });
+  let payload;
+  try { payload = await res.json(); } catch { payload = null; }
+  if (!res.ok) {
+    throw new Error((payload && payload.error) || `find-competitors failed (HTTP ${res.status})`);
+  }
+  return payload;
 }
 
 // ---- Brand reference assets ---------------------------------------------
@@ -1922,7 +1965,7 @@ function mapTrendSignalRow(row) {
 
 // Read the current trend pool. RLS is agency-only on this table, so a
 // non-agency caller will just get an empty array.
-export async function loadTrendSignals({ platform, region, kind, limit = 200 } = {}) {
+export async function loadTrendSignals({ platform, region, kind, accountId, limit = 200 } = {}) {
   let q = supabase
     .from('trend_signals')
     .select('*')
@@ -1933,6 +1976,12 @@ export async function loadTrendSignals({ platform, region, kind, limit = 200 } =
   if (platform) q = q.eq('platform', platform);
   if (region)   q = q.eq('region', region);
   if (kind)     q = q.eq('kind', kind);
+  // Per-brand sources (Instagram) write rows with account_id set; global
+  // sources (TikTok / Twitter) leave it null. We always filter explicitly
+  // so an "agency in All-clients" view doesn't accidentally bleed every
+  // brand's Instagram trends together.
+  if (accountId === null)             q = q.is('account_id', null);
+  else if (accountId !== undefined)   q = q.eq('account_id', accountId);
   const { data, error } = await q;
   if (error) {
     console.warn('loadTrendSignals failed', error);
@@ -1945,11 +1994,13 @@ export async function loadTrendSignals({ platform, region, kind, limit = 200 } =
 // Agency-only on the server — non-agency callers get a 403 even if they
 // bypass UI gating. Lives at /api/fetch-trends in the same Vercel deploy
 // as the SPA, so it's a relative URL and CORS isn't a concern.
-export async function refreshTrends({ source, regions, window: trendWindow } = {}) {
+export async function refreshTrends({ source, regions, window: trendWindow, accountId, mode } = {}) {
   if (!source) throw new Error('refreshTrends: source is required');
   const body = { source };
   if (regions && regions.length > 0) body.regions = regions;
   if (trendWindow) body.window = trendWindow;
+  if (accountId)   body.accountId = accountId;
+  if (mode)        body.mode = mode;
 
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;
