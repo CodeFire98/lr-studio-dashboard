@@ -2,7 +2,7 @@
 /* Library — searchable grid of delivered creatives (real assets from DB). */
 import React, { useState, useEffect, useMemo } from 'react';
 import { Icon } from './Icon.jsx';
-import { loadLibraryAssets, assetSignedUrl } from '../lib/db.js';
+import { loadLibraryAssets, loadLibraryPostPlanFinals, assetSignedUrl } from '../lib/db.js';
 import { useLightbox } from './Lightbox.jsx';
 
 // Platform filter — we focus the AI Social Media Manager service on
@@ -51,18 +51,38 @@ const LibraryView = ({ auth, accountId }) => {
   // currently selected in the BrandPicker (or the brand owner's own brand).
   // For agency users, this means switching brands changes which creatives
   // show up here. RLS filters work alongside this for non-agency users.
+  //
+  // We pull from two sources and merge: task deliverables (assets where
+  // kind='deliverable') and post-plan finals (post_plan_attachments where
+  // kind='final'). Both count as delivered creatives in the user's mental
+  // model. Each row carries `source: 'task' | 'post_plan'` so the URL
+  // resolution downstream picks the right bucket strategy.
   useEffect(() => {
     if (auth?.requiresBrandSelection) { setAssets([]); setLoading(false); return; }
     let cancelled = false;
     setLoading(true);
-    loadLibraryAssets({ kind: 'deliverable', accountId })
-      .then((rows) => { if (!cancelled) setAssets(rows); })
+    Promise.all([
+      loadLibraryAssets({ kind: 'deliverable', accountId }),
+      loadLibraryPostPlanFinals({ accountId }),
+    ])
+      .then(([taskRows, postPlanRows]) => {
+        if (cancelled) return;
+        // Merge + sort by createdAt desc — newest at the top regardless
+        // of which source it came from.
+        const merged = [...taskRows, ...postPlanRows].sort(
+          (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')
+        );
+        setAssets(merged);
+      })
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [accountId, auth?.requiresBrandSelection]);
 
-  // Sign image URLs lazily.
+  // Sign / resolve image URLs lazily, source-aware:
+  //   - task deliverables live in the private `assets` bucket → signed URL
+  //   - post-plan finals live in the public `post-plan-attachments` bucket
+  //     and already carry a public `url` from mapPostPlanAttachmentRow
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -70,7 +90,13 @@ const LibraryView = ({ auth, accountId }) => {
       if (!needs.length) return;
       const next = {};
       for (const a of needs) {
-        try { next[a.id] = await assetSignedUrl(a.storagePath); } catch {}
+        try {
+          if (a.source === 'post_plan' && a.url) {
+            next[a.id] = a.url;
+          } else {
+            next[a.id] = await assetSignedUrl(a.storagePath);
+          }
+        } catch {}
       }
       if (!cancelled && Object.keys(next).length) setThumbs((p) => ({ ...p, ...next }));
     })();
@@ -96,7 +122,11 @@ const LibraryView = ({ auth, accountId }) => {
   const lightbox = useLightbox();
   const handleOpen = async (a) => {
     try {
-      const url = await assetSignedUrl(a.storagePath);
+      // Post-plan finals already have a public URL on the row; only task
+      // deliverables need a fresh signed URL.
+      const url = a.source === 'post_plan' && a.url
+        ? a.url
+        : await assetSignedUrl(a.storagePath);
       lightbox.open({
         src: url,
         mimeType: a.mimeType,
@@ -178,7 +208,9 @@ const LibraryView = ({ auth, accountId }) => {
               <div className="meta">
                 <div>
                   <div style={{fontWeight: 500}}>{a.filename}</div>
-                  <div className="type" style={{marginTop: 2}}>{a.taskTitle} · {formatShortDate(a.createdAt)}</div>
+                  <div className="type" style={{marginTop: 2}}>
+                    {a.source === 'post_plan' ? 'Post plan' : 'Task'} · {a.parentTitle || a.taskTitle} · {formatShortDate(a.createdAt)}
+                  </div>
                 </div>
                 <Icon name="download" size={14} style={{color: "var(--ink-4)"}}/>
               </div>
