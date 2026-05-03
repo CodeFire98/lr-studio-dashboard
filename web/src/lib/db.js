@@ -549,13 +549,65 @@ export async function loadLibraryAssets({ kind = 'deliverable', accountId = null
     const mapped = mapAssetRow(row);
     return {
       ...mapped,
+      source: 'task',
       taskId: row.task_id,
       taskTitle: row.task?.title || 'Untitled task',
+      parentTitle: row.task?.title || 'Untitled task',
+      parentId: row.task_id,
       // Platform is a free-text comma-separated field on tasks (e.g.
       // "Instagram, LinkedIn"). The Library filter normalises it client-side.
       taskPlatform: row.task?.platform || '',
       accountId: row.task?.account?.id || null,
       accountName: row.task?.account?.name || null,
+    };
+  });
+  return accountId ? rows.filter((r) => r.accountId === accountId) : rows;
+}
+
+// Library (post-plan side): every "final" attachment uploaded against a
+// post plan. These also count as delivered creatives — the brand wants
+// to see them in Library alongside task deliverables. Scoping mirrors
+// loadLibraryAssets: optional client-side filter by accountId.
+//
+// Returns the same shape as loadLibraryAssets entries with `source: 'post_plan'`
+// so LibraryView can render them in one merged grid.
+export async function loadLibraryPostPlanFinals({ accountId = null } = {}) {
+  const { data, error } = await supabase
+    .from('post_plan_attachments')
+    .select(`
+      *,
+      uploader:profiles!uploaded_by(id, display_name, initials, avatar_color, is_agency),
+      post_plan:post_plans(id, concept, platforms, account:accounts(id, name))
+    `)
+    .eq('kind', 'final')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  const rows = (data || []).map((row) => {
+    const att = mapPostPlanAttachmentRow(row);
+    const planConcept = row.post_plan?.concept?.trim() || 'Post plan';
+    // Post plans store `platforms` as a text[] array (instagram/linkedin/x);
+    // join to a comma-separated string so the existing Library platform
+    // filter (which matches free-text on tasks) works the same way.
+    const platforms = Array.isArray(row.post_plan?.platforms)
+      ? row.post_plan.platforms.join(', ')
+      : '';
+    return {
+      ...att,
+      source: 'post_plan',
+      // Match the shape consumers (LibraryView) already destructure.
+      isImage: (row.mime_type || '').startsWith('image/'),
+      filename: row.filename,
+      mimeType: row.mime_type,
+      sizeBytes: row.size_bytes,
+      storagePath: row.storage_path,
+      createdAt: row.created_at,
+      taskId: null,
+      taskTitle: planConcept,
+      parentTitle: planConcept,
+      parentId: row.post_plan_id,
+      taskPlatform: platforms,
+      accountId: row.post_plan?.account?.id || null,
+      accountName: row.post_plan?.account?.name || null,
     };
   });
   return accountId ? rows.filter((r) => r.accountId === accountId) : rows;
