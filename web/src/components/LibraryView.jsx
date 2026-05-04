@@ -110,7 +110,11 @@ const LibraryView = ({ auth, accountId }) => {
     const needle = q.trim().toLowerCase();
     return assets.filter((a) => {
       if (!platformTest(a)) return false;
-      if (window?.cutoffMs && now - new Date(a.createdAt).getTime() > window.cutoffMs) return false;
+      // Date window filter uses the parent's scheduled date (post plan) /
+      // deadline (task) so filtering is anchored to "when the work is for"
+      // rather than when the file was uploaded.
+      const dateForWindow = a.parentDate || a.createdAt;
+      if (window?.cutoffMs && Math.abs(now - new Date(dateForWindow).getTime()) > window.cutoffMs) return false;
       if (needle) {
         const hay = `${a.filename} ${a.taskTitle || ''} ${a.accountName || ''} ${a.taskPlatform || ''}`.toLowerCase();
         if (!hay.includes(needle)) return false;
@@ -118,6 +122,38 @@ const LibraryView = ({ auth, accountId }) => {
       return true;
     });
   }, [assets, platformKey, dateKey, q]);
+
+  // Group filtered deliverables by their parent (post plan or task) and
+  // sort groups by parent date descending — the user's mental model is
+  // "show me what's scheduled most recently / next" rather than a flat
+  // file collage. Within each group, items stay sorted newest-uploaded
+  // first (the existing default).
+  const groups = useMemo(() => {
+    const byParent = new Map();
+    for (const a of filtered) {
+      const key = `${a.source}:${a.parentId || a.id}`;
+      const existing = byParent.get(key);
+      if (existing) {
+        existing.items.push(a);
+      } else {
+        byParent.set(key, {
+          key,
+          source: a.source,
+          parentId: a.parentId,
+          parentTitle: a.parentTitle || a.taskTitle || 'Untitled',
+          parentDate: a.parentDate || a.createdAt,
+          parentDateLabel: a.parentDateLabel || 'Uploaded',
+          parentStatus: a.parentStatus || null,
+          platforms: a.taskPlatform || '',
+          accountName: a.accountName || null,
+          items: [a],
+        });
+      }
+    }
+    return Array.from(byParent.values()).sort(
+      (a, b) => (b.parentDate || '').localeCompare(a.parentDate || ''),
+    );
+  }, [filtered]);
 
   const lightbox = useLightbox();
   const handleOpen = async (a) => {
@@ -190,35 +226,110 @@ const LibraryView = ({ auth, accountId }) => {
             : "No delivered creatives match those filters."}
         </div>
       ) : (
-        <div className="lib-grid">
-          {filtered.map((a) => (
-            <div className="lib-tile" key={a.id} onClick={() => handleOpen(a)} style={{cursor: "pointer"}}>
-              <div className="canvas" style={{display: "flex", alignItems: "center", justifyContent: "center", background: "var(--surface-2)", overflow: "hidden"}}>
-                {a.isImage && thumbs[a.id] ? (
-                  <img src={thumbs[a.id]} alt={a.filename} style={{width: "100%", height: "100%", objectFit: "cover"}}/>
-                ) : (
-                  <div style={{textAlign: "center", padding: 12}}>
-                    <Icon name="upload" size={36}/>
-                    <div style={{fontSize: 11, color: "var(--ink-4)", marginTop: 6, textTransform: "uppercase", letterSpacing: 0.5}}>
-                      {(a.mimeType.split('/')[1] || 'file').slice(0, 8)}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+          {groups.map((g) => (
+            <section key={g.key}>
+              <header
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                  paddingBottom: 10,
+                  marginBottom: 14,
+                  borderBottom: '1px solid var(--line)',
+                }}
+              >
+                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: 'var(--ink-1)' }}>
+                  {g.parentTitle}
+                </h3>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--ink-3)',
+                    background: 'var(--surface-2)',
+                    padding: '2px 8px',
+                    borderRadius: 999,
+                    border: '1px solid var(--line)',
+                  }}
+                >
+                  {g.parentDateLabel}: {formatShortDate(g.parentDate)}
+                </span>
+                {g.platforms && (
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>· {g.platforms}</span>
+                )}
+                <span style={{ fontSize: 11, color: 'var(--ink-4)', marginLeft: 'auto' }}>
+                  {g.items.length} {g.items.length === 1 ? 'file' : 'files'}
+                  {g.source === 'post_plan' ? ' · Post plan' : ' · Task'}
+                </span>
+              </header>
+              <div className="lib-grid">
+                {g.items.map((a) => (
+                  <div
+                    className="lib-tile"
+                    key={a.id}
+                    onClick={() => handleOpen(a)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <div
+                      className="canvas"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'var(--surface-2)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {a.isImage && thumbs[a.id] ? (
+                        <img
+                          src={thumbs[a.id]}
+                          alt={a.filename}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
+                      ) : (
+                        <div style={{ textAlign: 'center', padding: 12 }}>
+                          <Icon name="upload" size={36} />
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--ink-4)',
+                              marginTop: 6,
+                              textTransform: 'uppercase',
+                              letterSpacing: 0.5,
+                            }}
+                          >
+                            {(a.mimeType.split('/')[1] || 'file').slice(0, 8)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="meta">
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontWeight: 500,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                          title={a.filename}
+                        >
+                          {a.filename}
+                        </div>
+                      </div>
+                      <Icon name="download" size={14} style={{ color: 'var(--ink-4)' }} />
+                    </div>
+                    <div className="hover-strip">
+                      <Icon name="eye" size={12} /> Preview
+                      <span style={{ marginLeft: 'auto' }}>
+                        <Icon name="arrow-up-right" size={12} />
+                      </span>
                     </div>
                   </div>
-                )}
+                ))}
               </div>
-              <div className="meta">
-                <div>
-                  <div style={{fontWeight: 500}}>{a.filename}</div>
-                  <div className="type" style={{marginTop: 2}}>
-                    {a.source === 'post_plan' ? 'Post plan' : 'Task'} · {a.parentTitle || a.taskTitle} · {formatShortDate(a.createdAt)}
-                  </div>
-                </div>
-                <Icon name="download" size={14} style={{color: "var(--ink-4)"}}/>
-              </div>
-              <div className="hover-strip">
-                <Icon name="eye" size={12}/> Preview
-                <span style={{marginLeft: "auto"}}><Icon name="arrow-up-right" size={12}/></span>
-              </div>
-            </div>
+            </section>
           ))}
         </div>
       )}
