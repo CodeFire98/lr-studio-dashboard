@@ -960,17 +960,19 @@ const PostPlanDetailView = ({
                 )}
               </div>
 
-              {/* References — brand uploads inspiration, both sides view. */}
+              {/* References — inspiration files. Both sides can upload now;
+                   brand drops in their reference imagery, agency can add
+                   competitor refs / mood boards / context as needed. */}
               <AttachmentsCard
                 title="References"
                 subtitle={isAdmin
-                  ? 'Inspiration shared by the brand — the look and feel they’re after.'
+                  ? 'Inspiration for this post — shared by the brand and anything you want to add for context.'
                   : 'Drop in inspiration images for what you want this post to feel like.'}
                 emptyText={isAdmin
-                  ? 'No references shared yet.'
+                  ? 'No references yet — upload inspiration, competitor refs, or any context that helps.'
                   : 'No references yet — upload images, screenshots, or examples.'}
                 items={referenceAttachments}
-                canUpload={!isAdmin}
+                canUpload={true}
                 uploading={uploadingKind === 'reference'}
                 currentUserId={userId}
                 onUpload={(files, toDelete) => handleAttachmentChange('reference', files, toDelete)}
