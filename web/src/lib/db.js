@@ -540,7 +540,7 @@ export async function loadLibraryAssets({ kind = 'deliverable', accountId = null
     .select(`
       *,
       uploader:profiles!uploaded_by(id, display_name, initials, avatar_color, is_agency),
-      task:tasks(id, title, platform, account:accounts(id, name))
+      task:tasks(id, title, platform, deadline, created_at, account:accounts(id, name))
     `)
     .eq('kind', kind)
     .order('created_at', { ascending: false });
@@ -557,6 +557,11 @@ export async function loadLibraryAssets({ kind = 'deliverable', accountId = null
       // Platform is a free-text comma-separated field on tasks (e.g.
       // "Instagram, LinkedIn"). The Library filter normalises it client-side.
       taskPlatform: row.task?.platform || '',
+      // Tasks don't have a "scheduled to post" date; closest analog is
+      // their deadline. Fall through to the task's created_at if no
+      // deadline. Used by Library grouping for sort + header display.
+      parentDate: row.task?.deadline || row.task?.created_at || row.created_at,
+      parentDateLabel: row.task?.deadline ? 'Deadline' : 'Created',
       accountId: row.task?.account?.id || null,
       accountName: row.task?.account?.name || null,
     };
@@ -577,7 +582,7 @@ export async function loadLibraryPostPlanFinals({ accountId = null } = {}) {
     .select(`
       *,
       uploader:profiles!uploaded_by(id, display_name, initials, avatar_color, is_agency),
-      post_plan:post_plans(id, concept, platforms, account:accounts(id, name))
+      post_plan:post_plans(id, concept, platforms, scheduled_at, status, account:accounts(id, name))
     `)
     .eq('kind', 'final')
     .order('created_at', { ascending: false });
@@ -606,6 +611,11 @@ export async function loadLibraryPostPlanFinals({ accountId = null } = {}) {
       parentTitle: planConcept,
       parentId: row.post_plan_id,
       taskPlatform: platforms,
+      // The user's "date when to upload" — what the Library groups by.
+      // Fall through to upload date if a plan somehow has no scheduled_at.
+      parentDate: row.post_plan?.scheduled_at || row.created_at,
+      parentDateLabel: 'Scheduled',
+      parentStatus: row.post_plan?.status || null,
       accountId: row.post_plan?.account?.id || null,
       accountName: row.post_plan?.account?.name || null,
     };
