@@ -3881,17 +3881,24 @@ input, textarea { font: inherit; color: inherit; }
 .inbox-detail-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .inbox-detail-fields { display: flex; flex-direction: column; gap: 4px; }
-.inbox-detail-rendered {
-  margin-top: 8px;
-  padding: 10px 12px;
-  background: var(--surface-2);
-  border-radius: 8px;
-  font-size: 12px;
-  color: var(--ink-3);
+
+/* Click-to-edit details — renders as a static div with linkified URLs
+   so the agency can click a brand-pasted link directly without a
+   secondary preview box. Click anywhere non-link → swap in a textarea.
+   Visual matches `.ideate-textarea` so the swap doesn't reflow. */
+.inbox-detail-view {
+  cursor: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  min-height: 110px;
 }
-.inbox-detail-rendered .tiny { display: block; margin-bottom: 4px; }
-.inbox-detail-rendered-body { color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
-.inbox-detail-rendered-body a { color: var(--accent-ink); }
+.inbox-detail-view:hover { border-color: var(--ink-4); }
+.inbox-detail-view:focus { outline: none; border-color: var(--accent-ink); }
+.inbox-detail-view a { color: var(--accent-ink); text-decoration: underline; }
+.inbox-detail-view.is-readonly { cursor: default; opacity: 0.85; }
+.inbox-detail-view.is-readonly:hover { border-color: var(--line); }
+.inbox-detail-view-placeholder { color: var(--ink-4); font-style: italic; }
 .inbox-detail-save { margin-top: 10px; }
 
 .inbox-detail-attachments { margin-top: 10px; }

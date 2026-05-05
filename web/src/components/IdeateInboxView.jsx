@@ -5,7 +5,7 @@
    ConvertIdeaModal. Once converted/archived, ideas drop off the
    default queue but are reachable via the status filter. */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Icon } from './Icon.jsx';
 import {
   loadPostPlanIdeas,
@@ -252,6 +252,11 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
   const [platforms, setPlatforms] = useState(new Set(idea.platforms || []));
   const [attachments, setAttachments] = useState([]);
   const [loadingAtt, setLoadingAtt]   = useState(true);
+  // Click-to-edit toggle for details. Default = render the linkified
+  // text inline so URLs are clickable directly. Click anywhere
+  // (except on a link) → open the textarea for editing.
+  const [editingDetails, setEditingDetails] = useState(false);
+  const detailsTextareaRef = useRef(null);
 
   // Re-seed when switching ideas.
   useEffect(() => {
@@ -259,6 +264,7 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
     setDetails(idea.details || '');
     setDate(idea.desiredDate || '');
     setPlatforms(new Set(idea.platforms || []));
+    setEditingDetails(false);
   }, [idea.id]);
 
   useEffect(() => {
@@ -350,17 +356,40 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
         />
 
         <label className="ideate-label">Details</label>
-        <textarea
-          className="ideate-textarea"
-          rows={6}
-          value={details}
-          onChange={(e) => setDetails(e.target.value)}
-          disabled={isConverted || saving}
-        />
-        {details && (
-          <div className="inbox-detail-rendered">
-            <span className="tiny">Preview</span>
-            <div className="inbox-detail-rendered-body">{linkifyText(details)}</div>
+        {editingDetails && !isConverted ? (
+          <textarea
+            ref={detailsTextareaRef}
+            className="ideate-textarea"
+            rows={6}
+            autoFocus
+            value={details}
+            onChange={(e) => setDetails(e.target.value)}
+            onBlur={() => setEditingDetails(false)}
+            disabled={saving}
+          />
+        ) : (
+          <div
+            className={'ideate-textarea inbox-detail-view ' + (isConverted ? 'is-readonly' : '')}
+            onClick={(e) => {
+              // Let URL clicks fall through to the browser; only
+              // enter edit mode when the click was on plain text.
+              if (e.target.closest('a')) return;
+              if (isConverted) return;
+              setEditingDetails(true);
+            }}
+            role={isConverted ? undefined : 'textbox'}
+            tabIndex={isConverted ? undefined : 0}
+            onKeyDown={(e) => {
+              if (isConverted) return;
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setEditingDetails(true);
+              }
+            }}
+          >
+            {details
+              ? linkifyText(details)
+              : <span className="inbox-detail-view-placeholder">No details yet — click to add.</span>}
           </div>
         )}
 
