@@ -4194,3 +4194,256 @@ input, textarea { font: inherit; color: inherit; }
   align-items: center;
   gap: 6px;
 }
+
+/* =====================================================================
+   Social Calendar — List view (full-width agenda).
+   Each row is the whole post: time + platforms + title + status + stats
+   + lead. Rows grouped by day with sticky day headers; days bucketed
+   into week sections with a small summary header.
+   ===================================================================== */
+
+.cal-list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 0 0 16px;
+  overflow: hidden;
+}
+.cal-list-empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  padding: 36px 24px;
+  text-align: center;
+  color: var(--ink-3);
+}
+.cal-list-empty .big {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.cal-list-empty .sub {
+  font-size: 13px;
+  max-width: 460px;
+  margin: 0 auto;
+}
+
+.cal-list-week + .cal-list-week { margin-top: 12px; }
+.cal-list-week-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 22px 24px 12px;
+  border-top: 1px solid var(--line-2);
+}
+.cal-list-week:first-child .cal-list-week-head { border-top: 0; padding-top: 18px; }
+.cal-list-week-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.cal-list-week-meta {
+  font-size: 12px;
+  color: var(--ink-4);
+}
+.cal-list-week-meta strong {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.cal-list-day {
+  margin-top: 6px;
+}
+/* Sticky day header so it sits above its rows when scrolling. */
+.cal-list-day-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 24px;
+  background: color-mix(in oklab, var(--surface) 92%, var(--surface-2));
+  border-bottom: 1px solid var(--line-2);
+  backdrop-filter: blur(2px);
+}
+.cal-list-day.is-today .cal-list-day-head {
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface));
+}
+.cal-list-day-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.cal-list-day.is-today .cal-list-day-label { color: var(--accent-ink); }
+.cal-list-day-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-4);
+  background: var(--surface-2);
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.cal-list-day.is-today .cal-list-day-count {
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  color: var(--accent-ink);
+}
+.cal-list-day-body {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.cal-list-row {
+  display: grid;
+  grid-template-columns: 100px auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 24px 16px 21px;
+  cursor: pointer;
+  position: relative;
+  border-bottom: 1px solid var(--line-3);
+  transition: background 0.1s ease;
+}
+.cal-list-row:last-child { border-bottom: 0; }
+.cal-list-row:hover {
+  background: color-mix(in oklab, var(--surface) 80%, var(--surface-2));
+}
+.cal-list-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cal-list-row.has-unread {
+  background: color-mix(in oklab, var(--accent) 4%, var(--surface));
+}
+.cal-list-row.has-unread:hover {
+  background: color-mix(in oklab, var(--accent) 7%, var(--surface));
+}
+
+.cal-list-row-time {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cal-list-row-platforms {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.cal-list-row-title {
+  font-size: 14.5px;
+  color: var(--ink);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.cal-list-row-untitled {
+  font-style: italic;
+  color: var(--ink-4);
+}
+.cal-list-row-status {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.cal-list-row-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.cal-list-row-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--ink-3);
+  position: relative;
+}
+.cal-list-row-stat.is-accent { color: var(--accent-ink); font-weight: 500; }
+.cal-list-row-stat.has-popover { cursor: help; }
+
+/* Hidden by default; revealed on row hover so a low-scan-cost preview
+   of references is one mouse-over away. */
+.cal-list-ref-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  display: none;
+  gap: 4px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+.cal-list-row-stat.has-popover:hover .cal-list-ref-popover {
+  display: flex;
+}
+.cal-list-ref-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.cal-list-ref-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.cal-list-ref-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+}
+
+.cal-list-row-lead {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.cal-list-row-unread {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+/* "Now" line — slim accent rule + label between today's past and
+   future posts. Helps the lead see at a glance which of today's posts
+   are still ahead vs. already past their scheduled slot. */
+.cal-list-now {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 24px;
+}
+.cal-list-now-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.cal-list-now-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, var(--accent), transparent);
+}
