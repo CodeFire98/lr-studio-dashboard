@@ -353,6 +353,13 @@ const PostPlanDetailView = ({
   // synced on plan.updatedAt of the same plan, so realtime updates from
   // other clients don't clobber in-flight typing.
   const [copyDrafts, setCopyDrafts] = useState(() => plan?.copyVariants || {});
+  // Per-platform editor mode. 'edit' shows the textarea + Save row; 'read'
+  // shows the saved copy with URLs linkified inline (the email-composer
+  // read state). Default for empty saved values is 'edit' so an admin can
+  // immediately start typing; once there's saved content we default to
+  // 'read' so the linkified view shows by default. Brand users are always
+  // forced into 'read' mode regardless of what's in this map.
+  const [copyMode, setCopyMode] = useState({});
   const [activeCopyTab, setActiveCopyTab] = useState((plan?.platforms || [])[0] || null);
   const [status, setStatus] = useState(plan?.status || 'not_started');
   const [saving, setSaving] = useState(false);
@@ -520,6 +527,39 @@ const PostPlanDetailView = ({
   // still get their text saved.
   const handleCopyBlur = (key) => {
     saveCopyForKey(key);
+  };
+
+  // Whether the active platform's editor is in 'edit' (textarea) mode for
+  // the current viewer. Brand is always 'read'. Agency defaults to 'edit'
+  // when there's no saved copy yet, otherwise 'read' (so links render).
+  const isCopyEditing = (key) => {
+    if (!isAdmin || !key) return false;
+    if (copyMode[key]) return copyMode[key] === 'edit';
+    const saved = (plan?.copyVariants || {})[key] ?? '';
+    return !saved.trim(); // empty → start in edit mode
+  };
+
+  const enterEditMode = (key) => {
+    if (!isAdmin) return;
+    setCopyMode((p) => ({ ...p, [key]: 'edit' }));
+  };
+
+  const exitEditMode = (key) => {
+    setCopyMode((p) => ({ ...p, [key]: 'read' }));
+  };
+
+  const cancelCopyEdit = (key) => {
+    // Discard in-flight typing and bounce back to the read view.
+    setCopyDrafts((prev) => ({
+      ...prev,
+      [key]: (plan?.copyVariants || {})[key] ?? '',
+    }));
+    exitEditMode(key);
+  };
+
+  const saveAndExitCopy = async (key) => {
+    await saveCopyForKey(key);
+    exitEditMode(key);
   };
 
   const transitionStatus = async (next, { requireComment = false } = {}) => {
@@ -991,89 +1031,161 @@ const PostPlanDetailView = ({
                         );
                       })}
                     </div>
-                    <textarea
-                      rows={6}
-                      value={copyDrafts[activeCopyTab] ?? ''}
-                      onChange={(e) => handleCopyChange(activeCopyTab, e.target.value)}
-                      onBlur={() => handleCopyBlur(activeCopyTab)}
-                      placeholder={`Write the ${PLATFORM_BY_KEY[activeCopyTab]?.label || ''} version of this post…`}
-                      disabled={!isAdmin || saving}
-                      style={{
-                        width: '100%',
-                        padding: '10px 12px',
-                        border: '1px solid var(--line)',
-                        borderRadius: 6,
-                        background: 'var(--surface)',
-                        color: 'var(--ink-1)',
-                        fontSize: 13,
-                        outline: 'none',
-                        resize: 'vertical',
-                        minHeight: 130,
-                        fontFamily: 'inherit',
-                      }}
-                    />
                     {(() => {
                       const draft = copyDrafts[activeCopyTab] ?? '';
                       const saved = (plan?.copyVariants || {})[activeCopyTab] ?? '';
                       const isDirty = draft !== saved;
-                      return (
-                        <>
-                          {/* Save row — agency-only. Brand sees a
-                              read-only textarea and the linkified preview
-                              below; no Save button needed. */}
-                          {isAdmin && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-                              <span style={{ fontSize: 11.5, color: isDirty ? 'var(--accent-ink)' : 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                {saving && isDirty
-                                  ? 'Saving…'
-                                  : isDirty
-                                    ? 'Unsaved changes'
-                                    : (<><Icon name="check" size={11}/>Saved</>)}
-                              </span>
-                              <span style={{ flex: 1 }}/>
-                              <button
-                                type="button"
-                                className={isDirty ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
-                                onClick={() => saveCopyForKey(activeCopyTab)}
-                                disabled={!isDirty || saving}
-                                title={isDirty ? 'Save this platform’s copy' : 'No unsaved changes'}
-                              >
-                                Save copy
-                              </button>
-                            </div>
-                          )}
-                          {/* Linkified preview — shown for agency + brand
-                              whenever the saved copy contains URLs. Lets
-                              either side click out to verify a link. */}
-                          {hasUrl(saved) && (
-                            <div style={{
-                              marginTop: 12,
-                              padding: '10px 12px',
-                              background: 'var(--surface-2)',
-                              border: '1px solid var(--line)',
-                              borderRadius: 6,
-                            }}>
-                              <div style={{
-                                fontSize: 10.5,
-                                letterSpacing: 0.6,
-                                textTransform: 'uppercase',
-                                color: 'var(--ink-4)',
-                                marginBottom: 6,
-                              }}>
-                                Preview · links open in a new tab
-                              </div>
-                              <div style={{
-                                fontSize: 13,
+                      const editing = isCopyEditing(activeCopyTab);
+                      const platLabel = PLATFORM_BY_KEY[activeCopyTab]?.label || '';
+
+                      // EDIT mode — textarea + Save row. Default for agency
+                      // when starting fresh; re-entered when the agency
+                      // clicks the read view.
+                      if (editing) {
+                        return (
+                          <>
+                            <textarea
+                              rows={6}
+                              value={draft}
+                              onChange={(e) => handleCopyChange(activeCopyTab, e.target.value)}
+                              onBlur={() => handleCopyBlur(activeCopyTab)}
+                              placeholder={`Write the ${platLabel} version of this post…`}
+                              disabled={!isAdmin || saving}
+                              autoFocus={!!saved}
+                              style={{
+                                width: '100%',
+                                padding: '10px 12px',
+                                border: '1px solid var(--line)',
+                                borderRadius: 6,
+                                background: 'var(--surface)',
                                 color: 'var(--ink-1)',
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-word',
+                                fontSize: 13,
+                                outline: 'none',
+                                resize: 'vertical',
+                                minHeight: 130,
+                                fontFamily: 'inherit',
                                 lineHeight: 1.5,
-                              }}>
-                                {linkifySegments(saved)}
+                              }}
+                            />
+                            {isAdmin && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                                <span style={{ fontSize: 11.5, color: isDirty ? 'var(--accent-ink)' : 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  {saving && isDirty
+                                    ? 'Saving…'
+                                    : isDirty
+                                      ? 'Unsaved changes'
+                                      : (<><Icon name="check" size={11}/>Saved</>)}
+                                </span>
+                                <span style={{ flex: 1 }}/>
+                                {isDirty && saved && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-ghost"
+                                    onClick={() => cancelCopyEdit(activeCopyTab)}
+                                    disabled={saving}
+                                  >
+                                    Cancel
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className={isDirty ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+                                  onClick={() => saveAndExitCopy(activeCopyTab)}
+                                  disabled={saving || (!isDirty && !saved)}
+                                  title={
+                                    isDirty
+                                      ? 'Save this platform’s copy and link any URLs inline'
+                                      : 'Done editing'
+                                  }
+                                >
+                                  {isDirty ? 'Save copy' : 'Done'}
+                                </button>
                               </div>
-                            </div>
+                            )}
+                          </>
+                        );
+                      }
+
+                      // READ mode — linkified rendering of the SAVED copy,
+                      // visually styled to match the textarea slot so the
+                      // swap is seamless. Click anywhere not-on-a-link to
+                      // re-enter edit mode (agency only).
+                      return (
+                        <div
+                          role={isAdmin ? 'button' : undefined}
+                          tabIndex={isAdmin ? 0 : undefined}
+                          onClick={
+                            isAdmin
+                              ? (e) => {
+                                  // Don't intercept clicks on links — let the
+                                  // browser open them in a new tab as the
+                                  // anchor's target=_blank intends.
+                                  if (e.target.closest && e.target.closest('a')) return;
+                                  enterEditMode(activeCopyTab);
+                                }
+                              : undefined
+                          }
+                          onKeyDown={
+                            isAdmin
+                              ? (e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    enterEditMode(activeCopyTab);
+                                  }
+                                }
+                              : undefined
+                          }
+                          style={{
+                            width: '100%',
+                            padding: '10px 12px',
+                            border: '1px solid var(--line)',
+                            borderRadius: 6,
+                            background: 'var(--surface)',
+                            color: 'var(--ink-1)',
+                            fontSize: 13,
+                            minHeight: 130,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            lineHeight: 1.5,
+                            cursor: isAdmin ? 'text' : 'default',
+                            position: 'relative',
+                          }}
+                          title={isAdmin ? 'Click to edit' : undefined}
+                        >
+                          {saved
+                            ? linkifySegments(saved)
+                            : (
+                              <span style={{ color: 'var(--ink-4)' }}>
+                                {isAdmin
+                                  ? `Click to write the ${platLabel} copy…`
+                                  : `No ${platLabel} copy yet.`}
+                              </span>
+                            )}
+                          {isAdmin && saved && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); enterEditMode(activeCopyTab); }}
+                              title="Edit copy"
+                              style={{
+                                position: 'absolute',
+                                top: 6,
+                                right: 6,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                padding: '3px 8px',
+                                borderRadius: 999,
+                                border: '1px solid var(--line)',
+                                background: 'var(--surface-2)',
+                                color: 'var(--ink-3)',
+                                fontSize: 11,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <Icon name="edit" size={11}/>Edit
+                            </button>
                           )}
-                        </>
+                        </div>
                       );
                     })()}
                   </div>
