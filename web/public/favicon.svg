@@ -1,6 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- Mirrors the L+R Agency wordmark dot:
-       background = --bg #FAFAF7 (warm off-white), dot = --accent #E8553D (coral). -->
-  <rect width="32" height="32" rx="6" fill="#FAFAF7"/>
-  <circle cx="16" cy="16" r="7" fill="#E8553D"/>
+  <!-- Mirrors the L+R Agency wordmark dot, sized for visibility at 16x16:
+       background = warm peach so the rounded square stands out against
+       white browser-tab UI; dot = --accent #E8553D, large enough to
+       register at favicon scale. -->
+  <rect width="32" height="32" rx="7" fill="#F5D4B4"/>
+  <circle cx="16" cy="16" r="10" fill="#E8553D"/>
 </svg>
