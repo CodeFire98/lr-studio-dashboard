@@ -1563,7 +1563,7 @@ export async function createPostPlan({
     platforms: Array.isArray(platforms) ? platforms : [],
     concept: concept || '',
     copy_variants: copyVariants && typeof copyVariants === 'object' ? copyVariants : {},
-    status: status || 'not_started',
+    status: status || 'drafting',
     created_by: userId ?? null,
   };
   const { data, error } = await supabase
@@ -1578,7 +1578,7 @@ export async function createPostPlan({
 /**
  * Duplicate a post plan to one or more target dates.
  * Copies platforms, concept, and copyVariants from the source plan.
- * Each duplicate gets status 'not_started' and scheduled_at at 09:00 local.
+ * Each duplicate gets status 'drafting' and scheduled_at at 09:00 local.
  */
 export async function duplicatePostPlan({ sourcePlan, targetDates, userId }) {
   const created = [];
@@ -1595,7 +1595,7 @@ export async function duplicatePostPlan({ sourcePlan, targetDates, userId }) {
         platforms: sourcePlan.platforms,
         concept: sourcePlan.concept,
         copyVariants: sourcePlan.copyVariants,
-        status: 'not_started',
+        status: 'drafting',
         userId,
       });
       created.push(plan);
@@ -2337,7 +2337,7 @@ export async function convertIdeaToPostPlan({
     platforms,
     concept,
     copyVariants,
-    status: 'not_started',
+    status: 'drafting',
     userId,
   });
 
