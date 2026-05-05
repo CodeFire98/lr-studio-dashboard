@@ -5,16 +5,19 @@
    detail page); anyone can click a chip to open the detail page. The
    chip surface shows platform icon(s) + concept one-liner + a colored
    status dot. The per-plan editor lives in <PostPlanDetailView/>. */
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Icon } from './Icon.jsx';
-import { PlatformChip, STATUS_CONFIG } from './postPlanShared.jsx';
+import { PlatformChip, STATUS_CONFIG, StatusPill } from './postPlanShared.jsx';
 import { createPostPlan, duplicatePostPlan } from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { UpdateBrandModal } from './UpdateBrandModal.jsx';
 
 const HEADING_FMT   = { month: 'short', year: 'numeric' };
 const WEEKDAY_LABEL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MAX_CHIPS_PER_CELL = 3;
+// Per-cell chip cap, density-aware. Comfortable shows full chips and
+// caps at 3 (legacy). Compact uses a thinner bar so we can fit more.
+const MAX_CHIPS_COMFORTABLE = 3;
+const MAX_CHIPS_COMPACT     = 6;
 
 // Status order — earlier statuses sort first within a day so the brand
 // sees "things needing my attention" near the top of a busy cell.
@@ -28,6 +31,58 @@ const STATUS_ORDER = {
   scheduled:            6,
   posted:               7,
 };
+
+// Filter buckets — single status flips would mean 8 pills which is too
+// noisy; agency leads think in workflow stages, not in raw enum values.
+// `null` for `all` means no filter at all.
+const STATUS_GROUPS = {
+  all:          { label: 'All',          statuses: null },
+  drafting:     { label: 'Drafting',     statuses: ['not_started', 'wip', 'delayed'] },
+  needs_review: { label: 'Needs review', statuses: ['needs_brand_feedback', 'needs_admin_revision'] },
+  approved:     { label: 'Approved',     statuses: ['approved', 'scheduled'] },
+  posted:       { label: 'Posted',       statuses: ['posted'] },
+};
+
+const LS_VIEW_MODE     = 'lr_calendar_view_mode';
+const LS_DENSITY       = 'lr_calendar_density';
+const LS_STATUS_FILTER = 'lr_calendar_status_filter';
+
+function readLS(key, fallback, allowed) {
+  try {
+    const v = localStorage.getItem(key);
+    if (v && (!allowed || allowed.includes(v))) return v;
+  } catch {}
+  return fallback;
+}
+function writeLS(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+
+function startOfWeek(d) {
+  // Week starts Sunday — matches WEEKDAY_LABEL ordering.
+  const out = new Date(d);
+  out.setDate(out.getDate() - out.getDay());
+  out.setHours(0, 0, 0, 0);
+  return out;
+}
+
+function formatWeekRange(start) {
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const sameYear  = start.getFullYear() === end.getFullYear();
+  if (sameMonth) {
+    return `${start.toLocaleDateString('en-US', { month: 'long' })} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`;
+  }
+  if (sameYear) {
+    const a = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const b = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `${a} – ${b}, ${end.getFullYear()}`;
+  }
+  const a = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const b = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return `${a} – ${b}`;
+}
 
 function isoLocalDate(d) {
   // YYYY-MM-DD in local time. We bucket post plans by local-day so the chip
@@ -67,12 +122,74 @@ function buildMonthMatrix(viewYear, viewMonth) {
   return cells;
 }
 
-const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
+const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, density = 'comfortable' }) => {
   const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.not_started;
   const time = formatTime(post.scheduledAt);
   const titleSuffix = unreadCount > 0
     ? ` · ${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`
     : '';
+  const hoverTitle = `${post.concept || 'Untitled post'} · ${cfg.label}${time ? ' · ' + time : ''}${titleSuffix}`;
+
+  // Compact: thin one-line bar with status-coloured left border, no
+  // platform icons. Designed for cells with several plans where the
+  // legacy 3-icon chip eats the whole cell.
+  if (density === 'compact') {
+    return (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onOpen(post); }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onContextMenu?.(e, post);
+        }}
+        title={hoverTitle}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          width: '100%',
+          textAlign: 'left',
+          padding: '2px 6px 2px 8px',
+          marginBottom: 2,
+          borderRadius: 3,
+          border: 0,
+          borderLeft: `3px solid ${cfg.color}`,
+          background: cfg.background,
+          color: 'var(--ink-1)',
+          fontSize: 11,
+          lineHeight: 1.2,
+          cursor: 'pointer',
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {post.concept || 'Untitled post'}
+        </span>
+        {unreadCount > 0 && (
+          <span
+            aria-label={`${unreadCount} unread`}
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 99,
+              background: 'var(--accent)',
+              flexShrink: 0,
+            }}
+          />
+        )}
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -82,7 +199,7 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
         e.stopPropagation();
         onContextMenu?.(e, post);
       }}
-      title={`${post.concept || 'Untitled post'} · ${cfg.label}${time ? ' · ' + time : ''}${titleSuffix}`}
+      title={hoverTitle}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -134,11 +251,58 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
   );
 };
 
-const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu }) => {
+// Larger card used in week view — multi-line title, status pill, time,
+// platform icons. Trello-stack rather than a calendar time grid: dates
+// matter more than times for content planning, and a stacked column
+// gives each plan enough room to be scannable without opening it.
+const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
+  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.not_started;
+  const time = formatTime(post.scheduledAt);
+  return (
+    <button
+      type="button"
+      className="cal-week-card"
+      onClick={(e) => { e.stopPropagation(); onOpen(post); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu?.(e, post);
+      }}
+      style={{
+        background: cfg.background,
+        borderLeft: `3px solid ${cfg.color}`,
+      }}
+    >
+      <div className="cal-week-card-row">
+        {time && <span className="cal-week-card-time">{time}</span>}
+        <div className="cal-week-card-platforms">
+          {post.platforms?.slice(0, 3).map((p) => (
+            <PlatformChip key={p} platform={p} size="sm" />
+          ))}
+        </div>
+        {unreadCount > 0 && (
+          <span
+            aria-label={`${unreadCount} unread`}
+            className="cal-week-card-unread"
+          />
+        )}
+      </div>
+      <div className="cal-week-card-title">
+        {post.concept || 'Untitled post'}
+      </div>
+      <div className="cal-week-card-foot">
+        <StatusPill status={post.status} size="sm" />
+      </div>
+    </button>
+  );
+};
+
+const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu, density = 'comfortable' }) => {
   const cells = useMemo(
     () => buildMonthMatrix(viewDate.getFullYear(), viewDate.getMonth()),
     [viewDate]
   );
+  const maxChips = density === 'compact' ? MAX_CHIPS_COMPACT : MAX_CHIPS_COMFORTABLE;
 
   return (
     <div
@@ -176,7 +340,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gridAutoRows: 'minmax(110px, 1fr)' }}>
         {cells.map((c, i) => {
           const posts = postsByDate.get(c.iso) || [];
-          const visible = posts.slice(0, MAX_CHIPS_PER_CELL);
+          const visible = posts.slice(0, maxChips);
           const overflow = posts.length - visible.length;
           // Admins can click the empty area of a cell to drop a new plan
           // onto that day. Brands can't create — clicking an empty cell is
@@ -246,6 +410,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                     onOpen={onOpenPost}
                     onContextMenu={onChipContextMenu}
                     unreadCount={unreadByPlan?.get(p.id) || 0}
+                    density={density}
                   />
                 ))}
                 {overflow > 0 && (
@@ -256,7 +421,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                       // Open the first overflow plan as a starting point;
                       // the user can click "next" inside the modal later
                       // (we'll add that in a follow-up slice).
-                      onOpenPost(posts[MAX_CHIPS_PER_CELL]);
+                      onOpenPost(posts[maxChips]);
                     }}
                     style={{
                       border: 0,
@@ -279,6 +444,77 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
   );
 };
 
+const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu }) => {
+  const days = useMemo(() => {
+    const todayIso = isoLocalDate(new Date());
+    const out = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(weekStart.getDate() + i);
+      out.push({
+        date: d,
+        iso: isoLocalDate(d),
+        day: d.getDate(),
+        weekday: WEEKDAY_LABEL[i],
+        monthLabel: d.toLocaleDateString('en-US', { month: 'short' }),
+        isToday: isoLocalDate(d) === todayIso,
+      });
+    }
+    return out;
+  }, [weekStart]);
+
+  return (
+    <div className="cal-week-grid">
+      {days.map((d) => {
+        const posts = postsByDate.get(d.iso) || [];
+        const cellClickable = isAdmin;
+        return (
+          <div key={d.iso} className={'cal-week-col' + (d.isToday ? ' is-today' : '')}>
+            <div
+              className="cal-week-col-head"
+              role={cellClickable ? 'button' : undefined}
+              tabIndex={cellClickable ? 0 : undefined}
+              onClick={cellClickable ? () => onOpenDay({ date: d.date }) : undefined}
+              onKeyDown={(e) => {
+                if (cellClickable && (e.key === 'Enter' || e.key === ' ')) {
+                  e.preventDefault();
+                  onOpenDay({ date: d.date });
+                }
+              }}
+              title={cellClickable ? 'Click to plan a new post on this day' : undefined}
+            >
+              <div className="cal-week-col-weekday">{d.weekday}</div>
+              <div className="cal-week-col-day">
+                {d.day}
+                <span className="cal-week-col-month">{d.monthLabel}</span>
+                {d.isToday && <span className="cal-week-col-today">Today</span>}
+              </div>
+              {cellClickable && (
+                <span aria-hidden className="cal-week-col-add">+</span>
+              )}
+            </div>
+            <div className="cal-week-col-body">
+              {posts.length === 0 ? (
+                <div className="cal-week-col-empty">No posts</div>
+              ) : (
+                posts.map((p) => (
+                  <WeekPostCard
+                    key={p.id}
+                    post={p}
+                    onOpen={onOpenPost}
+                    onContextMenu={onChipContextMenu}
+                    unreadCount={unreadByPlan?.get(p.id) || 0}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const CalendarView = ({
   postPlans = [],
   accountId,
@@ -291,13 +527,25 @@ const CalendarView = ({
 }) => {
   const isAdmin = mode === 'admin';
 
+  // View mode + density are persisted across sessions so an agency lead
+  // who lives in week+compact doesn't have to set it back every reload.
+  const [viewMode, setViewMode]   = useState(() => readLS(LS_VIEW_MODE, 'month', ['month', 'week']));
+  const [density, setDensity]     = useState(() => readLS(LS_DENSITY, 'comfortable', ['comfortable', 'compact']));
+  const [statusFilter, setStatusFilter] = useState(() => readLS(LS_STATUS_FILTER, 'all', Object.keys(STATUS_GROUPS)));
+
+  useEffect(() => { writeLS(LS_VIEW_MODE, viewMode); }, [viewMode]);
+  useEffect(() => { writeLS(LS_DENSITY, density); }, [density]);
+  useEffect(() => { writeLS(LS_STATUS_FILTER, statusFilter); }, [statusFilter]);
+
   const [viewDate, setViewDate] = useState(() => {
-    const today = new Date();
-    return new Date(today.getFullYear(), today.getMonth(), 1);
+    // Anchor at "today" — matrix builders only inspect year/month (month
+    // view) or compute startOfWeek (week view), so the day-of-month
+    // doesn't need to be 1.
+    return new Date();
   });
   const [creating, setCreating] = useState(false);
-  // Status filter — replaces the bottom legend. 'all' = no filter.
-  const [statusFilter, setStatusFilter] = useState('all');
+
+  const weekStart = useMemo(() => startOfWeek(viewDate), [viewDate]);
 
   // Context menu state for right-click on chips.
   const [ctxMenu, setCtxMenu] = useState(null); // { x, y, plan }
@@ -306,10 +554,24 @@ const CalendarView = ({
   // Send-update modal state (agency-only).
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
 
-  const filteredPostPlans = useMemo(
-    () => statusFilter === 'all' ? postPlans : postPlans.filter((p) => p.status === statusFilter),
-    [postPlans, statusFilter]
-  );
+  const filteredPostPlans = useMemo(() => {
+    const allowed = STATUS_GROUPS[statusFilter]?.statuses;
+    if (!allowed) return postPlans;
+    return postPlans.filter((p) => allowed.includes(p.status));
+  }, [postPlans, statusFilter]);
+
+  // Counts per status group — drive the small badge inside each filter
+  // pill so the agency lead can see at a glance "5 things in review,
+  // 12 approved" without flipping filters.
+  const groupCounts = useMemo(() => {
+    const out = {};
+    for (const [key, group] of Object.entries(STATUS_GROUPS)) {
+      out[key] = group.statuses
+        ? postPlans.filter((p) => group.statuses.includes(p.status)).length
+        : postPlans.length;
+    }
+    return out;
+  }, [postPlans]);
 
   const postsByDate = useMemo(() => {
     const map = new Map();
@@ -330,12 +592,25 @@ const CalendarView = ({
     return map;
   }, [filteredPostPlans]);
 
-  const goPrev   = () => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1));
-  const goNext   = () => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1));
-  const goToday  = () => {
-    const today = new Date();
-    setViewDate(new Date(today.getFullYear(), today.getMonth(), 1));
+  const goPrev = () => {
+    if (viewMode === 'week') {
+      const d = new Date(viewDate);
+      d.setDate(d.getDate() - 7);
+      setViewDate(d);
+    } else {
+      setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1));
+    }
   };
+  const goNext = () => {
+    if (viewMode === 'week') {
+      const d = new Date(viewDate);
+      d.setDate(d.getDate() + 7);
+      setViewDate(d);
+    } else {
+      setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1));
+    }
+  };
+  const goToday  = () => setViewDate(new Date());
 
   // Create a stub plan for the given day at 9am, then route to its detail
   // page so the admin fills in concept/copy/etc inline. Stubs are real
@@ -470,74 +745,119 @@ const CalendarView = ({
         )}
       </div>
 
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          marginBottom: 14,
-        }}
-      >
-        <button className="btn btn-sm btn-ghost" onClick={goPrev} aria-label="Previous month">
-          <Icon name="chevron-left" size={14}/>
-        </button>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, minWidth: 180 }}>
-          {viewDate.toLocaleDateString('en-US', HEADING_FMT)}
-        </div>
-        <button className="btn btn-sm btn-ghost" onClick={goNext} aria-label="Next month">
-          <Icon name="chevron-right" size={14}/>
-        </button>
-        <button className="btn btn-sm" onClick={goToday}>Today</button>
-
-        <div style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          {statusFilter !== 'all' && (
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                fontSize: 11.5,
-                color: 'var(--ink-3)',
-              }}
-            >
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 99,
-                  background: (STATUS_CONFIG[statusFilter] || STATUS_CONFIG.not_started).color,
-                }}
-              />
-            </span>
-          )}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="btn btn-sm"
-            aria-label="Filter by status"
-            style={{
-              padding: '4px 28px 4px 10px',
-              appearance: 'none',
-              cursor: 'pointer',
-            }}
+      <div className="cal-controls">
+        <div className="cal-controls-nav">
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={goPrev}
+            aria-label={viewMode === 'week' ? 'Previous week' : 'Previous month'}
           >
-            <option value="all">Status: All</option>
-            {Object.entries(STATUS_CONFIG).map(([key, cfg]) => (
-              <option key={key} value={key}>{cfg.label}</option>
-            ))}
-          </select>
+            <Icon name="chevron-left" size={14}/>
+          </button>
+          <div className="cal-controls-heading">
+            {viewMode === 'week'
+              ? formatWeekRange(weekStart)
+              : viewDate.toLocaleDateString('en-US', HEADING_FMT)}
+          </div>
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={goNext}
+            aria-label={viewMode === 'week' ? 'Next week' : 'Next month'}
+          >
+            <Icon name="chevron-right" size={14}/>
+          </button>
+          <button className="btn btn-sm" onClick={goToday}>Today</button>
+        </div>
+
+        <div className="cal-controls-right">
+          <div className="cal-segmented" role="tablist" aria-label="Calendar view">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === 'month'}
+              className={'cal-segmented-btn' + (viewMode === 'month' ? ' on' : '')}
+              onClick={() => setViewMode('month')}
+            >
+              Month
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === 'week'}
+              className={'cal-segmented-btn' + (viewMode === 'week' ? ' on' : '')}
+              onClick={() => setViewMode('week')}
+            >
+              Week
+            </button>
+          </div>
+
+          {viewMode === 'month' && (
+            <div className="cal-segmented" role="group" aria-label="Density">
+              <button
+                type="button"
+                title="Comfortable"
+                aria-pressed={density === 'comfortable'}
+                className={'cal-segmented-btn icon-only' + (density === 'comfortable' ? ' on' : '')}
+                onClick={() => setDensity('comfortable')}
+              >
+                <Icon name="layout" size={14}/>
+              </button>
+              <button
+                type="button"
+                title="Compact"
+                aria-pressed={density === 'compact'}
+                className={'cal-segmented-btn icon-only' + (density === 'compact' ? ' on' : '')}
+                onClick={() => setDensity('compact')}
+              >
+                <Icon name="list" size={14}/>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      <MonthGrid
-        viewDate={viewDate}
-        postsByDate={postsByDate}
-        onOpenPost={openExisting}
-        onOpenDay={openCreateForDay}
-        isAdmin={isAdmin}
-        unreadByPlan={unreadByPlan}
-        onChipContextMenu={handleChipContextMenu}
-      />
+      <div className="cal-filter-pills" role="tablist" aria-label="Filter by status">
+        {Object.entries(STATUS_GROUPS).map(([key, group]) => {
+          const active = statusFilter === key;
+          const count = groupCounts[key] || 0;
+          return (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className={'cal-filter-pill' + (active ? ' on' : '')}
+              onClick={() => setStatusFilter(key)}
+            >
+              <span>{group.label}</span>
+              {count > 0 && <span className="cal-filter-pill-badge">{count}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {viewMode === 'week' ? (
+        <WeekGrid
+          weekStart={weekStart}
+          postsByDate={postsByDate}
+          onOpenPost={openExisting}
+          onOpenDay={openCreateForDay}
+          isAdmin={isAdmin}
+          unreadByPlan={unreadByPlan}
+          onChipContextMenu={handleChipContextMenu}
+        />
+      ) : (
+        <MonthGrid
+          viewDate={viewDate}
+          postsByDate={postsByDate}
+          onOpenPost={openExisting}
+          onOpenDay={openCreateForDay}
+          isAdmin={isAdmin}
+          unreadByPlan={unreadByPlan}
+          onChipContextMenu={handleChipContextMenu}
+          density={density}
+        />
+      )}
 
       {postPlans.length === 0 && (
         <div className="empty" style={{ marginTop: 24, padding: 24 }}>
