@@ -1645,9 +1645,16 @@ export async function deletePostPlan(id) {
 }
 
 export function subscribeToPostPlans(onChange, { accountId } = {}) {
+  // Channel names MUST be unique per subscription. supabase-realtime-js
+  // tracks subscribed topics globally; two channels with the same name
+  // mounting in the same tab (e.g. App-level + a detail view both
+  // listening for the active brand's plans) trip a "cannot add
+  // `postgres_changes` callbacks ... after `subscribe()`" error on the
+  // second .on(). Suffixing with a per-call random id avoids that.
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const channelName = accountId
-    ? `lr_post_plans_${accountId}`
-    : 'lr_post_plans_stream';
+    ? `lr_post_plans_${accountId}_${suffix}`
+    : `lr_post_plans_stream_${suffix}`;
   // Filter at the realtime layer when scoping to a single brand — saves
   // the client a round-trip + refetch for events outside its scope.
   const filter = accountId
@@ -2096,5 +2103,284 @@ export async function refreshTrends({ source, regions, window: trendWindow, acco
     throw new Error(String(payload.error));
   }
   return payload;
+}
+
+// =====================================================================
+// Post-plan ideas — brand "Got ideas?" + agency "Inbox"
+// =====================================================================
+// A post_plan_idea is a brand-submitted content suggestion that the
+// agency reviews and converts into a real post_plans row. Inbox is
+// the agency's queue; Got ideas? is the brand's composer + history.
+
+const POST_PLAN_IDEA_SELECT = `
+  *,
+  account:accounts(id, name, type, accent_color),
+  submitter:profiles!submitted_by(id, display_name, initials, avatar_color, is_agency)
+`;
+
+function mapPostPlanIdeaRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    accountName: row.account?.name || null,
+    title: row.title || '',
+    details: row.details || '',
+    desiredDate: row.desired_date || null,
+    platforms: Array.isArray(row.platforms) ? row.platforms : [],
+    status: row.status,
+    submittedBy: row.submitted_by,
+    submitter: personFromProfile(row.submitter),
+    convertedPostPlanId: row.converted_post_plan_id || null,
+    convertedAt: row.converted_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function loadPostPlanIdeas({ accountId, statuses } = {}) {
+  let query = supabase
+    .from('post_plan_ideas')
+    .select(POST_PLAN_IDEA_SELECT)
+    .order('created_at', { ascending: false });
+  if (accountId) query = query.eq('account_id', accountId);
+  if (Array.isArray(statuses) && statuses.length) query = query.in('status', statuses);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapPostPlanIdeaRow);
+}
+
+export async function loadPostPlanIdeaById(id) {
+  const { data, error } = await supabase
+    .from('post_plan_ideas')
+    .select(POST_PLAN_IDEA_SELECT)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapPostPlanIdeaRow(data) : null;
+}
+
+export async function createPostPlanIdea({
+  accountId,
+  title,
+  details,
+  desiredDate,
+  platforms,
+  userId,
+}) {
+  if (!accountId) throw new Error('createPostPlanIdea: accountId is required');
+  if (!title || !title.trim()) throw new Error('createPostPlanIdea: title is required');
+  const payload = {
+    account_id: accountId,
+    title: title.trim(),
+    details: details || '',
+    desired_date: desiredDate || null,
+    platforms: Array.isArray(platforms) ? platforms : [],
+    status: 'submitted',
+    submitted_by: userId ?? null,
+  };
+  const { data, error } = await supabase
+    .from('post_plan_ideas')
+    .insert(payload)
+    .select(POST_PLAN_IDEA_SELECT)
+    .single();
+  if (error) throw error;
+  return mapPostPlanIdeaRow(data);
+}
+
+function postPlanIdeaPatchToColumns(patch) {
+  const out = {};
+  if (patch == null) return out;
+  if (patch.title !== undefined)        out.title = patch.title;
+  if (patch.details !== undefined)      out.details = patch.details;
+  if (patch.desiredDate !== undefined)  out.desired_date = patch.desiredDate || null;
+  if (patch.platforms !== undefined)    out.platforms = patch.platforms;
+  if (patch.status !== undefined)       out.status = patch.status;
+  if (patch.convertedPostPlanId !== undefined) out.converted_post_plan_id = patch.convertedPostPlanId;
+  if (patch.convertedAt !== undefined)  out.converted_at = patch.convertedAt;
+  return out;
+}
+
+export async function updatePostPlanIdea(id, patch) {
+  const cols = postPlanIdeaPatchToColumns(patch);
+  if (Object.keys(cols).length === 0) return loadPostPlanIdeaById(id);
+  const { data, error } = await supabase
+    .from('post_plan_ideas')
+    .update(cols)
+    .eq('id', id)
+    .select(POST_PLAN_IDEA_SELECT)
+    .single();
+  if (error) throw error;
+  return mapPostPlanIdeaRow(data);
+}
+
+export async function deletePostPlanIdea(id) {
+  const { error } = await supabase.from('post_plan_ideas').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// ----- Idea attachments (reuses the post-plan-attachments bucket) ----
+// Path scheme: <accountId>/ideas/<ideaId>/<ts>_<filename> — the bucket's
+// storage RLS extracts accountId via split_part(name, '/', 1) so this
+// path layout works without policy changes.
+
+const POST_PLAN_IDEA_ATTACHMENT_SELECT = `
+  *,
+  uploader:profiles!uploaded_by(id, display_name, initials, avatar_color, is_agency)
+`;
+
+function mapPostPlanIdeaAttachmentRow(row) {
+  if (!row) return null;
+  const { data: pub } = supabase.storage
+    .from(POST_PLAN_ATTACHMENT_BUCKET)
+    .getPublicUrl(row.storage_path);
+  return {
+    id: row.id,
+    ideaId: row.idea_id,
+    storagePath: row.storage_path,
+    filename: row.filename,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    uploadedBy: row.uploaded_by,
+    uploader: personFromProfile(row.uploader),
+    createdAt: row.created_at,
+    url: pub?.publicUrl,
+  };
+}
+
+export async function loadPostPlanIdeaAttachments(ideaId) {
+  if (!ideaId) return [];
+  const { data, error } = await supabase
+    .from('post_plan_idea_attachments')
+    .select(POST_PLAN_IDEA_ATTACHMENT_SELECT)
+    .eq('idea_id', ideaId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapPostPlanIdeaAttachmentRow);
+}
+
+export async function addPostPlanIdeaAttachment({
+  ideaId,
+  accountId,
+  file,
+  uploadedBy,
+}) {
+  if (!ideaId)     throw new Error('addPostPlanIdeaAttachment: ideaId is required');
+  if (!accountId)  throw new Error('addPostPlanIdeaAttachment: accountId is required');
+  if (!file)       throw new Error('addPostPlanIdeaAttachment: file is required');
+  if (!uploadedBy) throw new Error('addPostPlanIdeaAttachment: uploadedBy is required');
+
+  const safeName = (file.name || 'asset').replace(/[^\w.\-]+/g, '_');
+  const path = `${accountId}/ideas/${ideaId}/${Date.now()}_${safeName}`;
+  const { error: upErr } = await supabase.storage
+    .from(POST_PLAN_ATTACHMENT_BUCKET)
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined,
+    });
+  if (upErr) throw upErr;
+
+  const { data, error } = await supabase
+    .from('post_plan_idea_attachments')
+    .insert({
+      idea_id: ideaId,
+      storage_path: path,
+      filename: file.name || safeName,
+      mime_type: file.type || null,
+      size_bytes: file.size || null,
+      uploaded_by: uploadedBy,
+    })
+    .select(POST_PLAN_IDEA_ATTACHMENT_SELECT)
+    .single();
+  if (error) {
+    await supabase.storage.from(POST_PLAN_ATTACHMENT_BUCKET).remove([path]).catch(() => {});
+    throw error;
+  }
+  return mapPostPlanIdeaAttachmentRow(data);
+}
+
+export async function deletePostPlanIdeaAttachment(attachment) {
+  if (!attachment?.id) throw new Error('deletePostPlanIdeaAttachment: attachment is required');
+  if (attachment.storagePath) {
+    await supabase.storage
+      .from(POST_PLAN_ATTACHMENT_BUCKET)
+      .remove([attachment.storagePath])
+      .catch(() => {});
+  }
+  const { error } = await supabase
+    .from('post_plan_idea_attachments')
+    .delete()
+    .eq('id', attachment.id);
+  if (error) throw error;
+}
+
+// Convert an idea into a post_plan. Creates the post_plans row, then
+// flips the idea to status='converted' with a back-pointer to the new
+// plan. Returns { plan, idea } so the caller can navigate to the plan.
+export async function convertIdeaToPostPlan({
+  idea,
+  scheduledAt,
+  platforms,
+  concept,
+  copyVariants,
+  userId,
+}) {
+  if (!idea?.id || !idea?.accountId) {
+    throw new Error('convertIdeaToPostPlan: idea with id + accountId is required');
+  }
+  if (!scheduledAt) throw new Error('convertIdeaToPostPlan: scheduledAt is required');
+
+  const plan = await createPostPlan({
+    accountId: idea.accountId,
+    scheduledAt,
+    platforms,
+    concept,
+    copyVariants,
+    status: 'not_started',
+    userId,
+  });
+
+  const updatedIdea = await updatePostPlanIdea(idea.id, {
+    status: 'converted',
+    convertedPostPlanId: plan.id,
+    convertedAt: new Date().toISOString(),
+  });
+
+  return { plan, idea: updatedIdea };
+}
+
+export function subscribeToPostPlanIdeas(onChange, { accountId } = {}) {
+  // Per-subscription unique suffix so multiple subscribers (e.g. the
+  // App-level idea-queue-badge useEffect and the IdeateInboxView)
+  // don't share a channel name and trip the supabase-realtime-js
+  // "cannot add postgres_changes callbacks after subscribe()" error.
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const channelName = accountId
+    ? `lr_post_plan_ideas_${accountId}_${suffix}`
+    : `lr_post_plan_ideas_stream_${suffix}`;
+  const filter = accountId
+    ? { event: '*', schema: 'public', table: 'post_plan_ideas', filter: `account_id=eq.${accountId}` }
+    : { event: '*', schema: 'public', table: 'post_plan_ideas' };
+  const channel = supabase
+    .channel(channelName)
+    .on('postgres_changes', filter, async (payload) => {
+      try {
+        if (payload.eventType === 'DELETE') {
+          onChange({ type: 'DELETE', id: payload.old.id });
+          return;
+        }
+        const { data } = await supabase
+          .from('post_plan_ideas')
+          .select(POST_PLAN_IDEA_SELECT)
+          .eq('id', payload.new.id)
+          .maybeSingle();
+        onChange({ type: payload.eventType, idea: data ? mapPostPlanIdeaRow(data) : null });
+      } catch (e) {
+        console.warn('post_plan_ideas realtime failed', e);
+      }
+    })
+    .subscribe();
+  return () => supabase.removeChannel(channel);
 }
 
