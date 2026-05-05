@@ -1740,6 +1740,56 @@ export function mapPostPlanCommentRow(row, viewerUserId) {
   };
 }
 
+// Bulk loader for the calendar List view: comment counts + reference
+// attachments per plan, in two parallel queries. Returns
+//   { commentsByPlan: Map<id, count>,
+//     referencesByPlan: Map<id, [{ id, filename, mimeType, url }, …]> }
+// `referencesByPlan` is what backs the hover-paperclip thumbnail
+// popover; we cap at 6 per plan client-side so a hugely-attached plan
+// doesn't dump dozens of items into the DOM.
+export async function loadPostPlanListRollups({ postPlanIds }) {
+  if (!Array.isArray(postPlanIds) || postPlanIds.length === 0) {
+    return { commentsByPlan: new Map(), referencesByPlan: new Map() };
+  }
+  const [commentsRes, attachmentsRes] = await Promise.all([
+    supabase
+      .from('post_plan_comments')
+      .select('post_plan_id')
+      .in('post_plan_id', postPlanIds),
+    supabase
+      .from('post_plan_attachments')
+      .select('id, post_plan_id, kind, storage_path, filename, mime_type, created_at')
+      .eq('kind', 'reference')
+      .in('post_plan_id', postPlanIds)
+      .order('created_at', { ascending: false }),
+  ]);
+  if (commentsRes.error) throw commentsRes.error;
+  if (attachmentsRes.error) throw attachmentsRes.error;
+
+  const commentsByPlan = new Map();
+  for (const r of commentsRes.data || []) {
+    commentsByPlan.set(r.post_plan_id, (commentsByPlan.get(r.post_plan_id) || 0) + 1);
+  }
+
+  const referencesByPlan = new Map();
+  for (const a of attachmentsRes.data || []) {
+    const existing = referencesByPlan.get(a.post_plan_id) || [];
+    if (existing.length >= 6) continue;
+    const { data: pub } = supabase.storage
+      .from(POST_PLAN_ATTACHMENT_BUCKET)
+      .getPublicUrl(a.storage_path);
+    existing.push({
+      id: a.id,
+      filename: a.filename,
+      mimeType: a.mime_type,
+      url: pub?.publicUrl,
+    });
+    referencesByPlan.set(a.post_plan_id, existing);
+  }
+
+  return { commentsByPlan, referencesByPlan };
+}
+
 export async function loadPostPlanComments(postPlanId, viewerUserId) {
   const { data, error } = await supabase
     .from('post_plan_comments')
