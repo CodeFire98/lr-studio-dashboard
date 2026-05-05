@@ -3947,3 +3947,250 @@ input, textarea { font: inherit; color: inherit; }
   align-items: center;
   justify-content: center;
 }
+
+/* =====================================================================
+   Social Calendar — controls bar (view toggle / density / filter pills)
+   + week-grid stacked-column layout.
+   ===================================================================== */
+
+.cal-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.cal-controls-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cal-controls-heading {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  min-width: 200px;
+  color: var(--ink);
+}
+.cal-controls-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Segmented control — used for Month/Week and density toggle. */
+.cal-segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+.cal-segmented-btn {
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+.cal-segmented-btn:hover { color: var(--ink); }
+.cal-segmented-btn.on {
+  background: var(--ink);
+  color: var(--surface);
+}
+.cal-segmented-btn.icon-only { padding: 5px 8px; }
+
+/* Filter pills — replaces the status <select>. Active pill is filled
+   with ink to match the segmented "on" state. Counts give an at-a-glance
+   "5 needing review" without flipping filters. */
+.cal-filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.cal-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.cal-filter-pill:hover { border-color: var(--ink-4); }
+.cal-filter-pill.on {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+.cal-filter-pill-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  min-width: 18px;
+  text-align: center;
+}
+.cal-filter-pill.on .cal-filter-pill-badge {
+  background: rgba(255, 255, 255, 0.2);
+  color: var(--surface);
+}
+
+/* Week grid — 7 columns stacked-card layout (Trello-style, not time
+   grid). Sticky-ish min-width keeps each column readable on narrow
+   viewports; horizontal scroll if needed. */
+.cal-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(155px, 1fr));
+  gap: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 8px;
+  overflow-x: auto;
+}
+.cal-week-col {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-2);
+  border-radius: 8px;
+  min-height: 320px;
+}
+.cal-week-col.is-today {
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+}
+.cal-week-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--line-2);
+  position: relative;
+  cursor: default;
+}
+.cal-week-col-head[role='button'] { cursor: pointer; }
+.cal-week-col-head[role='button']:hover .cal-week-col-add { opacity: 1; }
+.cal-week-col-weekday {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cal-week-col-day {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cal-week-col-month {
+  font-size: 11px;
+  color: var(--ink-4);
+  font-weight: 400;
+}
+.cal-week-col.is-today .cal-week-col-day { color: var(--accent-ink); }
+.cal-week-col-today {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.cal-week-col-add {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 16px;
+  color: var(--ink-4);
+  opacity: 0.45;
+  transition: opacity 0.12s ease;
+}
+.cal-week-col-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+.cal-week-col-empty {
+  font-size: 11px;
+  color: var(--ink-4);
+  font-style: italic;
+  padding: 8px;
+  text-align: center;
+}
+
+.cal-week-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 0;
+  cursor: pointer;
+  color: var(--ink);
+  font-family: inherit;
+  transition: transform 0.08s ease;
+}
+.cal-week-card:hover { transform: translateY(-1px); }
+.cal-week-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.cal-week-card-time {
+  font-weight: 500;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.cal-week-card-platforms {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
+.cal-week-card-unread {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  background: var(--accent);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.cal-week-card-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--ink);
+  word-break: break-word;
+}
+.cal-week-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

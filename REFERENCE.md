@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-05 (Got ideas? / Inbox — post_plan_ideas; tasks UI fully sunset)
+**Last updated:** 2026-05-05 (Calendar: week view + status-group filter pills + density toggle)
 
 ---
 
@@ -11,6 +11,17 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-05 — Calendar: Week view (Trello-stack) + status-group filter pills + density toggle
+The month grid was getting unreadable when posts targeted all three platforms — three platform icons + concept text + status tint per chip eat the cell on a busy day. Three additions tackle this from different angles:
+
+- **Week view** ([CalendarView.jsx](web/src/components/CalendarView.jsx) — new `WeekGrid` + `WeekPostCard`). Trello-style 7 stacked columns (Sun → Sat), not a Google-Cal time grid. Each card shows time, full multi-line title, platform icons, status pill, unread dot. **Why stacked-column over time-grid:** for a content calendar the *day* matters far more than the *time*; a 5am→10pm time grid would leave 80% of the canvas empty since most posts cluster around morning. Stacked columns give every plan room to breathe.
+- **Status-group filter pills** — replaced the per-status `<select>` (which was 8 enum-value options nobody thinks in) with five workflow buckets: `All`, `Drafting` (`not_started`/`wip`/`delayed`), `Needs review` (`needs_brand_feedback`/`needs_admin_revision`), `Approved` (`approved`/`scheduled`), `Posted`. Each pill carries a count badge so the lead sees "5 things needing my eyes" at a glance without flipping filters.
+- **Density toggle (Comfortable / Compact)** — month view only. Comfortable = legacy chip with platform icons. Compact = thin one-line bar with status-coloured left border, no platform icons, raises per-cell cap from 3 → 6 chips. Kills the cluttered-cell problem without forcing a view switch.
+- **Persistence** — view mode, density, and active filter all written to `localStorage` (`lr_calendar_view_mode` / `lr_calendar_density` / `lr_calendar_status_filter`) so an agency lead who lives in week+compact doesn't reset on every reload.
+- **Navigation** — prev/next moves by 1 week in week view, 1 month in month view. Today snaps to the current week or month respectively. The view-mode toggle preserves the current `viewDate`, so flipping Month → Week shows the week containing the month's anchor day; flipping Week → Month shows the month containing the visible week.
+- **Punted to follow-ups** (per design discussion): drag-to-reschedule, hover preview popover, time-grid week, swimlane grouping. Each is its own design surface.
+- **Sections touched:** Recent changes log; §8 Routes/Views (CalendarView's view modes noted); §9 Key feature flows (Calendar navigation + filters block updated); §13 Known decisions (new entry: stacked-column over time-grid for content calendars; new entry: filter pills over per-status select); LocalStorage keys (three new entries).
 
 ### 2026-05-05 — "Got ideas?" (brand) + "Inbox" (agency) on a new `post_plan_ideas` table; tasks UI fully sunset
 The product moves entirely off the briefs/tasks flow and onto post plans. Brand-side "Request" → "Got ideas?" composer that drops rows into a brand-new `post_plan_ideas` table; agency-side "Inbox" moves out of All-clients (where it was a queue of tasks) and becomes a per-brand surface listing those submitted ideas. Each idea opens to an editable detail panel with an **Add to Social Calendar** CTA that creates a real `post_plans` row and back-links the idea via `converted_post_plan_id`.
@@ -500,6 +511,9 @@ This prevents both invite races and silent re-creation after deletion.
 | `lr_pending_invite` | Invite token to redeem on next sign-in | URL `?invite=…` query string | After redemption |
 | `lr_pending_brand_name` | Brand name to use during auto-create | `signUpBrand` | After auto-create |
 | `lr_mode` | `'admin'` or `'customer'` | `useEffect` mirror of `mode` state | — |
+| `lr_calendar_view_mode` | Social Calendar view: `'month'` or `'week'`. Defaults to `'month'`. | Month/Week segmented toggle in CalendarView controls bar | — |
+| `lr_calendar_density` | Month-view density: `'comfortable'` or `'compact'`. Defaults to `'comfortable'`. Compact = thin status-coloured bars, no platform icons, raises per-cell cap from 3→6. | Density segmented toggle (only visible in month view) | — |
+| `lr_calendar_status_filter` | Active status-group filter: `'all'`/`'drafting'`/`'needs_review'`/`'approved'`/`'posted'`. | Filter pills row in CalendarView | — |
 | ~~`lr_route`~~ *(deprecated 2026-04-30)* | Was: last visited view, persisted across reloads. Replaced by the URL itself when Phase 1 router landed. One-time migration on first post-deploy load hops the user to the saved view, then drops the key. | Removed — App.jsx no longer writes it; existing values are migrated then deleted. | Migration block in App.jsx |
 | ~~`lr_impersonation`~~ *(deprecated)* | Was: admin → client view shadow | Removed 2026-04-30 in the BrandPicker rollout. Old code that read this is gone. | — |
 
@@ -909,6 +923,9 @@ No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Calendar week view is Trello-style stacked columns, not a Google-Cal time grid.** Considered (a) hours-on-Y-axis × days-on-X-axis time grid (Google Cal / Outlook), (b) flat 7-column stack of cards in time order. Chose (b): for content scheduling the *day* is the meaningful unit; *time-of-day* matters maybe 5% of the time and only for "morning vs. evening". A time grid would leave 80% of the canvas empty (most posts cluster around morning) and force tiny chips. Stacked cards give every plan room to show concept + status pill + platform icons + time without clipping. If "post-at-exactly-11:42" planning ever becomes a real use case we can add a time-grid mode behind a toggle, but it's not now.
+- **Status filter is a pill row of workflow buckets, not a per-status select.** The original `<select>` exposed all 8 raw enum values (`not_started`, `wip`, `needs_brand_feedback`, etc.) — agency leads don't think in enum values, they think in workflow stages. Five buckets (`All`, `Drafting`, `Needs review`, `Approved`, `Posted`) with count badges cover the actual mental model. `delayed` rolls into `Drafting` (it's a stalled draft, not a separate stage); `scheduled` rolls into `Approved` (approved-and-on-the-publishing-queue). If anyone needs to filter at the raw-enum level for a specific debug case, they can edit a single line in `STATUS_GROUPS` to add a one-status bucket.
+- **Density toggle is month-only.** Considered exposing it in week view too, but the week-card already has the right amount of room (multi-line title, status pill, platform icons) — there's no readability problem to solve there. Forcing a "compact week card" mode would just shrink everything for symmetry's sake. The toggle hides itself when you switch to week mode.
 - **Ideas live in their own table, not as a status on `post_plans`.** Considered (a) a new status `idea` at the head of the `post_plans.status` enum so a single table handles the full content-lifecycle, (b) a separate `post_plan_ideas` table linked back via FK. Chose (b): ideas and post plans have different lifecycles (ideas pre-curation, post plans scheduled commitments) and would fight for the same RLS shape, the same status-log trigger, and the same calendar-grid filtering rules. A separate table keeps both surfaces clean — calendar never accidentally picks up ungroomed brand suggestions, the Inbox query never filters across an enum that's mostly post-plan transitions. The link is one-way: idea → `converted_post_plan_id` → plan.
 - **Idea status enum is intentionally tiny: `submitted` / `converted` / `archived`.** Considered an `in_review` middle state (auto-flips when the agency opens the idea), but it complicates the badge math without giving the brand any new signal — the brand can't see in_review either way, and the agency already knows what they've opened. The badge counts `submitted` only, so converting OR archiving an idea drops it off the Inbox queue with one status flip. Add `in_review` later if we wire per-user "I've looked at this" tracking.
 - **Idea attachments reuse the existing `post-plan-attachments` bucket.** The bucket's storage RLS extracts account_id via `split_part(name, '/', 1)`, so the path scheme `<accountId>/ideas/<ideaId>/<ts>_<filename>` is naturally accepted (the `ideas/` middle segment is opaque to RLS). Considered a separate bucket for cleaner separation, but we'd duplicate three storage policies for no security gain — the bucket's gate is already exactly what idea attachments need (members of the leading account). Saves a migration and a deploy step.
