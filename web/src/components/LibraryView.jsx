@@ -1,9 +1,14 @@
 /* eslint-disable */
-/* Library — searchable grid of delivered creatives (real assets from DB). */
+/* Library — universal asset repo for the active brand. Toggle between
+   delivered creatives and brand-uploaded references; both pull from
+   post_plan_attachments (legacy task assets are surfaced under
+   Deliverables for backward-compat). */
 import React, { useState, useEffect, useMemo } from 'react';
 import { Icon } from './Icon.jsx';
-import { loadLibraryAssets, loadLibraryPostPlanFinals, assetSignedUrl } from '../lib/db.js';
+import { loadLibraryAssets, loadLibraryPostPlanAttachments, assetSignedUrl } from '../lib/db.js';
 import { useLightbox } from './Lightbox.jsx';
+
+const LS_LIBRARY_KIND = 'lr_library_kind';
 
 // Platform filter — we focus the AI Social Media Manager service on
 // Instagram, LinkedIn, and X. The platform is captured on the parent task
@@ -38,8 +43,23 @@ const DATE_WINDOWS = [
   { key: 'quarter', label: 'Past 90 days', cutoffMs: 90 * 86400000 },
 ];
 
-const LibraryView = ({ auth, accountId }) => {
-  const [assets, setAssets] = useState([]);
+const LibraryView = ({ auth, accountId, setRoute }) => {
+  // Two parallel asset pools — deliverables (final creatives the agency
+  // has shipped) and references (inspiration files the brand has dropped
+  // on post plans). Toggle picks one, but we load both eagerly so the
+  // counts up top stay accurate as the user flips between them.
+  const [deliverables, setDeliverables] = useState([]);
+  const [references, setReferences]     = useState([]);
+  const [kind, setKind] = useState(() => {
+    try {
+      const v = localStorage.getItem(LS_LIBRARY_KIND);
+      if (v === 'deliverable' || v === 'reference') return v;
+    } catch {}
+    return 'deliverable';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(LS_LIBRARY_KIND, kind); } catch {}
+  }, [kind]);
   const [thumbs, setThumbs] = useState({});
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -49,35 +69,38 @@ const LibraryView = ({ auth, accountId }) => {
 
   // Library is always scoped to the active brand — `accountId` is the brand
   // currently selected in the BrandPicker (or the brand owner's own brand).
-  // For agency users, this means switching brands changes which creatives
-  // show up here. RLS filters work alongside this for non-agency users.
   //
-  // We pull from two sources and merge: task deliverables (assets where
-  // kind='deliverable') and post-plan finals (post_plan_attachments where
-  // kind='final'). Both count as delivered creatives in the user's mental
-  // model. Each row carries `source: 'task' | 'post_plan'` so the URL
-  // resolution downstream picks the right bucket strategy.
+  // Three queries on mount:
+  //   1. legacy task deliverables (kind='deliverable')
+  //   2. post-plan finals (post_plan_attachments where kind='final')
+  //   3. post-plan references (post_plan_attachments where kind='reference')
+  // Pools (1)+(2) feed Deliverables; pool (3) feeds References.
   useEffect(() => {
-    if (auth?.requiresBrandSelection) { setAssets([]); setLoading(false); return; }
+    if (auth?.requiresBrandSelection) {
+      setDeliverables([]);
+      setReferences([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     Promise.all([
       loadLibraryAssets({ kind: 'deliverable', accountId }),
-      loadLibraryPostPlanFinals({ accountId }),
+      loadLibraryPostPlanAttachments({ accountId, kind: 'final' }),
+      loadLibraryPostPlanAttachments({ accountId, kind: 'reference' }),
     ])
-      .then(([taskRows, postPlanRows]) => {
+      .then(([taskRows, finalRows, refRows]) => {
         if (cancelled) return;
-        // Merge + sort by createdAt desc — newest at the top regardless
-        // of which source it came from.
-        const merged = [...taskRows, ...postPlanRows].sort(
-          (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')
-        );
-        setAssets(merged);
+        const sortDesc = (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '');
+        setDeliverables([...taskRows, ...finalRows].sort(sortDesc));
+        setReferences([...refRows].sort(sortDesc));
       })
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [accountId, auth?.requiresBrandSelection]);
+
+  const assets = kind === 'reference' ? references : deliverables;
 
   // Sign / resolve image URLs lazily, source-aware:
   //   - task deliverables live in the private `assets` bucket → signed URL
@@ -178,13 +201,20 @@ const LibraryView = ({ auth, accountId }) => {
       <div className="page-head">
         <div className="titles">
           <h1>Library</h1>
-          <div className="sub">Every deliverable your agency has shipped. Filter by platform or date.</div>
+          <div className="sub">
+            Every creative your agency has shipped, plus reference files the brand has shared on post plans.
+            <span style={{ marginLeft: 8, color: 'var(--ink-4)' }}>
+              {deliverables.length} deliverable{deliverables.length === 1 ? '' : 's'}
+              {' · '}
+              {references.length} reference{references.length === 1 ? '' : 's'}
+            </span>
+          </div>
         </div>
         <div className="actions">
           <div className="topbar-search" style={{background: "var(--surface)", border: "1px solid var(--line)"}}>
             <Icon name="search" size={14}/>
             <input
-              placeholder="Search by filename or task…"
+              placeholder="Search by filename or post plan…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               style={{border: 0, background: "transparent", outline: "none", fontSize: 13, width: 220}}
@@ -194,6 +224,26 @@ const LibraryView = ({ auth, accountId }) => {
       </div>
 
       <div className="filterbar">
+        <div className="seg" role="tablist" aria-label="Asset kind" style={{ marginRight: 8 }}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={kind === 'deliverable'}
+            className={kind === 'deliverable' ? 'on' : ''}
+            onClick={() => setKind('deliverable')}
+          >
+            Deliverables
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={kind === 'reference'}
+            className={kind === 'reference' ? 'on' : ''}
+            onClick={() => setKind('reference')}
+          >
+            References
+          </button>
+        </div>
         <div className="seg">
           {PLATFORM_FILTERS.map((t) => (
             <button key={t.key} className={platformKey === t.key ? "on" : ""} onClick={() => setPlatformKey(t.key)}>
@@ -222,8 +272,12 @@ const LibraryView = ({ auth, accountId }) => {
         <div className="empty">
           <div className="big">Nothing here yet</div>
           {assets.length === 0
-            ? "As your agency delivers creatives, they'll land here."
-            : "No delivered creatives match those filters."}
+            ? (kind === 'reference'
+                ? "As the brand drops reference files on post plans, they'll land here."
+                : "As your agency delivers creatives, they'll land here.")
+            : (kind === 'reference'
+                ? 'No reference files match those filters.'
+                : 'No delivered creatives match those filters.')}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
@@ -240,9 +294,36 @@ const LibraryView = ({ auth, accountId }) => {
                   borderBottom: '1px solid var(--line)',
                 }}
               >
-                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: 'var(--ink-1)' }}>
-                  {g.parentTitle}
-                </h3>
+                {g.source === 'post_plan' && g.parentId && setRoute ? (
+                  <button
+                    type="button"
+                    onClick={() => setRoute({ view: 'plan', id: g.parentId })}
+                    title="Open this post plan"
+                    style={{
+                      margin: 0,
+                      padding: 0,
+                      fontSize: 17,
+                      fontWeight: 600,
+                      color: 'var(--ink-1)',
+                      background: 'transparent',
+                      border: 0,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent-ink)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--ink-1)'; }}
+                  >
+                    <span>{g.parentTitle}</span>
+                    <Icon name="arrow-up-right" size={13} />
+                  </button>
+                ) : (
+                  <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: 'var(--ink-1)' }}>
+                    {g.parentTitle}
+                  </h3>
+                )}
                 <span
                   style={{
                     fontSize: 12,

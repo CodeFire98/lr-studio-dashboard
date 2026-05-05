@@ -569,14 +569,15 @@ export async function loadLibraryAssets({ kind = 'deliverable', accountId = null
   return accountId ? rows.filter((r) => r.accountId === accountId) : rows;
 }
 
-// Library (post-plan side): every "final" attachment uploaded against a
-// post plan. These also count as delivered creatives — the brand wants
-// to see them in Library alongside task deliverables. Scoping mirrors
-// loadLibraryAssets: optional client-side filter by accountId.
+// Library (post-plan side): attachments uploaded against a post plan.
+// Pass `kind: 'final'` for delivered creatives or `kind: 'reference'`
+// for inspiration files the brand has dropped on plans. Both render in
+// the same grid shape — LibraryView toggles between them.
 //
-// Returns the same shape as loadLibraryAssets entries with `source: 'post_plan'`
-// so LibraryView can render them in one merged grid.
-export async function loadLibraryPostPlanFinals({ accountId = null } = {}) {
+// Returns the same shape as loadLibraryAssets entries with
+// `source: 'post_plan'` so LibraryView can render them with the same
+// per-tile component.
+export async function loadLibraryPostPlanAttachments({ accountId = null, kind = 'final' } = {}) {
   const { data, error } = await supabase
     .from('post_plan_attachments')
     .select(`
@@ -584,7 +585,7 @@ export async function loadLibraryPostPlanFinals({ accountId = null } = {}) {
       uploader:profiles!uploaded_by(id, display_name, initials, avatar_color, is_agency),
       post_plan:post_plans(id, concept, platforms, scheduled_at, status, account:accounts(id, name))
     `)
-    .eq('kind', 'final')
+    .eq('kind', kind)
     .order('created_at', { ascending: false });
   if (error) throw error;
   const rows = (data || []).map((row) => {
