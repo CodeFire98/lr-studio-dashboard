@@ -557,9 +557,16 @@ const PostPlanDetailView = ({
     exitEditMode(key);
   };
 
-  const saveAndExitCopy = async (key) => {
-    await saveCopyForKey(key);
+  // Single-click "done editing" path. We flip the mode to 'read' SYNCHRONOUSLY
+  // (before awaiting persist) so the textarea unmounts and the linkified read
+  // view renders on the very next render. The actual save runs in the
+  // background — saveCopyForKey early-returns if there's nothing to save, so
+  // calling it unconditionally is fine. This avoids a flash where the save
+  // completes but the view is still in edit mode (which made it look like a
+  // two-step "Save copy → Done" interaction).
+  const finishCopyEdit = (key) => {
     exitEditMode(key);
+    saveCopyForKey(key);
   };
 
   const transitionStatus = async (next, { requireComment = false } = {}) => {
@@ -1089,16 +1096,11 @@ const PostPlanDetailView = ({
                                 )}
                                 <button
                                   type="button"
-                                  className={isDirty ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
-                                  onClick={() => saveAndExitCopy(activeCopyTab)}
-                                  disabled={saving || (!isDirty && !saved)}
-                                  title={
-                                    isDirty
-                                      ? 'Save this platform’s copy and link any URLs inline'
-                                      : 'Done editing'
-                                  }
+                                  className="btn btn-sm btn-primary"
+                                  onClick={() => finishCopyEdit(activeCopyTab)}
+                                  title="Save and exit edit mode — URLs become inline clickable links"
                                 >
-                                  {isDirty ? 'Save copy' : 'Done'}
+                                  Done
                                 </button>
                               </div>
                             )}
