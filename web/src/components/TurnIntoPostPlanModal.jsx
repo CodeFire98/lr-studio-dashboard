@@ -124,7 +124,7 @@ const TurnIntoPostPlanModal = ({
         platforms,
         concept: conceptDraft.trim() || trendDisplay,
         copyVariants,
-        status: 'not_started',
+        status: 'drafting',
         userId: userId ?? null,
       });
       onCreated?.(plan);

@@ -69,13 +69,19 @@ function linkifySegments(text) {
 }
 
 // Status transition → human verb. Used in the activity feed to render
-// "Brand approved", "Agency requested changes", etc. in past tense.
+// "Brand approved", "Agency submitted for review" etc. in past tense.
+// New 3-status workflow first; legacy values kept for historical log
+// rendering — anything in `post_plan_status_log` from before migration
+// 0035 still uses the old enum keys.
 const STATUS_VERB = {
+  drafting:             'sent this plan back to draft',
+  needs_review:         'submitted this plan for review',
+  approved:             'approved this plan',
+  // Legacy — only renders for pre-migration log rows.
   not_started:          'reset this plan to not started',
   wip:                  'moved this plan to in progress',
   needs_brand_feedback: 'submitted this plan for review',
   needs_admin_revision: 'requested changes',
-  approved:             'approved this plan',
   scheduled:            'scheduled this plan',
   posted:               'marked this plan as posted',
   delayed:              'marked this plan as delayed',
@@ -379,7 +385,7 @@ const PostPlanDetailView = ({
   // forced into 'read' mode regardless of what's in this map.
   const [copyMode, setCopyMode] = useState({});
   const [activeCopyTab, setActiveCopyTab] = useState((plan?.platforms || [])[0] || null);
-  const [status, setStatus] = useState(plan?.status || 'not_started');
+  const [status, setStatus] = useState(plan?.status || 'drafting');
   const [saving, setSaving] = useState(false);
   // Title editing — read mode by default with a pencil affordance; flips
   // to an autofocused input when the user clicks the pencil. Enter saves
@@ -745,22 +751,34 @@ const PostPlanDetailView = ({
   }
 
   // ---- Status workflow buttons ---------------------------------------
+  //
+  // Three-state workflow (post-migration 0035):
+  //   * Drafting       → agency clicks "Submit for review" → Needs review
+  //   * Needs review   → brand clicks "Approve"            → Approved
+  //   * Approved       → agency clicks "Back to draft"     → Drafting
+  //
+  // The brand never has a "Request changes" button — they leave a
+  // comment instead and the row stays at Needs review until they're
+  // satisfied and click Approve. Legacy enum values from before the
+  // migration are normalised into the same three buckets so a row that
+  // hasn't yet flowed through the migration still lights up the right
+  // CTA.
+  const statusBucket = (() => {
+    if (status === 'approved' || status === 'scheduled' || status === 'posted') return 'approved';
+    if (status === 'needs_review' || status === 'needs_brand_feedback' || status === 'needs_admin_revision') return 'needs_review';
+    return 'drafting';
+  })();
 
   const statusActions = (() => {
     const out = [];
     if (isAdmin) {
-      if (status === 'not_started' || status === 'wip' || status === 'needs_admin_revision') {
-        out.push({ label: 'Submit for review', tone: 'primary', next: 'needs_brand_feedback' });
+      if (statusBucket === 'drafting') {
+        out.push({ label: 'Submit for review', tone: 'primary', next: 'needs_review' });
+      } else if (statusBucket === 'approved') {
+        out.push({ label: 'Back to draft', tone: 'ghost', next: 'drafting' });
       }
-      if (status === 'approved') {
-        out.push({ label: 'Mark posted', tone: 'good', next: 'posted' });
-      }
-      if (status !== 'posted' && status !== 'delayed') {
-        out.push({ label: 'Mark delayed', tone: 'ghost', next: 'delayed' });
-      }
-    } else if (status === 'needs_brand_feedback') {
+    } else if (statusBucket === 'needs_review') {
       out.push({ label: 'Approve', tone: 'good', next: 'approved' });
-      out.push({ label: 'Request changes', tone: 'accent', next: 'needs_admin_revision', requireComment: true });
     }
     return out;
   })();
@@ -916,14 +934,15 @@ const PostPlanDetailView = ({
           {isAdmin && (
             <select
               className="btn btn-sm"
-              value={status}
+              value={statusBucket}
               onChange={(e) => { setStatus(e.target.value); persist({ status: e.target.value }); }}
               disabled={saving}
               style={{ appearance: 'none', paddingRight: 28 }}
+              title="Override status"
             >
-              {Object.entries(STATUS_CONFIG).map(([k, c]) => (
-                <option key={k} value={k}>Set: {c.label}</option>
-              ))}
+              <option value="drafting">Set: Drafting</option>
+              <option value="needs_review">Set: Needs review</option>
+              <option value="approved">Set: Approved</option>
             </select>
           )}
         </div>
@@ -1395,9 +1414,8 @@ const PostPlanDetailView = ({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, padding: '0 16px 16px' }}>
               {[
                 { k: 'Created', v: plan.createdAt, on: !!plan.createdAt },
-                { k: 'Submitted for review', v: null, on: ['needs_brand_feedback','needs_admin_revision','approved','scheduled','posted'].includes(plan.status) },
+                { k: 'Submitted for review', v: null, on: ['needs_review','needs_brand_feedback','needs_admin_revision','approved','scheduled','posted'].includes(plan.status) },
                 { k: 'Approved', v: plan.approvedAt, on: !!plan.approvedAt },
-                { k: 'Posted', v: plan.postedAt, on: !!plan.postedAt },
               ].map((step, i) => (
                 <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <span style={{

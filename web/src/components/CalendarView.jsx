@@ -21,26 +21,30 @@ const MAX_CHIPS_COMPACT     = 6;
 
 // Status order — earlier statuses sort first within a day so the brand
 // sees "things needing my attention" near the top of a busy cell.
+// Legacy enum values are mapped to the same slot as their new-enum
+// equivalent so a cached realtime payload still sorts sanely.
 const STATUS_ORDER = {
+  needs_review:         0,
   needs_brand_feedback: 0,
-  needs_admin_revision: 1,
-  delayed:              2,
-  wip:                  3,
-  not_started:          4,
-  approved:             5,
-  scheduled:            6,
-  posted:               7,
+  needs_admin_revision: 0,
+  drafting:             1,
+  not_started:          1,
+  wip:                  1,
+  delayed:              1,
+  approved:             2,
+  scheduled:            2,
+  posted:               2,
 };
 
-// Filter buckets — single status flips would mean 8 pills which is too
-// noisy; agency leads think in workflow stages, not in raw enum values.
-// `null` for `all` means no filter at all.
+// Filter buckets — the three workflow stages plus an All sentinel.
+// Each bucket's `statuses` array also includes the legacy enum values
+// so a row that hasn't yet been migrated still flows into the right
+// bucket on the calendar.
 const STATUS_GROUPS = {
   all:          { label: 'All',          statuses: null },
-  drafting:     { label: 'Drafting',     statuses: ['not_started', 'wip', 'delayed'] },
-  needs_review: { label: 'Needs review', statuses: ['needs_brand_feedback', 'needs_admin_revision'] },
-  approved:     { label: 'Approved',     statuses: ['approved', 'scheduled'] },
-  posted:       { label: 'Posted',       statuses: ['posted'] },
+  drafting:     { label: 'Drafting',     statuses: ['drafting', 'not_started', 'wip', 'delayed'] },
+  needs_review: { label: 'Needs review', statuses: ['needs_review', 'needs_brand_feedback', 'needs_admin_revision'] },
+  approved:     { label: 'Approved',     statuses: ['approved', 'scheduled', 'posted'] },
 };
 
 const LS_VIEW_MODE     = 'lr_calendar_view_mode';
@@ -123,7 +127,7 @@ function buildMonthMatrix(viewYear, viewMonth) {
 }
 
 const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, density = 'comfortable' }) => {
-  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.not_started;
+  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
   const titleSuffix = unreadCount > 0
     ? ` · ${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`
@@ -256,7 +260,7 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, density = 'com
 // matter more than times for content planning, and a stacked column
 // gives each plan enough room to be scannable without opening it.
 const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
-  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.not_started;
+  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
   return (
     <button
@@ -635,7 +639,7 @@ const CalendarView = ({
         platforms: [],
         concept: '',
         copyVariants: {},
-        status: 'not_started',
+        status: 'drafting',
       });
       // Push into App-level state immediately so the chip appears on the
       // calendar without waiting for the realtime round-trip.
