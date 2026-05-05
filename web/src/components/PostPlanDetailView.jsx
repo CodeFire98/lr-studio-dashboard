@@ -35,6 +35,38 @@ import {
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
+// =====================================================================
+// Linkify helpers — turn http(s) URLs in copy text into clickable
+// anchors that open in a new tab. Used by the linkified preview block
+// under the copy editor. Kept module-local so the regex is allocated
+// once per render path (no `g`-flag lastIndex traps).
+// =====================================================================
+const URL_PATTERN = 'https?:\\/\\/[^\\s<>()"\']+';
+function hasUrl(text) {
+  if (!text) return false;
+  return new RegExp(URL_PATTERN).test(text);
+}
+function linkifySegments(text) {
+  if (!text) return null;
+  const splitRe = new RegExp(`(${URL_PATTERN})`, 'g');
+  const matchRe = new RegExp(`^${URL_PATTERN}$`);
+  return text.split(splitRe).map((part, i) => (
+    matchRe.test(part)
+      ? (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: 'var(--accent-ink)', textDecoration: 'underline', wordBreak: 'break-all' }}
+        >
+          {part}
+        </a>
+      )
+      : <React.Fragment key={i}>{part}</React.Fragment>
+  ));
+}
+
 // Status transition → human verb. Used in the activity feed to render
 // "Brand approved", "Agency requested changes", etc. in past tense.
 const STATUS_VERB = {
@@ -315,6 +347,12 @@ const PostPlanDetailView = ({
   const [scheduledDraft, setScheduledDraft] = useState(toDatetimeLocal(plan?.scheduledAt || ''));
   const [platforms, setPlatforms] = useState(plan?.platforms || []);
   const [copyVariants, setCopyVariants] = useState(plan?.copyVariants || {});
+  // Per-platform draft state, controlled. Diverges from `copyVariants` only
+  // while the user has unsaved typing — drives the Save button + dirty
+  // indicator. Synced when a different plan is loaded; intentionally not
+  // synced on plan.updatedAt of the same plan, so realtime updates from
+  // other clients don't clobber in-flight typing.
+  const [copyDrafts, setCopyDrafts] = useState(() => plan?.copyVariants || {});
   const [activeCopyTab, setActiveCopyTab] = useState((plan?.platforms || [])[0] || null);
   const [status, setStatus] = useState(plan?.status || 'not_started');
   const [saving, setSaving] = useState(false);
@@ -333,6 +371,13 @@ const PostPlanDetailView = ({
     setStatus(plan.status || 'not_started');
     setActiveCopyTab((prev) => (plan.platforms || []).includes(prev) ? prev : (plan.platforms || [])[0] || null);
   }, [plan?.id, plan?.updatedAt]);
+
+  // Reset copy drafts only when a DIFFERENT plan is loaded — switching
+  // plans should bring in that plan's copy, but realtime updates of the
+  // current plan should not blow away the user's in-progress typing.
+  useEffect(() => {
+    if (plan) setCopyDrafts(plan.copyVariants || {});
+  }, [plan?.id]);
 
   // Mark this plan as "seen" for the viewer so its unread badge clears
   // immediately on open. Idempotent — runs once per (plan, viewer) tuple.
@@ -458,12 +503,23 @@ const PostPlanDetailView = ({
     persist({ platforms: next });
   };
 
-  const handleCopyBlur = (key, val) => {
-    if ((plan?.copyVariants || {})[key] !== val) {
-      const next = { ...copyVariants, [key]: val };
-      setCopyVariants(next);
-      persist({ copyVariants: next });
-    }
+  const handleCopyChange = (key, val) => {
+    setCopyDrafts((prev) => ({ ...prev, [key]: val }));
+  };
+
+  const saveCopyForKey = async (key) => {
+    const val = copyDrafts[key] ?? '';
+    if (((plan?.copyVariants || {})[key] ?? '') === val) return; // already saved
+    const next = { ...copyVariants, [key]: val };
+    setCopyVariants(next);
+    await persist({ copyVariants: next });
+  };
+
+  // Auto-save fallback when the textarea loses focus — preserves the
+  // existing on-blur-persist behaviour so users who don't click Save
+  // still get their text saved.
+  const handleCopyBlur = (key) => {
+    saveCopyForKey(key);
   };
 
   const transitionStatus = async (next, { requireComment = false } = {}) => {
@@ -936,10 +992,10 @@ const PostPlanDetailView = ({
                       })}
                     </div>
                     <textarea
-                      key={activeCopyTab}
                       rows={6}
-                      defaultValue={(copyVariants[activeCopyTab] || '')}
-                      onBlur={(e) => handleCopyBlur(activeCopyTab, e.target.value)}
+                      value={copyDrafts[activeCopyTab] ?? ''}
+                      onChange={(e) => handleCopyChange(activeCopyTab, e.target.value)}
+                      onBlur={() => handleCopyBlur(activeCopyTab)}
                       placeholder={`Write the ${PLATFORM_BY_KEY[activeCopyTab]?.label || ''} version of this post…`}
                       disabled={!isAdmin || saving}
                       style={{
@@ -956,6 +1012,70 @@ const PostPlanDetailView = ({
                         fontFamily: 'inherit',
                       }}
                     />
+                    {(() => {
+                      const draft = copyDrafts[activeCopyTab] ?? '';
+                      const saved = (plan?.copyVariants || {})[activeCopyTab] ?? '';
+                      const isDirty = draft !== saved;
+                      return (
+                        <>
+                          {/* Save row — agency-only. Brand sees a
+                              read-only textarea and the linkified preview
+                              below; no Save button needed. */}
+                          {isAdmin && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                              <span style={{ fontSize: 11.5, color: isDirty ? 'var(--accent-ink)' : 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                {saving && isDirty
+                                  ? 'Saving…'
+                                  : isDirty
+                                    ? 'Unsaved changes'
+                                    : (<><Icon name="check" size={11}/>Saved</>)}
+                              </span>
+                              <span style={{ flex: 1 }}/>
+                              <button
+                                type="button"
+                                className={isDirty ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+                                onClick={() => saveCopyForKey(activeCopyTab)}
+                                disabled={!isDirty || saving}
+                                title={isDirty ? 'Save this platform’s copy' : 'No unsaved changes'}
+                              >
+                                Save copy
+                              </button>
+                            </div>
+                          )}
+                          {/* Linkified preview — shown for agency + brand
+                              whenever the saved copy contains URLs. Lets
+                              either side click out to verify a link. */}
+                          {hasUrl(saved) && (
+                            <div style={{
+                              marginTop: 12,
+                              padding: '10px 12px',
+                              background: 'var(--surface-2)',
+                              border: '1px solid var(--line)',
+                              borderRadius: 6,
+                            }}>
+                              <div style={{
+                                fontSize: 10.5,
+                                letterSpacing: 0.6,
+                                textTransform: 'uppercase',
+                                color: 'var(--ink-4)',
+                                marginBottom: 6,
+                              }}>
+                                Preview · links open in a new tab
+                              </div>
+                              <div style={{
+                                fontSize: 13,
+                                color: 'var(--ink-1)',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                lineHeight: 1.5,
+                              }}>
+                                {linkifySegments(saved)}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
