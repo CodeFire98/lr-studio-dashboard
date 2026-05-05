@@ -2,7 +2,7 @@
 /* Sidebar — three modes:
    - Guest: a teaser nav + Log In button.
    - Brand owner: per-brand workflow nav scoped to their active brand.
-   - Agency: same per-brand nav when working in a brand, OR Inbox + All-tasks
+   - Agency: same per-brand nav when working in a brand, OR Trends Radar
      when the brand picker is set to "All clients."
 
    The L+R Agency wordmark stays at the top regardless. The BrandPicker
@@ -15,31 +15,25 @@ import { BrandPicker } from './BrandPicker.jsx';
 
 // -------- Nav configurations -------------------------------------------
 
-// Brand-owner / agency-in-a-brand nav. Differences:
-//   - "Request" hides for agency users
-//   - "Tasks" is agency-only — the brand-side workflow doesn't currently use
-//     the briefs/tasks surface, so we hide it from brand owners' sidebar.
-//     The route still resolves if anyone deep-links to it; this is purely
-//     a sidebar-visibility change. (Deleting the view is deferred.)
-//   - Agency users see "Trends Radar" under Library and an "L+R Team" entry
-//     below "Brand team" so the two team surfaces aren't confused.
-const buildBrandNav = ({ taskCount, calendarUnreadCount, isAgency }) => {
+// Brand-owner / agency-in-a-brand nav.
+//   - Brands see "Got ideas?" (composer) — no badge.
+//   - Agency users in a brand see "Inbox" with a badge counting submitted
+//     ideas waiting to be turned into post plans.
+//   - Tasks is gone from the sidebar in both modes — the product has
+//     moved fully onto post plans.
+//   - Agency users see "Trends Radar" and an "L+R Team" entry.
+const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
   const primary = [
     { key: "calendar", label: "Social Calendar", icon: "calendar", badge: calendarUnreadCount || undefined },
-    ...(isAgency
-      ? [{ key: "tasks", label: "Tasks", icon: "folder", badge: taskCount || undefined }]
-      : []),
+    isAgency
+      ? { key: "ideate", label: "Inbox", icon: "home", badge: ideaQueueCount || undefined }
+      : { key: "ideate", label: "Got ideas?", icon: "send" },
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
   ];
   if (isAgency) {
-    // Trends Radar is agency-only and sits directly under Library in the
-    // primary nav — the agency uses it daily as part of their content
-    // workflow, alongside Calendar / Tasks / Brand / Library.
+    // Trends Radar is agency-only and sits below Library — same as before.
     primary.push({ key: "trends", label: "Trends Radar", icon: "sparkles" });
-  }
-  if (!isAgency) {
-    primary.push({ key: "home", label: "Request", icon: "send" });
   }
   const secondary = [
     { key: "performance", label: "Performance", icon: "chart" },
@@ -51,14 +45,12 @@ const buildBrandNav = ({ taskCount, calendarUnreadCount, isAgency }) => {
   return { primary, secondary };
 };
 
-// Agency "All clients" nav — only the cross-client surfaces.
-const buildAllClientsNav = (taskCount) => ({
+// Agency "All clients" nav — cross-client surfaces only. Inbox + All tasks
+// have moved away (Inbox is now per-brand on the new ideas table; tasks
+// are sunsetted entirely). Trends Radar stays — it's the only cross-brand
+// surface left in the sidebar; Clients/Manage live inside BrandPicker.
+const buildAllClientsNav = () => ({
   primary: [
-    { key: "home", label: "Inbox", icon: "home" },
-    { key: "tasks", label: "All tasks", icon: "folder", badge: taskCount || undefined },
-    // Trends Radar is also useful from All-clients mode (cross-brand
-    // insight), so it shows up in both contexts. Primary block matches
-    // the placement when an agency user is inside a brand.
     { key: "trends", label: "Trends Radar", icon: "sparkles" },
   ],
   secondary: [],
@@ -66,7 +58,6 @@ const buildAllClientsNav = (taskCount) => ({
 
 const GUEST_NAV = [
   { key: "calendar", label: "Social Calendar", icon: "calendar" },
-  { key: "home", label: "Request", icon: "send" },
 ];
 
 // -------- Component ----------------------------------------------------
@@ -76,7 +67,7 @@ const Sidebar = ({
   mode, setMode,
   onSignOut, tweaks, setTweaks,
   auth, onRequestLogin,
-  taskCount = 0,
+  ideaQueueCount = 0,
   calendarUnreadCount = 0,
   // BrandPicker props
   activeAdminBrandId,
@@ -92,8 +83,8 @@ const Sidebar = ({
   // Pick the right nav config for the current context.
   const navConfig = (() => {
     if (isGuest) return { primary: GUEST_NAV, secondary: [] };
-    if (isAgency && isAllClientsMode) return buildAllClientsNav(taskCount);
-    return buildBrandNav({ taskCount, calendarUnreadCount, isAgency });
+    if (isAgency && isAllClientsMode) return buildAllClientsNav();
+    return buildBrandNav({ ideaQueueCount, calendarUnreadCount, isAgency });
   })();
   const primaryItems = navConfig.primary;
   const secondaryItems = navConfig.secondary;
@@ -172,7 +163,7 @@ const Sidebar = ({
         <div className="sidebar-guest-teaser">
           <div className="teaser-label">With an account</div>
           <ul>
-            <li><Icon name="folder" size={12}/><span>Track every task</span></li>
+            <li><Icon name="send" size={12}/><span>Drop ideas to your agency</span></li>
             <li><Icon name="brand" size={12}/><span>Build your brand intelligence</span></li>
             <li><Icon name="chart" size={12}/><span>See performance</span></li>
           </ul>

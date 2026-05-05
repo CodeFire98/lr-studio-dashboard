@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-02 (Trends Radar Phases 2 + 3 + 5 — Twitter via Apify, per-brand Instagram via Apify, "Turn into post plan" agentic loop)
+**Last updated:** 2026-05-05 (Got ideas? / Inbox — post_plan_ideas; tasks UI fully sunset)
 
 ---
 
@@ -11,6 +11,20 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-05 — "Got ideas?" (brand) + "Inbox" (agency) on a new `post_plan_ideas` table; tasks UI fully sunset
+The product moves entirely off the briefs/tasks flow and onto post plans. Brand-side "Request" → "Got ideas?" composer that drops rows into a brand-new `post_plan_ideas` table; agency-side "Inbox" moves out of All-clients (where it was a queue of tasks) and becomes a per-brand surface listing those submitted ideas. Each idea opens to an editable detail panel with an **Add to Social Calendar** CTA that creates a real `post_plans` row and back-links the idea via `converted_post_plan_id`.
+
+- **Migration `0034_post_plan_ideas`** — new tables `post_plan_ideas` (id, account_id, title, details, desired_date, platforms text[], status enum [`submitted`/`converted`/`archived`], submitted_by, converted_post_plan_id FK post_plans, converted_at, created_at, updated_at) and `post_plan_idea_attachments` (id, idea_id, storage_path, filename, mime_type, size_bytes, uploaded_by, created_at). RLS mirrors `post_plans`: agency staff or members of the account. `touch_updated_at` trigger; both tables added to `supabase_realtime`. Idea attachments reuse the existing `post-plan-attachments` storage bucket — path scheme is `<accountId>/ideas/<ideaId>/<ts>_<filename>`, which the bucket's storage RLS extracts via `split_part(name, '/', 1)` (set up in 0022) so no policy changes are needed.
+- **`IdeateView.jsx`** (brand) — composer for title + details (paste URLs, they auto-link in the preview/inbox renderer), optional `desired_date`, multi-select platforms (IG/LinkedIn/X), paperclip uploader for reference files. Submit creates the idea row, then uploads any pending files against it. Below the composer: list of the brand's recent ideas with status pill (Submitted / On the calendar / Archived) and the brand can delete any of their own that haven't been touched.
+- **`IdeateInboxView.jsx`** (agency-in-brand) — split view: status-filterable list on the left (`Queue` / `On calendar` / `Archived`; default `Queue` = `status='submitted'`), editable detail panel on the right. Detail panel shows submitter, edits to title/details/date/platforms (auto-linked preview rendered below details), reference file thumbnails (with delete), and the "Add to Social Calendar" CTA. Save changes pushes a partial UPDATE through `updatePostPlanIdea`. Archive flips to `archived` (recoverable from the Archived filter).
+- **`ConvertIdeaModal.jsx`** — date + platforms + concept + copy seed pre-filled from the idea. Submit calls `convertIdeaToPostPlan` which (1) creates a `post_plans` row at 09:00 local on the chosen date, (2) updates the idea: `status='converted'`, `converted_post_plan_id=<new plan id>`, `converted_at=now()`. Parent navigates to the new plan's detail view. Once converted, the idea drops out of the default queue (default filter excludes converted/archived rows), so "remove from inbox by adding to calendar" works automatically with no extra delete step.
+- **`db.js`** — additive only: `loadPostPlanIdeas({accountId, statuses?})`, `loadPostPlanIdeaById`, `createPostPlanIdea`, `updatePostPlanIdea`, `deletePostPlanIdea`, `loadPostPlanIdeaAttachments`, `addPostPlanIdeaAttachment`, `deletePostPlanIdeaAttachment`, `convertIdeaToPostPlan`, `subscribeToPostPlanIdeas`. Re-exports the linkifier `linkifyText` from `IdeateView.jsx` (used by the agency detail-panel preview as well).
+- **Sidebar restructure (`Sidebar.jsx`)** — `buildBrandNav`: brand owners see **Got ideas?** (icon `send`, no badge), agency-in-brand see **Inbox** (icon `home`, badge = count of `submitted` ideas). The agency-only `Tasks` entry is gone in both modes. `buildAllClientsNav`: drops `Inbox` and `All tasks` — only **Trends Radar** is left in the cross-client nav. `GUEST_NAV`: drops the old "Request" entry; guests now see only Social Calendar.
+- **App.jsx routing** — new `ideate` route at `/ideate` and `/c/:slug/ideate` (added to `BRAND_SCOPED_VIEWS` so it gets the slug prefix), removed `tasks` and `home` from `parsePathToRoute` / `viewToPath` / `SIMPLE_VIEWS`. The agency context-snap legal sets are now: All-clients = `['profile', 'settings', 'clients', 'members', 'trends', 'not_found']`; in-brand = adds `calendar`, `plan`, `ideate`, `brand`, `library`, `performance`, `team`. All-clients defaults to `/trends` instead of `/home`. Idea-queue badge wiring: App.jsx loads `loadPostPlanIdeas({accountId, statuses: ['submitted']})` for the active brand and subscribes via `subscribeToPostPlanIdeas` so the badge re-ticks on insert/update. The topbar "New brief" CTA was retired in favour of a brand-side "Submit idea" CTA that jumps to `/c/:slug/ideate`.
+- **Tasks UI fully sunset.** Sidebar entries gone, route rendering gone, AdminHome/HomeView/TasksView/TaskDetailView no longer imported. Files (`HomeView.jsx`, `TasksView.jsx`, `TaskDetailView.jsx`, `admin.jsx`'s `AdminHome` + `AdminUploadView`) and the underlying `tasks` / `assets` / `messages` / `activity` tables are intentionally **left in place** for one PR cycle — strictly destructive cleanup (file delete + table drop migration) is a follow-up so we have a clean rollback path if anything depending on them surfaces.
+- **Status enum is intentionally minimal.** `submitted` / `converted` / `archived` only. No `in_review` — premature; opening an idea doesn't auto-flip its status. The badge counts `submitted` only, so converting OR archiving an idea drops it off the Inbox queue with a single status flip.
+- **Sections touched:** Recent changes log; Glossary (new entries: Idea, Got ideas?, Inbox 2.0, Convert to post plan); §6 Data model (two new tables + RLS + storage path notes); §6 Migrations list (0034 row); §8 Routes/Views (new `ideate` row, `tasks`/`home` removed, agency All-clients default updated); §9 Key feature flows (Submit idea + Convert idea); §13 Known decisions (separate table vs status on post_plans, status enum minimalism, tasks-UI sunset rationale); §14 Pending work (delete tasks files + drop tasks tables; idea-submitted email notifications via Resend Tier 2).
 
 ### 2026-05-02 — Trends Radar Phases 2 + 3 + 5 (Twitter, Instagram per-brand, Turn-into-post-plan)
 Three more phases on top of the Phase 0+1 foundation. Same `trend_signals` table, same `/api/fetch-trends` Vercel route, same `TrendsView` shell — each phase drops in as additive code without restructuring anything that already shipped.
@@ -223,6 +237,11 @@ something looks confusingly named.
 | **Trend signal** | One trending hashtag / sound / topic / post row in the pool | `trend_signals` row; mapped via `mapTrendSignalRow` in `db.js` |
 | **Trend hashtags** | Per-brand list of IG hashtags the brand wants tracked, drives Phase 3 IG scrape | `brand_kits.trend_hashtags` (text[]); edited via TrendHashtagsCard in `BrandKitView` |
 | **Turn into post plan** | Phase 5 action — convert any trend signal into a pre-filled post_plan row in a brand's calendar | `TurnIntoPostPlanModal`; `+ Post plan` pill on each TrendCard |
+| **Idea** / **Post plan idea** | A brand-submitted content suggestion the agency reviews and turns into a real post plan | `post_plan_ideas` row, `IdeateView` (brand) / `IdeateInboxView` (agency) |
+| **Got ideas?** | Brand-side sidebar surface — composer + history of ideas the brand has sent to the agency | route `"ideate"`, brand label "Got ideas?", `IdeateView` |
+| **Inbox** *(post-plan-ideas)* | Agency-in-brand sidebar surface — queue of submitted ideas with edit + "Add to Social Calendar" actions | route `"ideate"`, agency label "Inbox", `IdeateInboxView`. **Note**: the old All-clients "Inbox" (a queue of tasks) is gone — different surface, different table. |
+| **Add to Social Calendar** | Agency action — convert a submitted idea into a real `post_plans` row, flipping the idea to `status='converted'` and back-linking via `converted_post_plan_id` | `ConvertIdeaModal`; idea-detail CTA |
+| **Idea queue badge** | Sidebar Inbox badge count = number of `post_plan_ideas` for the active brand with `status='submitted'`. Drops by 1 when an idea is converted or archived. | `App.ideaQueueCount` state, refreshed via `subscribeToPostPlanIdeas` |
 
 ---
 
@@ -333,6 +352,19 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 
 `post_plans.status` enum: `not_started`, `wip`, `needs_brand_feedback`, `needs_admin_revision`, `approved`, `scheduled`, `posted`, `delayed`. The `touch_post_plan_status_stamps` trigger auto-stamps `approved_at` / `posted_at` on first transition into those states.
 
+### Post plan ideas (Got ideas? / Inbox — added 2026-05-05)
+
+| Table | Purpose | Key columns | Who can SELECT | Who can write |
+|---|---|---|---|---|
+| `post_plan_ideas` | Brand-submitted content suggestion queued for the agency to convert into a `post_plans` row | `account_id`, `title`, `details`, `desired_date` (date, optional), `platforms` (text[]: `instagram`/`linkedin`/`x`), `status` enum `submitted`/`converted`/`archived`, `submitted_by`, `converted_post_plan_id` (FK post_plans, set when converted), `converted_at`, `created_at`, `updated_at` | Members + agency | Members + agency |
+| `post_plan_idea_attachments` | Reference files the brand uploads alongside an idea | `idea_id`, `storage_path`, `filename`, `mime_type`, `size_bytes`, `uploaded_by` | Anyone with read access to the parent idea | Uploader (own rows); agency can delete any |
+
+`post_plan_ideas.status` enum: `submitted` (new, unhandled — counted by the Inbox badge), `converted` (the agency made a `post_plans` row from it; `converted_post_plan_id` points at the new row), `archived` (agency dismissed; recoverable from the Archived filter). Default Inbox queue filter is `status = 'submitted'` so converting OR archiving an idea drops it off the queue.
+
+Idea attachments **reuse the existing `post-plan-attachments` storage bucket** via path scheme `<accountId>/ideas/<ideaId>/<ts>_<filename>`. The bucket's storage RLS extracts the leading account id via `split_part(name, '/', 1)` (set up in 0022), so the `ideas/<ideaId>/...` middle segment doesn't affect access decisions — no separate bucket, no policy changes.
+
+Both tables are in `supabase_realtime`; `IdeateView` (brand) and `IdeateInboxView` (agency) subscribe via `subscribeToPostPlanIdeas` for cross-tab + agency↔brand sync.
+
 ### Trends Radar table (added 2026-05-02)
 
 | Table | Purpose | Key columns | Who can SELECT | Who can write |
@@ -386,7 +418,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0030_brand_trend_hashtags.sql`.
+Most recent: `0034_post_plan_ideas.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -399,6 +431,8 @@ Recent batch:
 - `0028_remove_team_member_owner_can_remove` — replaces the agency-only gate on `remove_team_member` with an account-owner check (matches `change_member_role`). Brand owners can now remove members of their own brand. See §13 entry.
 - `0029_trend_signals` — new `trend_signals` table + indexes + RLS (agency-only read; service-role write) + `prune_expired_trend_signals()` cleanup helper. Backs the new Trends Radar surface; first writer is the Vercel route `web/api/fetch-trends.ts`. See §13 entry.
 - `0030_brand_trend_hashtags` — adds `brand_kits.trend_hashtags text[] not null default '{}'`. Per-brand hashtag list driving the Trends Radar Instagram scrape. Existing RLS on `brand_kits` already covers it — no policy changes.
+- `0031_trend_signals_dedupe_nulls_not_distinct` / `0032_brand_competitor_handles` / `0033_brand_competitors_jsonb` — Trends Radar follow-on work (dedupe fix + per-brand competitor handle list, then a jsonb richer-shape rewrite). Not detailed here yet — see the migration files themselves.
+- `0034_post_plan_ideas` — new tables `post_plan_ideas` + `post_plan_idea_attachments` powering the brand "Got ideas?" composer and the agency "Inbox" surface. RLS mirrors `post_plans`; storage reuses the `post-plan-attachments` bucket via path `<accountId>/ideas/<ideaId>/...`. See §13 entry.
 
 ---
 
@@ -478,10 +512,8 @@ URL-driven routing via `react-router-dom@6`. `<BrowserRouter>` wraps `<App/>` in
 | `route.view` | URL path | Component (customer mode) | Component (admin mode) | Purpose |
 |---|---|---|---|---|
 | `calendar` | `/` or `/calendar` | `CalendarView` | `CalendarView` | Social Calendar — month grid of post plans. Universal landing view (signed-in + guest). |
-| `home` | `/home` | `HomeView` | `AdminHome` | Submit brief composer / agency inbox |
-| `tasks` | `/tasks` | `TasksView` | `TasksView` | List of briefs |
-| `tasks` + `id` | `/tasks/:shortId` | `TaskDetailView` | `TaskDetailView` | Single brief detail (chat, deliverables, activity). `:shortId` is the first 8 hex chars of the task's UUID; full UUIDs still resolve. |
-| `library` | `/library` | `LibraryView` | `AdminUploadView` | Customer: searchable grid of deliverables, scoped to active brand. Admin: upload creatives |
+| `ideate` | `/ideate` (or `/c/:slug/ideate`) | `IdeateView` | `IdeateInboxView` | Brand: **Got ideas?** composer + history of submitted ideas. Agency-in-brand: **Inbox** queue of submitted ideas with edit + Add-to-Calendar. |
+| `library` | `/library` | `LibraryView` | `LibraryView` | Searchable grid of deliverables, scoped to active brand. |
 | `performance` | `/performance` | `PerformanceView` | — | Metrics dashboard (placeholder) |
 | `team` | `/team` | `TeamView` | `AdminClientsView` | Customer: invite teammates. Admin: client list |
 | `members` | `/members` | — | `AdminTeamView` | Agency-only team management |
@@ -494,7 +526,7 @@ URL-driven routing via `react-router-dom@6`. `<BrowserRouter>` wraps `<App/>` in
 
 Unknown paths land on the 404 view (`view: 'not_found'`) — the bad pathname is preserved on the route object so `NotFoundView` can echo it back. `not_found` is in both the guest-allowed set and the agency context-snap legal sets, so neither effect bounces the user away. Vercel SPA fallback rewrites every path to `/index.html` ([web/vercel.json](web/vercel.json)) so deep links resolve on cold load.
 
-**Phase 2 (not done yet):** add a `/c/:brandSlug/...` segment so brand scope is part of the URL instead of `localStorage.lr_admin_active_brand`. See §14.
+**Phase 2 routing is live** as of the brand-slug-driven `setActiveBrand` work — agency users can deep-link `/c/:slug/calendar`, `/c/:slug/ideate`, etc., and the URL is the source of truth for active brand (`localStorage.lr_admin_active_brand` is the fallback for bare paths only).
 
 ### First-paint defaults
 
@@ -506,14 +538,23 @@ Unknown paths land on the 404 view (`view: 'not_found'`) — the bad pathname is
 
 - `auth?.requiresBrandSelection` → renders `BrandSelectView` instead of the app shell
 - `onboarding.open` → renders `BrandOnboardingModal` over the app
-- Guest accessing any non-`home` route → snapped back to home
+- Guest accessing any non-`calendar` route → snapped back to `/calendar`
 
 ---
 
 ## 9. Key feature flows
 
-### Submit a brief
-`HomeView` → free-text composer + chip pickers → `submitTask()` in db.js → INSERT into `tasks` → trigger fires `created` activity → redirects into `TaskDetailView`.
+### Submit an idea (brand-side)
+`IdeateView` → title + details + optional date + multi-platform pills + paperclip-uploader → `createPostPlanIdea()` in db.js → INSERT into `post_plan_ideas` (status `submitted`). Each pending file is then uploaded via `addPostPlanIdeaAttachment` to `post-plan-attachments/<accountId>/ideas/<ideaId>/...`. The brand sees the idea immediately in the "Your recent ideas" list (status pill shows `Submitted`); the agency sees it land in their Inbox via realtime.
+
+### Convert an idea to a post plan (agency-side)
+1. Agency opens **Inbox** (`route.view = 'ideate'` for an agency user) → list filters default to `Queue` (`status='submitted'`).
+2. Click an idea → detail panel on the right.
+3. (Optional) Edit title / details / desired date / platforms → "Save changes" button appears when fields differ from the row → `updatePostPlanIdea`.
+4. Click **Add to Social Calendar** → `ConvertIdeaModal` opens, pre-filled from the idea.
+5. Submit → `convertIdeaToPostPlan` creates a `post_plans` row at 09:00 local on the chosen date with the idea's `title` as concept and `details` as the per-platform copy seed, then patches the idea row: `status='converted'`, `converted_post_plan_id=<plan.id>`, `converted_at=now()`.
+6. Parent `IdeateInboxView` calls `navigateToPlan(plan.id)` → user lands on `PostPlanDetailView` for the new plan.
+7. The idea drops out of the default `Queue` filter (status no longer `submitted`); still reachable under the `On calendar` filter and back-links to the plan via `converted_post_plan_id`.
 
 ### Brand onboarding (first-time brand owner)
 1. `_doRefresh` resolves a brand-owner profile
@@ -868,6 +909,12 @@ No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Ideas live in their own table, not as a status on `post_plans`.** Considered (a) a new status `idea` at the head of the `post_plans.status` enum so a single table handles the full content-lifecycle, (b) a separate `post_plan_ideas` table linked back via FK. Chose (b): ideas and post plans have different lifecycles (ideas pre-curation, post plans scheduled commitments) and would fight for the same RLS shape, the same status-log trigger, and the same calendar-grid filtering rules. A separate table keeps both surfaces clean — calendar never accidentally picks up ungroomed brand suggestions, the Inbox query never filters across an enum that's mostly post-plan transitions. The link is one-way: idea → `converted_post_plan_id` → plan.
+- **Idea status enum is intentionally tiny: `submitted` / `converted` / `archived`.** Considered an `in_review` middle state (auto-flips when the agency opens the idea), but it complicates the badge math without giving the brand any new signal — the brand can't see in_review either way, and the agency already knows what they've opened. The badge counts `submitted` only, so converting OR archiving an idea drops it off the Inbox queue with one status flip. Add `in_review` later if we wire per-user "I've looked at this" tracking.
+- **Idea attachments reuse the existing `post-plan-attachments` bucket.** The bucket's storage RLS extracts account_id via `split_part(name, '/', 1)`, so the path scheme `<accountId>/ideas/<ideaId>/<ts>_<filename>` is naturally accepted (the `ideas/` middle segment is opaque to RLS). Considered a separate bucket for cleaner separation, but we'd duplicate three storage policies for no security gain — the bucket's gate is already exactly what idea attachments need (members of the leading account). Saves a migration and a deploy step.
+- **Tasks UI sunset, table not dropped.** Sidebar entries (`Tasks`, "All tasks", brand-side "Request") and route rendering (`HomeView`, `TasksView`, `TaskDetailView`, `AdminHome`, `AdminUploadView`) are gone in this PR. The component files and the underlying `tasks` / `assets` / `messages` / `activity` tables are intentionally **left in place** — destructive cleanup (delete files + drop tables migration) is queued as a follow-up after a bake period. If a brand or agency staff member has a tab open mid-deploy, it'll just snap to a 404 on next navigation rather than throwing on a missing table. Considered a "Tasks have moved to Got ideas?" deprecation banner on the old views — overkill since no one had been told this was coming and the routes don't actually resolve in the navigation any more.
+- **All-clients sidebar shrinks to just Trends Radar.** Considered keeping a "cross-client overview" surface in the All-clients nav. Rejected because every meaningful action (calendar, inbox, library, brand-kit) is per-brand, and the BrandPicker is already the single point of entry. Forcing a brand-pick before *any* substantive action matches the agency's mental model: "go work in a brand". Trends Radar is the lone exception (it's intentionally cross-brand insight) and stays.
+- **Idea queue badge counts submitted only, not unread.** Considered per-user view tracking (`post_plan_idea_views` mirroring `post_plan_views`) so each agency staffer has their own unread count. Rejected for v1 — overkill given the small-team setup; "1 idea is sitting in the queue" is more useful information than "you specifically haven't seen it." Revisit if the agency team grows or two staff members start stepping on each other's reviews.
 - **Email-match auto-accept removed; invites require an explicit token click.** The `auto_accept_pending_invitations()` RPC was introduced in 0010 with the goal of letting invitees skip the click — sign in with the matching email and you're in. Removed 2026-05-02 because the silent-grant cases (existing-account invitees, typos in the invite email) outweighed the QoL benefit. Considered: (a) keep auto-accept but only when `lr_pending_invite` localStorage is set — equivalent to just using the token flow, so redundant; (b) gate auto-accept on signup-event vs every session refresh — narrower, but still silent for the existing-account case which was the main complaint. Chose to remove entirely. Token flow is the single redemption path. The SQL function is intentionally left in place on prod for defensive compatibility with any cached client; safe to drop in a follow-up migration.
 - **`accept_invitation` is idempotent for the auto-accept race.** The token-based `accept_invitation` runs *after* the email-based `auto_accept_pending_invitations` in the auth refresh chain. If the user's email matches the invite (which it does for any normal invite flow), auto-accept redeems the row first and then the token-based accept finds `accepted_at` non-null. Original RPC raised "invalid or expired" in this case even though the user was already a member. Fix (0025): look up the row regardless of `accepted_at`, then return success if the caller is already a member of the target account. Considered alternatives — (a) gate the App.jsx token-redemption useEffect on `auth.newlyJoinedAccountIds` being empty (works but only patches the symptom in one client path), (b) drop one of the two redemption paths entirely. Chose the SQL fix because it's robust against any future client path that calls `accept_invitation` on an already-accepted row, not just this one.
 - **`remove_team_member` resets `profiles.is_agency` when the last agency membership goes.** The flag was being set on join (in `accept_invitation` since 0002) but never cleared on removal, leaving stale `is_agency=true` rows and putting brand-only users in agency mode after they'd been removed from the agency. Considered: (a) compute `is_agency` on the read path as `memberships.some(m => m.accounts.type === 'agency')` instead of trusting the stored flag — cleanest but a behavior change touching every `auth.isAgency` read and the RLS helper `is_agency_user()`. (b) trigger on `account_members` DELETE that recomputes the flag — broader scope (covers any future delete path). (c) fix the specific RPC. Chose (c) for now because there's only one delete path in the app today; revisit (b) if a second appears. The migration also includes a one-shot backfill for rows that were already in the broken state.
@@ -907,7 +954,9 @@ Running log of "we considered X and chose Y because Z" — newest first.
 - **Resend Tier 3 — digests + auth-side replacements**: also not built. Daily/weekly digest of unread post-plan activity (powered by `post_plan_views.last_seen_at`); optionally replacing Supabase's native password-reset / signup-confirm emails with branded Resend versions.
 - **Multi-source URL discovery (`discover` / `check_agent` modes)**: deployed in `enrich-brand-kit` but no client wires call them yet. Designed to find socials from a seed URL via Firecrawl Agent.
 - **Past creatives image cache**: noted in session memory — IG image fetch + cache to Supabase Storage is deferred until the social asset pipeline is built. `kit.pastCreatives` entries without `imageUrl` are filtered out of the UI (`BrandKitView` line ~1710).
-- **Per-brand URL paths (Phase 2 of the routing work)**: not implemented. Phase 1 (2026-04-30) added real per-view URLs (`/calendar`, `/plan/:id`, etc.) but brand context is still scoped via `BrandPicker` + `localStorage.lr_admin_active_brand`. Phase 2 will add a `/c/:brandSlug/...` URL segment so agency users can deep-link to "this brand's calendar / this plan in this brand", make multiple tabs independent, and stop relying on localStorage for brand scope. Needs an additive `accounts.slug` migration (or fall back to UUIDs in URLs).
+- **Tasks-table cleanup**: this PR cycle's sunset removed the UI surfaces but kept `HomeView.jsx` / `TasksView.jsx` / `TaskDetailView.jsx` / `admin.jsx` (`AdminHome`, `AdminUploadView`) on disk and `tasks` / `assets` / `messages` / `activity` in the DB. Follow-up PR: delete the files + add migration to drop the tables (cascade FKs will wipe related rows). Wait at least one bake cycle before pulling the trigger.
+- **Idea-submitted email notifications**: when a brand submits a `post_plan_ideas` row, agency staff currently learn about it only by checking the Inbox. Plug into the existing Resend Tier 2 work — new `template: 'idea-submitted'` case in `send-email`, fanned out to the agency team via `account_members_with_email` for the agency account. Track in the Resend integration memory note.
+- **Per-user unread tracking on Inbox**: badge currently counts `status='submitted'` (team-level). Add a `post_plan_idea_views(user_id, idea_id, last_seen_at)` table mirroring `post_plan_views` if multi-staff agencies start stepping on each other.
 - **Post plan → Library promotion**: subtitle on the Deliverables card promises "Pushed to Library when marked posted." Trigger isn't wired yet — needs a hook off `post_plans.status = 'posted'` that copies (or links) `post_plan_attachments` of `kind = 'final'` into `assets`.
 - **Post plan attachment versioning**: schema has `version int default 1` on `post_plan_attachments` but no UI to bump. Currently each upload is `version = 1` regardless. Revisit when an admin needs to re-deliver after a brand revision request.
 - **Status `scheduled` has no button**: `post_plans.status` enum includes `scheduled` (between approved and posted), but no UI surface flips into it. Either add a "Schedule" CTA on approved plans or remove the value from the enum.
