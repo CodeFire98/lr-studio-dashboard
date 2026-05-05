@@ -1645,9 +1645,16 @@ export async function deletePostPlan(id) {
 }
 
 export function subscribeToPostPlans(onChange, { accountId } = {}) {
+  // Channel names MUST be unique per subscription. supabase-realtime-js
+  // tracks subscribed topics globally; two channels with the same name
+  // mounting in the same tab (e.g. App-level + a detail view both
+  // listening for the active brand's plans) trip a "cannot add
+  // `postgres_changes` callbacks ... after `subscribe()`" error on the
+  // second .on(). Suffixing with a per-call random id avoids that.
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const channelName = accountId
-    ? `lr_post_plans_${accountId}`
-    : 'lr_post_plans_stream';
+    ? `lr_post_plans_${accountId}_${suffix}`
+    : `lr_post_plans_stream_${suffix}`;
   // Filter at the realtime layer when scoping to a single brand — saves
   // the client a round-trip + refetch for events outside its scope.
   const filter = accountId
@@ -2344,9 +2351,14 @@ export async function convertIdeaToPostPlan({
 }
 
 export function subscribeToPostPlanIdeas(onChange, { accountId } = {}) {
+  // Per-subscription unique suffix so multiple subscribers (e.g. the
+  // App-level idea-queue-badge useEffect and the IdeateInboxView)
+  // don't share a channel name and trip the supabase-realtime-js
+  // "cannot add postgres_changes callbacks after subscribe()" error.
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const channelName = accountId
-    ? `lr_post_plan_ideas_${accountId}`
-    : 'lr_post_plan_ideas_stream';
+    ? `lr_post_plan_ideas_${accountId}_${suffix}`
+    : `lr_post_plan_ideas_stream_${suffix}`;
   const filter = accountId
     ? { event: '*', schema: 'public', table: 'post_plan_ideas', filter: `account_id=eq.${accountId}` }
     : { event: '*', schema: 'public', table: 'post_plan_ideas' };
