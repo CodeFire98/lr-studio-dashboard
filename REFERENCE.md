@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-05 (Calendar: week view + status-group filter pills + density toggle)
+**Last updated:** 2026-05-05 (Status workflow simplified: 3 values, comments-not-statuses)
 
 ---
 
@@ -11,6 +11,21 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-05 — Post-plan status workflow collapsed to 3 values
+The 8-value `post_plans.status` enum (`not_started`/`wip`/`needs_brand_feedback`/`needs_admin_revision`/`approved`/`scheduled`/`posted`/`delayed`) was more state machine than the agency-and-brand actually used. The new model is dead simple: **Drafting → Needs review → Approved**. Comments are how the brand says "needs changes" — there's no separate revision-request status flip; the row stays at `needs_review` until brand clicks Approve. Agency can flip Approved → Drafting as a manual reopen.
+
+- **Migration `0035_post_plan_status_simplification`** — drops the 8-value CHECK constraint, remaps rows (`not_started`/`wip`/`delayed` → `drafting`; `needs_brand_feedback`/`needs_admin_revision` → `needs_review`; `approved`/`scheduled`/`posted` → `approved`), updates the column default to `drafting`, adds a tighter CHECK constraint with only the three new values, and trims the `touch_post_plan_status_stamps` trigger to drop the (now-impossible) `posted_at` branch. The `posted_at` column itself is left in place to preserve historical timestamps; nothing writes to it anymore.
+- **`STATUS_CONFIG` ([postPlanShared.jsx](web/src/components/postPlanShared.jsx))** — three primary entries (Drafting / Needs review / Approved). Legacy enum keys are kept as fallback aliases that resolve to the equivalent new bucket, so any cached realtime payload or `post_plan_status_log` entry from before 0035 still renders with a sensible label and colour rather than the unknown-status fallback.
+- **`STATUS_GROUPS` filter pills ([CalendarView.jsx](web/src/components/CalendarView.jsx))** — collapsed from `All / Drafting / Needs review / Approved / Posted` (5) to `All / Drafting / Needs review / Approved` (4). Each bucket's `statuses` array also includes the legacy enum values so a row that hasn't yet flowed through the migration still flows into the right bucket.
+- **PostPlanDetailView workflow buttons** — replaced the matrix of `Submit for review` / `Approve` / `Request changes` / `Mark posted` / `Mark delayed` / `Set: <any of 8>` with the new minimal set:
+  - **Drafting** state: agency sees `Submit for review` → `needs_review`
+  - **Needs review** state: brand sees `Approve` → `approved`; agency sees no button (waits for brand; if comments come in, agency addresses them and the row stays at Needs review)
+  - **Approved** state: agency sees `Back to draft` → `drafting`
+  - The override `<select>` (admin-only) shrinks from 8 options to 3.
+- **Activity feed** — `STATUS_VERB` map keeps the legacy keys for rendering historical `post_plan_status_log` rows in past tense ("requested changes", "marked as posted") but new transitions only emit the three new keys. Per the design discussion, **historical log rows are not rewritten** — they're an audit trail of what actually happened.
+- **Default status on insert** — every place that creates a new `post_plans` row (`createPostPlan`, `duplicatePostPlan`, `convertIdeaToPostPlan`, `createStubAndOpen` in CalendarView, `TurnIntoPostPlanModal`) now writes `'drafting'` instead of `'not_started'`. With the tightened CHECK constraint, anything else would error.
+- **Sections touched:** Recent changes log; §6 Data model (post_plans.status enum updated); §6 Migrations list (0035 row); §9 Key feature flows (Post-plan workflow rewritten); §13 Known decisions (new entry: workflow simplification rationale + comments-not-statuses).
 
 ### 2026-05-05 — Calendar: Week view (Trello-stack) + status-group filter pills + density toggle
 The month grid was getting unreadable when posts targeted all three platforms — three platform icons + concept text + status tint per chip eat the cell on a busy day. Three additions tackle this from different angles:
@@ -361,7 +376,7 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 | `post_plan_views` | Per-(user, plan) "last seen" stamp powering unread tracking | `user_id`, `post_plan_id`, `last_seen_at` (composite PK) | Self only | Self only |
 | `post_plan_status_log` | Auto-logged status transitions for the Activity feed | `post_plan_id`, `from_status`, `to_status`, `actor_id`, `created_at` | Anyone with read access to the parent plan | Trigger only (`log_post_plan_status_change` SECURITY DEFINER) |
 
-`post_plans.status` enum: `not_started`, `wip`, `needs_brand_feedback`, `needs_admin_revision`, `approved`, `scheduled`, `posted`, `delayed`. The `touch_post_plan_status_stamps` trigger auto-stamps `approved_at` / `posted_at` on first transition into those states.
+`post_plans.status` enum (since migration 0035): `drafting`, `needs_review`, `approved`. Default = `drafting`. The `touch_post_plan_status_stamps` trigger auto-stamps `approved_at` on the first transition into `approved`. The `posted_at` column is preserved for historical rows but nothing writes to it anymore. **Pre-0035 enum values** (`not_started`, `wip`, `needs_brand_feedback`, `needs_admin_revision`, `scheduled`, `posted`, `delayed`) are no longer accepted by the CHECK constraint, but `STATUS_CONFIG` in [postPlanShared.jsx](web/src/components/postPlanShared.jsx) still maps them to the right bucket so legacy `post_plan_status_log` rows render correctly in the activity feed.
 
 ### Post plan ideas (Got ideas? / Inbox — added 2026-05-05)
 
@@ -429,7 +444,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0034_post_plan_ideas.sql`.
+Most recent: `0035_post_plan_status_simplification.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -444,6 +459,7 @@ Recent batch:
 - `0030_brand_trend_hashtags` — adds `brand_kits.trend_hashtags text[] not null default '{}'`. Per-brand hashtag list driving the Trends Radar Instagram scrape. Existing RLS on `brand_kits` already covers it — no policy changes.
 - `0031_trend_signals_dedupe_nulls_not_distinct` / `0032_brand_competitor_handles` / `0033_brand_competitors_jsonb` — Trends Radar follow-on work (dedupe fix + per-brand competitor handle list, then a jsonb richer-shape rewrite). Not detailed here yet — see the migration files themselves.
 - `0034_post_plan_ideas` — new tables `post_plan_ideas` + `post_plan_idea_attachments` powering the brand "Got ideas?" composer and the agency "Inbox" surface. RLS mirrors `post_plans`; storage reuses the `post-plan-attachments` bucket via path `<accountId>/ideas/<ideaId>/...`. See §13 entry.
+- `0035_post_plan_status_simplification` — collapses `post_plans.status` from 8 values to 3 (`drafting`/`needs_review`/`approved`), remaps existing rows (legacy → new mapping in the migration body), updates the column default and CHECK constraint, and trims the auto-stamp trigger to drop the now-impossible `posted` branch. Historical `post_plan_status_log` rows are deliberately untouched. See §13 entry.
 
 ---
 
@@ -923,8 +939,9 @@ No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Post-plan status workflow is 3 values, not 8 — and "needs changes" is a comment, not a status.** The original 8-value enum (`not_started`/`wip`/`needs_brand_feedback`/`needs_admin_revision`/`approved`/`scheduled`/`posted`/`delayed`) modelled state nobody actually used. In practice the agency only ever cared about three buckets: am I working on it (Drafting), is the brand looking at it (Needs review), is it locked in (Approved). Considered (a) keeping the 8-value enum and just bucketing in the UI, (b) collapsing to 3. Chose (b) — keeping the 8-value enum forever as a UI-only abstraction would mean "what does the brand do when they want changes?" stays ambiguous (do they flip to `needs_admin_revision`? Do they comment? Both?). The new model says: brand wants changes → leave a comment → row stays at `needs_review` → agency addresses comment → brand approves when satisfied. One status flip per side per cycle, not a ping-pong of revision-statuses. Agency can flip Approved → Drafting as a manual reopen if needed (rare). Migration 0035 remaps existing rows; the `posted_at` column is preserved for historical timestamps but nothing writes to it anymore (we deliberately gave up tracking "did this actually go live" — that was never reliably maintained anyway, and the agency can always look at the post on the platform itself).
 - **Calendar week view is Trello-style stacked columns, not a Google-Cal time grid.** Considered (a) hours-on-Y-axis × days-on-X-axis time grid (Google Cal / Outlook), (b) flat 7-column stack of cards in time order. Chose (b): for content scheduling the *day* is the meaningful unit; *time-of-day* matters maybe 5% of the time and only for "morning vs. evening". A time grid would leave 80% of the canvas empty (most posts cluster around morning) and force tiny chips. Stacked cards give every plan room to show concept + status pill + platform icons + time without clipping. If "post-at-exactly-11:42" planning ever becomes a real use case we can add a time-grid mode behind a toggle, but it's not now.
-- **Status filter is a pill row of workflow buckets, not a per-status select.** The original `<select>` exposed all 8 raw enum values (`not_started`, `wip`, `needs_brand_feedback`, etc.) — agency leads don't think in enum values, they think in workflow stages. Five buckets (`All`, `Drafting`, `Needs review`, `Approved`, `Posted`) with count badges cover the actual mental model. `delayed` rolls into `Drafting` (it's a stalled draft, not a separate stage); `scheduled` rolls into `Approved` (approved-and-on-the-publishing-queue). If anyone needs to filter at the raw-enum level for a specific debug case, they can edit a single line in `STATUS_GROUPS` to add a one-status bucket.
+- **Status filter is a pill row of workflow buckets, not a per-status select.** The original `<select>` exposed all 8 raw enum values (`not_started`, `wip`, `needs_brand_feedback`, etc.) — agency leads don't think in enum values, they think in workflow stages. Workflow buckets `All / Drafting / Needs review / Approved` (4) with count badges cover the actual mental model. *(Originally landed with a 5th `Posted` bucket; collapsed to 4 alongside the 0035 status simplification — `posted` no longer exists as a status.)* If anyone needs to filter at the raw-enum level for a specific debug case, they can edit a single line in `STATUS_GROUPS` to add a one-status bucket.
 - **Density toggle is month-only.** Considered exposing it in week view too, but the week-card already has the right amount of room (multi-line title, status pill, platform icons) — there's no readability problem to solve there. Forcing a "compact week card" mode would just shrink everything for symmetry's sake. The toggle hides itself when you switch to week mode.
 - **Ideas live in their own table, not as a status on `post_plans`.** Considered (a) a new status `idea` at the head of the `post_plans.status` enum so a single table handles the full content-lifecycle, (b) a separate `post_plan_ideas` table linked back via FK. Chose (b): ideas and post plans have different lifecycles (ideas pre-curation, post plans scheduled commitments) and would fight for the same RLS shape, the same status-log trigger, and the same calendar-grid filtering rules. A separate table keeps both surfaces clean — calendar never accidentally picks up ungroomed brand suggestions, the Inbox query never filters across an enum that's mostly post-plan transitions. The link is one-way: idea → `converted_post_plan_id` → plan.
 - **Idea status enum is intentionally tiny: `submitted` / `converted` / `archived`.** Considered an `in_review` middle state (auto-flips when the agency opens the idea), but it complicates the badge math without giving the brand any new signal — the brand can't see in_review either way, and the agency already knows what they've opened. The badge counts `submitted` only, so converting OR archiving an idea drops it off the Inbox queue with one status flip. Add `in_review` later if we wire per-user "I've looked at this" tracking.

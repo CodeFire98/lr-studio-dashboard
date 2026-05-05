@@ -38,18 +38,29 @@ export const PLATFORM_BY_KEY = Object.fromEntries(PLATFORMS.map((p) => [p.key, p
 // Status config
 // =====================================================================
 
-// A separate enum from the task status set — we don't want to overload
-// the `data-s` task badges (which only know the brief/progress/review/
-// delivered set).
+// Three-state workflow — see migration 0035 for the rationale and the
+// row-remap from the legacy 8-value enum. Comments are how the brand
+// signals "needs changes" — there's no separate revision status.
+//
+// Legacy keys (`not_started`, `wip`, `needs_brand_feedback`, etc.) are
+// kept here as fallback aliases so any cached client / server cron that
+// fires a row through realtime with an old value still renders with a
+// sane label and colour. Once we're confident no surface still emits
+// the old values we can prune the aliases.
 export const STATUS_CONFIG = {
-  not_started:          { label: 'Not started',     color: 'var(--ink-4)',           background: 'var(--surface-2)' },
-  wip:                  { label: 'In progress',     color: 'var(--status-progress)', background: 'color-mix(in oklab, var(--status-progress) 14%, var(--surface))' },
-  needs_brand_feedback: { label: 'Needs feedback',  color: 'var(--status-review)',   background: 'color-mix(in oklab, var(--status-review) 14%, var(--surface))' },
-  needs_admin_revision: { label: 'Needs revision',  color: 'var(--accent)',          background: 'color-mix(in oklab, var(--accent) 14%, var(--surface))' },
-  approved:             { label: 'Approved',        color: 'var(--good)',            background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
-  scheduled:            { label: 'Scheduled',       color: 'var(--status-progress)', background: 'color-mix(in oklab, var(--status-progress) 14%, var(--surface))' },
-  posted:               { label: 'Posted',          color: 'var(--status-delivered)', background: 'color-mix(in oklab, var(--status-delivered) 14%, var(--surface))' },
-  delayed:              { label: 'Delayed',         color: '#B85A2E',                 background: 'color-mix(in oklab, #B85A2E 14%, var(--surface))' },
+  drafting:     { label: 'Drafting',     color: 'var(--ink-4)',         background: 'var(--surface-2)' },
+  needs_review: { label: 'Needs review', color: 'var(--status-review)', background: 'color-mix(in oklab, var(--status-review) 14%, var(--surface))' },
+  approved:     { label: 'Approved',     color: 'var(--good)',          background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
+
+  // Legacy aliases — render any cached row that slips through with a
+  // sensible bucket equivalent rather than the unknown-status fallback.
+  not_started:          { label: 'Drafting',     color: 'var(--ink-4)',         background: 'var(--surface-2)' },
+  wip:                  { label: 'Drafting',     color: 'var(--ink-4)',         background: 'var(--surface-2)' },
+  delayed:              { label: 'Drafting',     color: 'var(--ink-4)',         background: 'var(--surface-2)' },
+  needs_brand_feedback: { label: 'Needs review', color: 'var(--status-review)', background: 'color-mix(in oklab, var(--status-review) 14%, var(--surface))' },
+  needs_admin_revision: { label: 'Needs review', color: 'var(--status-review)', background: 'color-mix(in oklab, var(--status-review) 14%, var(--surface))' },
+  scheduled:            { label: 'Approved',     color: 'var(--good)',          background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
+  posted:               { label: 'Approved',     color: 'var(--good)',          background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
 };
 
 // =====================================================================
@@ -84,7 +95,7 @@ export const PlatformChip = ({ platform, size = 'sm' }) => {
 };
 
 export const StatusPill = ({ status, size = 'sm' }) => {
-  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.not_started;
+  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.drafting;
   const fontSize = size === 'lg' ? 12 : 11;
   const padding = size === 'lg' ? '4px 10px' : '2px 8px';
   return (
