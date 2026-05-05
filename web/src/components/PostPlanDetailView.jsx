@@ -34,6 +34,7 @@ import {
 } from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
+import { useLightbox } from './Lightbox.jsx';
 
 // =====================================================================
 // Linkify helpers — turn http(s) URLs in copy text into clickable
@@ -98,6 +99,17 @@ const isImageMime = (m) => typeof m === 'string' && m.startsWith('image/');
 
 const AttachmentTile = ({ att, canDelete, onDelete }) => {
   const showImage = isImageMime(att.mimeType) && att.url;
+  const lightbox = useLightbox();
+  const openInLightbox = () => {
+    if (!att.url) return;
+    lightbox.open({
+      src: att.url,
+      mimeType: att.mimeType,
+      name: att.filename,
+      alt: att.filename,
+      downloadUrl: att.url,
+    });
+  };
   return (
     <div
       style={{
@@ -110,17 +122,19 @@ const AttachmentTile = ({ att, canDelete, onDelete }) => {
         flexDirection: 'column',
       }}
     >
-      <a
-        href={att.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        title={att.filename}
+      <button
+        type="button"
+        onClick={openInLightbox}
+        title={`Preview ${att.filename}`}
         style={{
           display: 'block',
           height: 110,
           background: 'var(--surface-2)',
-          textDecoration: 'none',
           color: 'inherit',
+          padding: 0,
+          border: 0,
+          cursor: 'pointer',
+          width: '100%',
         }}
       >
         {showImage ? (
@@ -144,24 +158,28 @@ const AttachmentTile = ({ att, canDelete, onDelete }) => {
             <Icon name="paperclip" size={28} />
           </div>
         )}
-      </a>
+      </button>
       <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <a
-          href={att.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={att.filename}
+        <button
+          type="button"
+          onClick={openInLightbox}
+          title={`Preview ${att.filename}`}
           style={{
             fontSize: 12,
             color: 'var(--ink-1)',
-            textDecoration: 'none',
+            background: 'transparent',
+            border: 0,
+            padding: 0,
+            cursor: 'pointer',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
+            textAlign: 'left',
+            font: 'inherit',
           }}
         >
           {att.filename}
-        </a>
+        </button>
         <div style={{ fontSize: 11, color: 'var(--ink-4)' }}>
           {att.uploader?.name || 'Someone'} · {formatBytes(att.sizeBytes)}
         </div>

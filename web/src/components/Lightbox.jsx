@@ -16,6 +16,35 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 
 const LightboxContext = createContext({ open: () => {}, close: () => {} });
 
+// Trigger a true file download regardless of cross-origin. Browsers ignore
+// the <a download> attribute when the href is on a different origin (which
+// is the case for Supabase Storage signed/public URLs); fetch + blob +
+// synthetic same-origin anchor sidesteps that. Supabase Storage emits
+// permissive CORS headers, so fetch() works. If anything fails (CORS, 4xx,
+// network), we fall back to opening the URL in a new tab so the user still
+// has SOME way to grab the file.
+async function downloadFileFromUrl(url, filename) {
+  if (!url) return;
+  try {
+    const response = await fetch(url, { credentials: 'omit' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename || 'download';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Defer revoke a beat so the browser has time to start the download.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+  } catch (e) {
+    console.warn('blob-download failed; falling back to new tab', e);
+    try { window.open(url, '_blank', 'noopener,noreferrer'); } catch {}
+  }
+}
+
 function classifyMime(mimeType, src) {
   const m = (mimeType || '').toLowerCase();
   if (m.startsWith('image/')) return 'image';
@@ -74,19 +103,17 @@ const MediaLightbox = ({ media, onClose }) => {
         </div>
         <div style={{ pointerEvents: 'auto', display: 'flex', gap: 8 }}>
           {(downloadUrl || src) && (
-            <a
-              href={downloadUrl || src}
-              download={name || ''}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              type="button"
+              onClick={() => downloadFileFromUrl(downloadUrl || src, name)}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
                 padding: '6px 12px', borderRadius: 6,
                 background: 'rgba(255,255,255,0.12)', color: '#fff',
-                textDecoration: 'none', fontSize: 13,
+                fontSize: 13, cursor: 'pointer',
                 border: '1px solid rgba(255,255,255,0.18)',
               }}
-            >Download</a>
+            >Download</button>
           )}
           <button
             onClick={onClose}
@@ -140,16 +167,15 @@ const MediaLightbox = ({ media, onClose }) => {
             <div style={{ color: '#555', fontSize: 13, marginBottom: 16 }}>
               {mimeType || 'Unknown type'} — preview not available in browser.
             </div>
-            <a
-              href={downloadUrl || src}
-              download={name || ''}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              type="button"
+              onClick={() => downloadFileFromUrl(downloadUrl || src, name)}
               style={{
                 display: 'inline-block', padding: '8px 16px', borderRadius: 6,
-                background: '#1B1F1C', color: '#fff', textDecoration: 'none', fontSize: 13,
+                background: '#1B1F1C', color: '#fff', fontSize: 13,
+                cursor: 'pointer', border: 0,
               }}
-            >Download to view</a>
+            >Download to view</button>
           </div>
         )}
       </div>
