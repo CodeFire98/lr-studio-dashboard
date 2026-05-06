@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-06 (Trends Radar IG tab pivots to viral-audio leaderboard — competitor + aggregator reels grouped by audio_id, ranked by competitor adoption; brand-scoped at `/c/:slug/trends`)
+**Last updated:** 2026-05-06 (Trends Radar IG tab pivots to viral-audio leaderboard — hybrid pipeline: instagram-scraper for competitors + audio-spy for aggregators with totalViews/viewsPerDay; brand-scoped at `/c/:slug/trends`)
 
 ---
 
@@ -12,29 +12,51 @@
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
 
-### 2026-05-06 — Trends Radar viral-audio leaderboard (BCD-lite)
-Builds on the Phase A brand-scoping refactor below. The IG tab pivots from "list of competitor posts" to "list of audios sorted by category-adoption signal."
+### 2026-05-06 — Trends Radar IG: viral-audio leaderboard (hybrid pipeline)
+The IG tab pivots from "list of competitor posts" to a viral-audio leaderboard ranked by global views/velocity (when available) and competitor adoption (always). Builds on Phase A brand-scoping below. The architecture went through several iterations before settling on the hybrid; the final shape is described here.
 
-**The signal:** for each audio appearing in a recent reel from one of (the brand's competitors ∪ a hand-picked set of viral-audio aggregator accounts), we count the # of *distinct* competitor handles using it. An audio used by 4 different competitors in the last week is the textbook signature of a category trend — much stronger signal than any single brand's reel hitting a high view count, because it's already filtered to brand-relevant context.
+**What ships per Refresh** (one trend_signals row per unique audio, `kind='sound'`):
 
-- **Server side ([web/api/fetch-trends.ts](web/api/fetch-trends.ts))** — `handleInstagramCompetitors` is replaced by `handleInstagramAudios`. The dispatcher (`handleInstagram`) now always routes IG calls to the audios pipeline; `mode='competitors'` is kept as a backward-compat token from the UI side. `handleInstagramRegion` (the old "Top in region" path) is retained as dead code for one cycle in case we revive a global trending feed once aggregator-account seeding gets its own admin UI. Pipeline:
-  1. Read `brand_kits.competitors` (jsonb, migration 0033) and `brand_kits.competitor_handles` (text[], legacy 0032). Normalise + dedupe → competitor handles.
-  2. Concat with `IG_AGGREGATOR_HANDLES` constant (`creators`, `early.trending.audio`, `notsorrysocial` — user-supplied 2026-05-06; will move to a `trend_aggregator_accounts` table in Phase B-extension).
-  3. Single `apify/instagram-scraper` call with all handles (`resultsLimit: 8` per handle → ~120 posts).
-  4. New helper `extractAudioFromPost` defensively parses `musicInfo` / `clipsMusicMetadata.music_info.music_asset_info` / `original_sound_info` shapes to extract `{audioId, songName, artistName}`.
-  5. Group reels by `audioId` into `AudioBucket`s tracking `competitors: Set<handle>`, `aggregators: Set<handle>`, and example reels (with their source classification).
-  6. Sort by competitor count desc, tiebreak by aggregator count desc, then by total reel count.
-  7. Emit one `trend_signals` row per audio with `kind='sound'`, `platform='instagram'`, `region='global'`, `account_id=brand`, `metric_value=competitorCount` (or aggregatorCount when no competitor uses), `metric_label='competitor uses'` / `'aggregator features'`. Subtitle: `"{Artist} · {N} competitors · Featured by {M} aggregators"` (omits empty parts). URL points at `instagram.com/reels/audio/{audioId}/`. `raw_payload` keeps the full audio metadata, competitor + aggregator handle lists, and 3 example-reel URLs for the future "preview reels" UI in Phase D-full.
-  8. `sweepStaleTrends` is scoped to `kind='sound'` only — legacy `kind='post'` IG rows from the pre-2026-05-06 handler age out via the 14-day expiry instead of getting wiped.
-- **Client side ([web/src/components/TrendsView.jsx](web/src/components/TrendsView.jsx))** — `PLATFORM_KINDS.instagram = ['all', 'sound']` (was `['all', 'post']`). New `DEFAULT_KIND_FOR_PLATFORM = { instagram: 'sound' }` so clicking the IG tab lands the user on the audio leaderboard rather than `'all'` (which would mix in legacy posts during the transition window). `TrendCard` now renders `trend.thumbnailUrl` as a 56×56 audio cover with a sparkle-badge overlay when `kind === 'sound'`. New `competitorCount` state + a `loadBrandKit` effect detects when the active brand has no competitors and renders a `trends-missing-competitors` banner above the leaderboard with a CTA into `/c/:slug/brand` (Brand Intelligence) — the audio pipeline still runs (using just the global aggregator handles) but the user is told what's missing.
-- **Style ([web/src/styles/app.css](web/src/styles/app.css))** — `.trend-card-thumb` + `.trend-card-thumb-badge` for the audio cover thumbnail; `.trends-missing-competitors` banner + CTA. Banner uses an accent left-border to differentiate from `trends-flash` error/info banners.
-- **Cost** — single Apify call per refresh, ~12 competitors + 3 aggregators × 8 reels = ~120 results × $2.30/1k ≈ **$0.30 per refresh** (lower than the earlier $0.50 estimate because we're only making one call with the existing actor, not adding the audio-detail enrichment yet).
-- **What's deferred:**
-  - **Global usage_count** ("127K reels using this audio") — Phase C will add a follow-up Apify call to the audio detail page for the top N candidates per refresh, with snapshots over time enabling the `↑ +34% this week` velocity chip.
-  - **Hashtag-reel seeding** — `brand_kits.trend_hashtags` already exists from migration 0030; Phase B-extension will add a third source feeding the same audio-bucket pipeline.
-  - **Aggregator admin UI** — `IG_AGGREGATOR_HANDLES` is hardcoded today; Phase B-extension introduces a `trend_aggregator_accounts` table + agency-only "Add aggregator handle" admin surface.
-  - **Audio licensing flag** — Meta's Sound Collection commercial-safe library isn't exposed via any API. The UI should grow a "verify license before posting on a brand account" warning on each audio card before this surface is opened to non-agency users.
-- **Sections touched:** Recent changes log; §6 Data model (note: `trend_signals` IG rows now `kind='sound'` instead of `'post'`); §10 Edge functions / integrations (fetch-trends IG handler rewrite); §13 Known decisions (new entry: "competitor adoption count" as the v1 IG virality signal — pragmatically more brand-relevant than scraping global "N reels" counts).
+| Audio source | Signals on the card |
+|---|---|
+| Used by ≥1 competitor only | "{Artist} · Used by @h1, @h2 + N more". No views/velocity (intentional — better than a misleading scrape-sample count). |
+| Featured by ≥1 aggregator only | "{Artist} · Featured by @creators · 1.2M views" + "+12K/day" velocity pill. |
+| Both competitor AND aggregator | All of the above merged: "{Artist} · Used by @h1, @h2 · 1.2M views" + velocity pill + raw_payload contains aggregator handles for future use. |
+
+Audios with audio-spy data (totalViews > 0) sort to the top by `viewsPerDay desc` (the actively-climbing signal). Audios with only competitor data sort below by competitor-count desc.
+
+**Server side ([web/api/fetch-trends.ts](web/api/fetch-trends.ts)) — hybrid two-step pipeline in `handleInstagramAudios`:**
+- **Step 1 — competitor reel scrape (~30s).** `apify/instagram-scraper` with brand's competitor handles (any count, no cap), `resultsLimit: 8` per handle. New helper `extractAudioFromPost` defensively parses three musicInfo shapes (`musicInfo`, `clipsMusicMetadata.music_info.music_asset_info`, `originalSoundInfo`) to recover `{audioId, songName, artistName}` from each reel. Reels are grouped by `audioId` into a shared `MergedAudio` map; the brand's competitor handle is added to `competitorsUsing: Set`.
+- **Step 2 — aggregator views/velocity (~150-200s).** New helper `callApifyAudioSpy` calls `doodledaron/instagram-audio-spy` with the **3 aggregator handles only** (`creators`, `early.trending.audio`, `notsorrysocial` — `IG_AGGREGATOR_HANDLES` constant). Single chunk by design — actor caps at 5 usernames per call and adding more aggregators would push us into multi-chunk territory that we proved structurally won't fit. Returns `top_5_tracks` + `fastest_growing_by_competitor` with `totalViews`, `viewsPerDay`, `usedBy` per track. Each track gets merged into the same `MergedAudio` map by `audioId`: `totalViews` + `viewsPerDay` populated, aggregator handles added to `aggregatorsUsing: Set`.
+- **Emit + sweep:** one `trend_signals` row per unique audio (`kind='sound'`, `platform='instagram'`, `region='global'`, `account_id=brand`). `sweepStaleTrends` scoped to `kind='sound'` so legacy `kind='post'` rows decay via the 14-day expiry instead of getting wiped.
+- **The dispatcher** (`handleInstagram`) routes any `mode='competitors'` IG call to `handleInstagramAudios`. The legacy `handleInstagramRegion` (Top-in-region) and the original `handleInstagramCompetitors` (post-shaped output) are dead code retained for one cycle.
+
+**Why hybrid (not pure audio-spy on everything):** Two structural constraints collide.
+1. **Apify free-tier memory cap.** `audio-spy` internally launches `apify/instagram-reel-scraper` as a child run reserving 1024MB. Total concurrent Apify run memory on the free plan is 8GB. Two `audio-spy` parents in parallel both try to launch their children → second child fails with `"By launching this job you will exceed the memory limit of 8192MB"`. Sequential is safe but slow (~3 min per chunk).
+2. **Vercel function timeout.** Pro plan caps `maxDuration` at 300s. 5-username `audio-spy` test ran in 317s alone (already over). Two sequential chunks at ~3 min each would burn 6+ min. Doesn't fit.
+
+The hybrid sidesteps both: `instagram-scraper` doesn't have the audio-spy chunk cap and is fast; `audio-spy` runs only on the 3 fixed aggregator handles (single chunk, predictable runtime). Total ~210-240s, comfortably under 300s. Real virality numbers ship on the audios that matter most (aggregator-curated), and the brand-relevance signal (competitor adoption) covers the long tail.
+
+**Client side ([web/src/components/TrendsView.jsx](web/src/components/TrendsView.jsx))** — `PLATFORM_KINDS.instagram = ['all', 'sound']` (was `['all', 'post']`). `DEFAULT_KIND_FOR_PLATFORM = { instagram: 'sound' }` lands the user on the audio leaderboard. `TrendCard` derives subtitle/metric from `rawPayload` (not the stored strings) so old DB rows render the new format without requiring a refresh. Three formatters mirror the server: `formatHandlesClient`, `formatTotalViewsClient`, `formatViewsPerDayClient`. Thumbnail rendering removed from the card — IG's CDN URLs on `displayUrl` are short-lived signed tokens that 403 in the browser; we'd need durable cover URLs from a different source. Missing-competitors banner pushes user into Brand Intelligence when the brand kit has no competitors.
+
+**Vercel config ([web/vercel.json](web/vercel.json))** — `functions["api/fetch-trends.ts"].maxDuration: 300` (Pro plan max). Per-function so other routes keep their default. Set via vercel.json rather than `export const config` block to sidestep the documented "runtime literal silently breaks the build" trap.
+
+**Cost** — ~$0.10-0.15 per refresh (instagram-scraper ~50 results × $2.30/1k ≈ $0.12 + audio-spy ~$0.005-0.02 PAY_PER_EVENT). $5 Apify budget = ~30-50 cold refreshes. No per-brand multiplier on the audio-spy cost since aggregators are fixed.
+
+**Caveats / known limits:**
+- **Concurrent refreshes break.** Two refreshes (different brands or different users) within the same ~3-4 min window will hit Apify's memory cap on the second one. Single-user / single-brand refreshes are fine. Paid Apify plan ($49/mo) eliminates this.
+- **Adding aggregators past 5 won't fit.** Audio-spy's per-call cap is 5; current 3 leaves 2 of headroom. Adding 6+ aggregators requires a multi-chunk path that we proved doesn't fit Vercel's 300s with sequential calls.
+- **Not every audio gets views/velocity.** Only audios that the 3 aggregators recently posted with surface in audio-spy's response. Competitor-only audios show "Used by @h" without the views chip — by design, since the alternative was a misleading scrape-sample count like "1 reel".
+- **`audio-spy` is community-built**, not Apify-official. Response shape is observed-not-documented. If the actor goes down or changes shape, our parser breaks; we have a graceful-degradation path (skip the audio-spy step, ship competitor-only data).
+- **`apify/instagram-scraper` does NOT support audio URLs as input** — verified by direct testing on 2026-05-06; returns `{error:"no_items"}` for `/reels/audio/{id}/` URLs. This eliminated an earlier "Phase C" plan to enrich audios via that actor.
+
+**What's deferred:**
+- **Aggregator admin UI** — `IG_AGGREGATOR_HANDLES` is still a hardcoded constant. Future: `trend_aggregator_accounts` table + agency-only settings page (with cap-of-5 enforcement).
+- **Posts alongside sounds** — current refresh emits only `kind='sound'` rows. The competitor reel scrape from step 1 has per-reel data we could also emit as `kind='post'` rows at zero extra Apify cost.
+- **Async polling architecture** — current 3-4 min wait per refresh is a UX wart. Proper fix: kick off Apify runs async, return immediately, poll for results. Defer until the manual-refresh UX becomes a real pain.
+- **Audio licensing flag** — Meta's Sound Collection commercial-safe library isn't exposed via any API. UI should grow a "verify license before posting on a brand account" warning before opening this surface to non-agency users.
+
+**Sections touched:** Recent changes log; §6 Data model (note: `trend_signals` IG rows now `kind='sound'`; raw_payload includes `audioId`, `totalViews`, `viewsPerDay`, `competitorHandles`, `aggregatorHandles`); §10 Edge functions / integrations (fetch-trends IG handler rewritten as hybrid); §13 Known decisions (new entry: hybrid pipeline rationale; new entry: `apify/instagram-scraper` doesn't accept audio URLs); §12 External accounts & secrets (Apify token rotation reminder).
 
 ### 2026-05-06 — Trends Radar brand-scoped (Phase A of viral-audio rework)
 First slice of a multi-phase rework that converts the IG tab from "list of posts" into a velocity-tracked viral-audio leaderboard. Phase A is pure refactor — no scraper changes, no schema changes, just relocating the surface so subsequent phases can layer on cleanly.
