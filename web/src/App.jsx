@@ -780,7 +780,7 @@ const App = () => {
     }
 
     if (route.view === "profile") {
-      if (!auth) return <CalendarView postPlans={[]} accountId={null} userId={null} mode="customer" setRoute={setRoute} />;
+      if (!auth) return <CalendarView postPlans={[]} accountId={null} userId={null} mode="customer" setRoute={setRoute} auth={null} />;
       return <ProfileView setRoute={setRoute} mode={mode} onSignOut={handleSignOut}/>;
     }
 
@@ -834,6 +834,7 @@ const App = () => {
         setRoute={setRoute}
         unreadByPlan={unreadByPlan}
         onPlanCreated={upsertPostPlan}
+        auth={auth}
       />
     );
 
@@ -859,6 +860,7 @@ const App = () => {
         userId={null}
         mode="customer"
         setRoute={setRoute}
+        auth={null}
       />
     );
 
@@ -891,6 +893,7 @@ const App = () => {
         setRoute={setRoute}
         unreadByPlan={unreadByPlan}
         onPlanCreated={upsertPostPlan}
+        auth={auth}
       />
     );
   };
