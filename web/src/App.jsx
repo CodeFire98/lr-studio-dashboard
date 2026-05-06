@@ -784,7 +784,7 @@ const App = () => {
     }
 
     if (route.view === "profile") {
-      if (!auth) return <CalendarView postPlans={[]} accountId={null} userId={null} mode="customer" setRoute={setRoute} />;
+      if (!auth) return <CalendarView postPlans={[]} accountId={null} userId={null} mode="customer" setRoute={setRoute} auth={null} />;
       return <ProfileView setRoute={setRoute} mode={mode} onSignOut={handleSignOut}/>;
     }
 
@@ -853,6 +853,7 @@ const App = () => {
         setRoute={setRoute}
         unreadByPlan={unreadByPlan}
         onPlanCreated={upsertPostPlan}
+        auth={auth}
       />
     );
 
@@ -878,6 +879,7 @@ const App = () => {
         userId={null}
         mode="customer"
         setRoute={setRoute}
+        auth={null}
       />
     );
 
@@ -895,7 +897,7 @@ const App = () => {
       );
       return <IdeateView auth={auth} accountId={calendarAccountId}/>;
     }
-    if (route.view === "library") return <LibraryView auth={auth} accountId={calendarAccountId}/>;
+    if (route.view === "library") return <LibraryView auth={auth} accountId={calendarAccountId} setRoute={setRoute}/>;
     if (route.view === "performance") return <PerformanceView accountId={calendarAccountId}/>;
     if (route.view === "team") return <TeamView overrideAccountId={auth?.isAgency ? calendarAccountId : null} />;
     if (route.view === "brand") return <BrandKitView accountId={calendarAccountId}/>;
@@ -910,6 +912,7 @@ const App = () => {
         setRoute={setRoute}
         unreadByPlan={unreadByPlan}
         onPlanCreated={upsertPostPlan}
+        auth={auth}
       />
     );
   };
