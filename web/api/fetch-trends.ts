@@ -1491,9 +1491,21 @@ async function handleInstagramAudios(
     return b.reels.length - a.reels.length;
   });
 
+  // Format up to `cap` @-handles into a comma-joined string, with a
+  // trailing "+ N more" when there are more. e.g.
+  //   ["a","b","c","d","e"] cap=3 → "@a, @b, @c + 2 more"
+  // The cap stops the subtitle from blowing up to a 12-handle wall on
+  // audios that everyone in the category is using.
+  const formatHandles = (handles: string[], cap = 3): string => {
+    if (handles.length === 0) return "";
+    const at = handles.map((h) => `@${h}`);
+    if (at.length <= cap) return at.join(", ");
+    return `${at.slice(0, cap).join(", ")} + ${at.length - cap} more`;
+  };
+
   const inserts: TrendInsertRow[] = ranked.map((b, i) => {
-    const competitorCount = b.competitors.size;
-    const aggregatorCount = b.aggregators.size;
+    const competitorList = Array.from(b.competitors);
+    const aggregatorList = Array.from(b.aggregators);
     // Title falls back to a short audio-id stub when the song is
     // untitled (creator-original audio without a label). Without this
     // every untitled audio collides on the dedupe key and we'd lose
@@ -1502,23 +1514,33 @@ async function handleInstagramAudios(
     const title = songName && songName.length > 0
       ? songName
       : `Audio · ${b.audio.audioId.slice(-8)}`;
+
+    // Subtitle: artist + the actual competitor handles using the
+    // audio. Listing handles is more informative than a count —
+    // strategists can immediately see which competitors are riding
+    // the audio, which doubles as a "is this audio relevant to my
+    // brand?" check. Capped at 3 to keep the card readable.
     const subtitleParts: string[] = [];
     if (b.audio.artistName) subtitleParts.push(b.audio.artistName);
-    if (competitorCount > 0) {
-      subtitleParts.push(
-        `${competitorCount} ${competitorCount === 1 ? "competitor" : "competitors"}`,
-      );
+    if (competitorList.length > 0) {
+      subtitleParts.push(`Used by ${formatHandles(competitorList, 3)}`);
     }
-    if (aggregatorCount > 0) {
-      const label = aggregatorCount === 1 ? "aggregator" : "aggregators";
-      subtitleParts.push(`Featured by ${aggregatorCount} ${label}`);
+
+    // Metric pill: surfaces the aggregator-featured signal as a
+    // separate badge from the per-card subtitle. When there are no
+    // aggregator features but there ARE competitor uses, leave the
+    // metric pill empty — the handles are already in the subtitle so
+    // a redundant "3 competitor uses" pill adds noise. When the audio
+    // has neither (shouldn't happen, but defensively), fall back to a
+    // generic "audio" label.
+    let metricValue: number | null = null;
+    let metricLabel: string | null = null;
+    if (aggregatorList.length > 0) {
+      metricLabel = `Featured by ${formatHandles(aggregatorList, 2)}`;
+    } else if (competitorList.length === 0) {
+      metricLabel = "audio";
     }
-    // Metric: prefer competitor count when present (brand-relevant
-    // signal); fall back to aggregator count for the early-mover case.
-    const metricValue = competitorCount > 0 ? competitorCount : aggregatorCount;
-    const metricLabel = competitorCount > 0
-      ? (competitorCount === 1 ? "competitor use" : "competitor uses")
-      : (aggregatorCount === 1 ? "aggregator feature" : "aggregator features");
+
     return {
       platform: "instagram",
       kind: "sound",
@@ -1526,7 +1548,11 @@ async function handleInstagramAudios(
       title: title.slice(0, 280),
       subtitle: subtitleParts.join(" · "),
       url: `https://www.instagram.com/reels/audio/${encodeURIComponent(b.audio.audioId)}/`,
-      thumbnail_url: b.reels[0]?.thumbnail ?? null,
+      // Intentionally null — IG's CDN URLs on `displayUrl` are
+      // short-lived signed tokens with Referer/CORS restrictions, so
+      // they 403 in the browser. Phase C's audio-detail Apify call
+      // returns durable cover URLs that we can wire here later.
+      thumbnail_url: null,
       metric_value: metricValue,
       metric_label: metricLabel,
       rank: i + 1,
@@ -1535,8 +1561,8 @@ async function handleInstagramAudios(
         audioId: b.audio.audioId,
         songName: b.audio.songName,
         artistName: b.audio.artistName,
-        competitorHandles: Array.from(b.competitors),
-        aggregatorHandles: Array.from(b.aggregators),
+        competitorHandles: competitorList,
+        aggregatorHandles: aggregatorList,
         exampleReels: b.reels.slice(0, 3),
       },
       account_id: body.accountId!,
