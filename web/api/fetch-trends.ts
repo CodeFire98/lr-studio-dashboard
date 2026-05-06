@@ -1438,7 +1438,7 @@ async function handleInstagramAudios(
     competitors: Set<string>;     // handles in the brand's competitor list
     aggregators: Set<string>;     // handles in IG_AGGREGATOR_HANDLES
     reels: Array<{
-      url: string;
+      url: string | null;          // null when Apify returns neither url nor shortCode
       thumbnail: string | null;
       ownerHandle: string;
       source: "competitor" | "aggregator";
@@ -1466,14 +1466,23 @@ async function handleInstagramAudios(
     }
     if (source === "competitor") bucket.competitors.add(ownerHandle);
     else                          bucket.aggregators.add(ownerHandle);
-    if (post.url) {
-      bucket.reels.push({
-        url: post.url,
-        thumbnail: post.displayUrl ?? null,
-        ownerHandle,
-        source,
-      });
-    }
+    // Always push to bucket.reels — every reel using this audio counts
+    // toward the reel-count signal regardless of whether we got a usable
+    // URL back. Fall back to constructing a URL from `shortCode` when
+    // post.url is missing (Apify's actor occasionally omits the
+    // top-level url field), else null. The previous gating-on-post.url
+    // had buckets where competitors.size > reels.length, which made
+    // the reel count look wrong on cards (showed "@handle" but no
+    // "N reels" suffix).
+    const reelUrl = typeof post.url === "string" && post.url.length > 0
+      ? post.url
+      : (post.shortCode ? `https://www.instagram.com/p/${post.shortCode}/` : null);
+    bucket.reels.push({
+      url: reelUrl,
+      thumbnail: typeof post.displayUrl === "string" ? post.displayUrl : null,
+      ownerHandle,
+      source,
+    });
   });
 
   // Rank: competitor count desc (the brand-specific signal), tiebreak
