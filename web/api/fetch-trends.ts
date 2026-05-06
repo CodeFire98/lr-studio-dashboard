@@ -1198,6 +1198,141 @@ async function callApifyInstagramPosts(args: {
   return { items: Array.isArray(items) ? items : [] };
 }
 
+// Phase C — fetch the global usage count for a list of audio URLs.
+// Hits `instagram.com/reels/audio/{id}/` for each via the same
+// apify/instagram-scraper actor we already use; the actor returns
+// reel posts plus (depending on response shape) audio metadata that
+// includes the global count. resultsLimit:1 keeps cost minimal —
+// ~$0.0023 per audio, ~$0.12 for a typical 50-audio refresh.
+//
+// The actor's response shape for audio URLs varies. We extract the
+// count defensively in `extractAudioUsageCount` from several known
+// field locations; if none match, the audio row simply doesn't get
+// a globalReelCount and the UI hides the count rather than showing
+// a misleading number.
+async function callApifyAudioDetail(args: {
+  audioUrls: string[];
+}): Promise<{ items: ApifyInstagramPost[]; error?: string }> {
+  if (args.audioUrls.length === 0) return { items: [] };
+  const url =
+    `https://api.apify.com/v2/acts/apify~instagram-scraper` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        directUrls: args.audioUrls,
+        resultsType: "posts",
+        resultsLimit: 1,
+        // addParentData=true asks Apify to include the parent media
+        // metadata (the audio object itself, not just the reel) when
+        // available. The audio object is where the global count
+        // typically lives.
+        addParentData: true,
+        searchType: "user",
+      }),
+    });
+  } catch (ex) {
+    return { items: [], error: `audio-detail network: ${(ex as Error).message}` };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { items: [], error: `audio-detail apify ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const items = (await res.json().catch(() => [])) as ApifyInstagramPost[];
+  return { items: Array.isArray(items) ? items : [] };
+}
+
+// Defensively extract the global "N reels using this audio" count
+// from an Apify response item. The field location depends on actor
+// version + audio type (licensed song vs creator-original); we try
+// every known shape and return the first non-zero number found.
+// Returns null when no count is detectable.
+function extractAudioUsageCount(item: ApifyInstagramPost): number | null {
+  const p = item as Record<string, unknown>;
+  const get = (path: string): unknown => {
+    return path.split(".").reduce<unknown>((acc, key) => {
+      if (acc && typeof acc === "object") {
+        return (acc as Record<string, unknown>)[key];
+      }
+      return undefined;
+    }, p);
+  };
+  const candidatePaths = [
+    // Original sound (creator-recorded audio)
+    "clipsMusicMetadata.original_sound_info.use_count",
+    "clipsMusicMetadata.original_sound_info.original_audio_use_count",
+    "originalSoundInfo.use_count",
+    "originalSoundInfo.original_audio_use_count",
+    "original_sound_info.use_count",
+    // Licensed music
+    "clipsMusicMetadata.music_info.music_asset_info.use_count",
+    "clipsMusicMetadata.music_info.music_asset_info.video_count",
+    // Top-level musicInfo
+    "musicInfo.use_count",
+    "musicInfo.video_count",
+    "musicInfo.related_post_count",
+    "musicInfo.usage_count",
+    // Audio object directly
+    "audio.use_count",
+    "audio.video_count",
+    "audio.usage_count",
+    // Top-level shorthand fields some actors expose
+    "useCount",
+    "videoCount",
+    "usageCount",
+    "reels_count",
+    "reelsCount",
+  ];
+  for (const path of candidatePaths) {
+    const v = get(path);
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+    if (typeof v === "string" && /^\d+$/.test(v)) {
+      const n = parseInt(v, 10);
+      if (n > 0) return n;
+    }
+  }
+  return null;
+}
+
+// Pull the audio_id back out of the URL we sent to Apify so we can
+// re-associate the response items with our buckets. Apify echoes the
+// input URL on each item under `inputUrl` (sometimes `input` or
+// `url`); we try each shape.
+function parseAudioIdFromInputUrl(item: ApifyInstagramPost): string | null {
+  const p = item as Record<string, unknown>;
+  const candidateUrls: unknown[] = [
+    p.inputUrl,
+    p.input,
+    p.url,
+  ];
+  for (const u of candidateUrls) {
+    if (typeof u !== "string") continue;
+    const m = u.match(/\/reels\/audio\/([^/?#]+)/i);
+    if (m) {
+      try {
+        return decodeURIComponent(m[1]);
+      } catch {
+        return m[1];
+      }
+    }
+  }
+  return null;
+}
+
+// Format a global count as "1.2M reels" / "127K reels" / "987 reels".
+// Server-side formatter so the stored subtitle is readable without
+// relying on the client to format. The client also formats from
+// raw_payload so it can re-render if we change the format later.
+function formatGlobalReelCount(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B reels`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M reels`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K reels`;
+  return `${n} reel${n === 1 ? "" : "s"}`;
+}
+
 async function handleInstagram(
   body: FetchTrendsRequest,
   serviceClient: SupabaseClient,
@@ -1443,6 +1578,11 @@ async function handleInstagramAudios(
       ownerHandle: string;
       source: "competitor" | "aggregator";
     }>;
+    // Phase C: global "N reels using this audio" count from the audio
+    // detail page. Null when the audio-detail call fails or the count
+    // field isn't found in the response — UI hides the count rather
+    // than displaying the misleading scrape-sample fallback.
+    globalUsageCount?: number | null;
   };
   const buckets = new Map<string, AudioBucket>();
 
@@ -1485,6 +1625,45 @@ async function handleInstagramAudios(
     });
   });
 
+  // Phase C — enrich each audio bucket with the global "N reels using
+  // this audio" count from the audio detail page. One Apify call for
+  // all audios at once; ~$0.0023 per audio = ~$0.12 for a typical
+  // 50-audio refresh. We do this BEFORE ranking so the UI can sort by
+  // global virality if we want to in the future, but for now we still
+  // rank by competitor count (the brand-relevance signal).
+  const audioUrlsToEnrich = Array.from(buckets.values()).map(
+    (b) => `https://www.instagram.com/reels/audio/${encodeURIComponent(b.audio.audioId)}/`,
+  );
+  if (audioUrlsToEnrich.length > 0) {
+    const { items: detailItems, error: detailErr } = await callApifyAudioDetail({
+      audioUrls: audioUrlsToEnrich,
+    });
+    if (detailErr) {
+      summary.errors.push(detailErr);
+    }
+    // Index detail items by audio_id parsed back from inputUrl. Apify
+    // returns items in the same order as we asked, but the inputUrl
+    // mapping is more reliable than positional indexing because some
+    // audio URLs may return zero items (private/deleted) and shift
+    // the alignment.
+    let enrichedCount = 0;
+    for (const item of detailItems) {
+      const audioId = parseAudioIdFromInputUrl(item);
+      if (!audioId) continue;
+      const bucket = buckets.get(audioId);
+      if (!bucket) continue;
+      const count = extractAudioUsageCount(item);
+      if (count != null) {
+        bucket.globalUsageCount = count;
+        enrichedCount++;
+      }
+    }
+    // Surface enrichment stats for diagnosis without polluting the
+    // standard summaries shape.
+    (summary as Record<string, unknown>).audioDetailFetched = detailItems.length;
+    (summary as Record<string, unknown>).audioDetailEnriched = enrichedCount;
+  }
+
   // Rank: competitor count desc (the brand-specific signal), tiebreak
   // by aggregator count (global curation signal), then by total reel
   // mentions desc. An audio with 0 competitors but 2 aggregators still
@@ -1525,26 +1704,32 @@ async function handleInstagramAudios(
       : `Audio · ${b.audio.audioId.slice(-8)}`;
 
     // Subtitle: artist + the actual competitor handles using the
-    // audio + total reels in our scrape sample using it. Listing
-    // handles is more informative than a count — strategists can
-    // immediately see which competitors are riding the audio, which
-    // doubles as a "is this audio relevant to my brand?" check.
-    // Capped at 3 to keep the card readable.
+    // audio + global reel count (from Phase C audio-detail
+    // enrichment when available). Listing handles is more
+    // informative than a count alone — strategists can see which
+    // competitors are riding the audio. Capped at 3 to keep the card
+    // readable.
     //
-    // The reel count is the number of distinct reels in *our scrape
-    // sample* using this audio (not the global "127K reels using
-    // this audio" number — that needs the audio-detail Apify call
-    // landing in Phase C). Still a useful relative ranking signal:
-    // an audio appearing in 8 of our scraped reels is more locked-in
-    // across the brand's competitive set than one in 2.
-    const reelCount = b.reels.length;
+    // Reel-count source priority:
+    //  1. globalUsageCount when the audio-detail call succeeded —
+    //     the actual "127K reels using this audio" number from
+    //     Instagram's audio page. This is what the user actually
+    //     wants to see.
+    //  2. (none) when the audio-detail enrichment didn't return a
+    //     count for this audio — we explicitly DROP the scrape-sample
+    //     count here because "1 reel" is misleading: it means "1 of
+    //     our 120 scraped reels uses this audio," not "this audio
+    //     has only 1 reel globally." Better to show no count than a
+    //     misleading one.
+    const sampleReelCount = b.reels.length;
+    const globalReelCount = b.globalUsageCount ?? null;
     const subtitleParts: string[] = [];
     if (b.audio.artistName) subtitleParts.push(b.audio.artistName);
     if (competitorList.length > 0) {
       subtitleParts.push(`Used by ${formatHandles(competitorList, 3)}`);
     }
-    if (reelCount > 0) {
-      subtitleParts.push(`${reelCount} ${reelCount === 1 ? "reel" : "reels"}`);
+    if (globalReelCount != null) {
+      subtitleParts.push(formatGlobalReelCount(globalReelCount));
     }
 
     // Metric pill: surfaces the aggregator-featured signal as a
@@ -1584,10 +1769,15 @@ async function handleInstagramAudios(
         artistName: b.audio.artistName,
         competitorHandles: competitorList,
         aggregatorHandles: aggregatorList,
-        // Total reels in the scrape sample using this audio (not
-        // global). The client uses this to render the subtitle even
-        // for old rows whose stored `subtitle` string is stale.
-        reelCount,
+        // The actual "N reels using this audio" number from
+        // Instagram's audio detail page (Phase C enrichment).
+        // Null when the audio-detail call failed or the count
+        // field wasn't found in the response.
+        globalReelCount,
+        // Sample-only count: how many of OUR scraped reels use
+        // this audio. Kept in raw_payload for diagnosis but the
+        // UI doesn't surface it (misleading without context).
+        sampleReelCount,
         exampleReels: b.reels.slice(0, 3),
       },
       account_id: body.accountId!,

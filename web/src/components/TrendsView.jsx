@@ -100,6 +100,19 @@ function formatHandlesClient(handles, cap = 3) {
   return `${at.slice(0, cap).join(', ')} + ${at.length - cap} more`;
 }
 
+// Format the global "N reels using this audio" count. Mirrors the
+// server's formatGlobalReelCount so the client can re-format from
+// raw_payload.globalReelCount even if the stored subtitle string is
+// stale. Returns "" when n is null/undefined so callers can do
+// `if (str)` rather than null-check.
+function formatGlobalReelCountClient(n) {
+  if (n == null || typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B reels`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M reels`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K reels`;
+  return `${n} reel${n === 1 ? '' : 's'}`;
+}
+
 function TrendCard({ trend, onTurnIntoPostPlan }) {
   const isHashtag = trend.kind === 'hashtag';
   const isAudio = trend.kind === 'sound';
@@ -118,13 +131,18 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
     const rp = trend.rawPayload;
     const competitors = Array.isArray(rp.competitorHandles) ? rp.competitorHandles : [];
     const aggregators = Array.isArray(rp.aggregatorHandles) ? rp.aggregatorHandles : [];
-    const reelCount = typeof rp.reelCount === 'number'
-      ? rp.reelCount
-      : (Array.isArray(rp.exampleReels) ? rp.exampleReels.length : 0);
+    // Phase C: prefer the global "N reels using this audio" number
+    // from the audio detail page when the audio-detail enrichment
+    // succeeded. We deliberately DO NOT fall back to sample counts
+    // (sampleReelCount or exampleReels.length) — those are misleading
+    // small numbers that look like "this audio is dead" when really
+    // it just means our scrape pulled it once. Better to show no
+    // count than a misleading one.
+    const globalReelCountStr = formatGlobalReelCountClient(rp.globalReelCount);
     const subParts = [];
     if (rp.artistName) subParts.push(rp.artistName);
     if (competitors.length > 0) subParts.push(`Used by ${formatHandlesClient(competitors, 3)}`);
-    if (reelCount > 0) subParts.push(`${reelCount} ${reelCount === 1 ? 'reel' : 'reels'}`);
+    if (globalReelCountStr) subParts.push(globalReelCountStr);
     subtitle = subParts.join(' · ') || trend.subtitle;
     metric = aggregators.length > 0
       ? `Featured by ${formatHandlesClient(aggregators, 2)}`
