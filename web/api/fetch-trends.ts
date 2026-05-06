@@ -1641,26 +1641,37 @@ async function handleInstagramAudios(
   };
 
   // The audio-spy actor has a hard cap of 5 usernames per call
-  // (run errors with "Too many competitors! Max is 5"). Chunk our
-  // handle list and run in parallel. With 12 competitors + 3
-  // aggregators that's 3 chunks; ~$0.005-0.02 per chunk so
-  // ~$0.015-0.06 per refresh total. Still cheap.
+  // ("Too many competitors! Max is 5"). Chunk the handle list — but
+  // run chunks SEQUENTIALLY, not in parallel. The actor internally
+  // launches apify/instagram-reel-scraper as a child run reserving
+  // 1024MB. Apify's free plan caps total concurrent run memory at
+  // 8GB; running two parents in parallel meant both tried to launch
+  // their 1024MB children at the same time and the second child
+  // would 400 with "you will exceed the memory limit of 8192MB" —
+  // taking the entire chunk down. Sequential keeps memory under cap
+  // (one parent + one child = ~5GB max). Trade-off: refresh latency
+  // grows linearly with chunk count (~2-3 min each, so 9 handles =
+  // 2 chunks = ~5 min). Acceptable for a manual refresh; we'll move
+  // to a cron when we want lower latency.
   const CHUNK_SIZE = 5;
   const chunks: string[][] = [];
   for (let i = 0; i < handles.length; i += CHUNK_SIZE) {
     chunks.push(handles.slice(i, i + CHUNK_SIZE));
   }
-  console.log("[fetch-trends] audio-spy requesting", chunks.length, "chunks of up to", CHUNK_SIZE, "usernames each");
-  const chunkResults = await Promise.all(
-    chunks.map((c, i) => callApifyAudioSpy({ usernames: c }).then((r) => {
-      console.log("[fetch-trends] audio-spy chunk", i + 1, "of", chunks.length, "→", r.result ? "ok" : `error: ${r.error ?? "no result"}`);
-      return r;
-    })),
-  );
+  console.log("[fetch-trends] audio-spy", chunks.length, "chunks of up to", CHUNK_SIZE, "usernames each (sequential)");
   const spyResults: AudioSpyResponse[] = [];
-  for (const r of chunkResults) {
-    if (r.error) summary.errors.push(r.error);
-    if (r.result) spyResults.push(r.result);
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    console.log(`[fetch-trends] audio-spy chunk ${i + 1}/${chunks.length}: ${c.join(", ")}`);
+    const r = await callApifyAudioSpy({ usernames: c });
+    if (r.error) {
+      summary.errors.push(`chunk ${i + 1}: ${r.error}`);
+      console.warn(`[fetch-trends] audio-spy chunk ${i + 1} failed: ${r.error}`);
+    }
+    if (r.result) {
+      spyResults.push(r.result);
+      console.log(`[fetch-trends] audio-spy chunk ${i + 1} ok`);
+    }
   }
   if (spyResults.length === 0) {
     return {
