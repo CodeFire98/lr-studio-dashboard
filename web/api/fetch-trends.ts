@@ -1635,12 +1635,44 @@ async function handleInstagramAudios(
     (b) => `https://www.instagram.com/reels/audio/${encodeURIComponent(b.audio.audioId)}/`,
   );
   if (audioUrlsToEnrich.length > 0) {
+    console.log("[fetch-trends] audio-detail: requesting", audioUrlsToEnrich.length, "URLs. First 3:", audioUrlsToEnrich.slice(0, 3));
     const { items: detailItems, error: detailErr } = await callApifyAudioDetail({
       audioUrls: audioUrlsToEnrich,
     });
     if (detailErr) {
       summary.errors.push(detailErr);
+      console.warn("[fetch-trends] audio-detail error:", detailErr);
     }
+    console.log("[fetch-trends] audio-detail returned", detailItems.length, "items");
+
+    // Diagnostic: dump structure of the first item so we can see what
+    // fields the actor actually returns and update extractAudioUsageCount
+    // accordingly. This is safe to log — no secrets in the response.
+    let firstItemDiagnostic: Record<string, unknown> | null = null;
+    if (detailItems.length > 0) {
+      const first = detailItems[0] as Record<string, unknown>;
+      console.log("[fetch-trends] audio-detail first item top-level keys:", Object.keys(first));
+      const sampleSlice = (v: unknown): unknown => {
+        if (v == null) return null;
+        if (typeof v === "object") {
+          const s = JSON.stringify(v);
+          return s.length > 1500 ? s.slice(0, 1500) + "...[truncated]" : v;
+        }
+        return v;
+      };
+      console.log("[fetch-trends] audio-detail first item.musicInfo:", JSON.stringify(first.musicInfo)?.slice(0, 1000));
+      console.log("[fetch-trends] audio-detail first item.clipsMusicMetadata:", JSON.stringify(first.clipsMusicMetadata)?.slice(0, 1000));
+      console.log("[fetch-trends] audio-detail first item.original_sound_info:", JSON.stringify(first.original_sound_info ?? first.originalSoundInfo)?.slice(0, 1000));
+      firstItemDiagnostic = {
+        keys: Object.keys(first).slice(0, 40),
+        musicInfo: sampleSlice(first.musicInfo),
+        clipsMusicMetadata: sampleSlice(first.clipsMusicMetadata),
+        originalSoundInfo: sampleSlice(first.original_sound_info ?? first.originalSoundInfo),
+        inputUrl: first.inputUrl,
+        url: first.url,
+      };
+    }
+
     // Index detail items by audio_id parsed back from inputUrl. Apify
     // returns items in the same order as we asked, but the inputUrl
     // mapping is more reliable than positional indexing because some
@@ -1658,10 +1690,12 @@ async function handleInstagramAudios(
         enrichedCount++;
       }
     }
+    console.log("[fetch-trends] audio-detail enriched", enrichedCount, "of", detailItems.length, "items");
     // Surface enrichment stats for diagnosis without polluting the
     // standard summaries shape.
     (summary as Record<string, unknown>).audioDetailFetched = detailItems.length;
     (summary as Record<string, unknown>).audioDetailEnriched = enrichedCount;
+    (summary as Record<string, unknown>).audioDetailFirstItem = firstItemDiagnostic;
   }
 
   // Rank: competitor count desc (the brand-specific signal), tiebreak
