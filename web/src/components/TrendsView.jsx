@@ -113,6 +113,21 @@ function formatGlobalReelCountClient(n) {
   return `${n} reel${n === 1 ? '' : 's'}`;
 }
 
+function formatTotalViewsClient(n) {
+  if (n == null || typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B views`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M views`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K views`;
+  return `${n} view${n === 1 ? '' : 's'}`;
+}
+
+function formatViewsPerDayClient(n) {
+  if (n == null || typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000) return `+${(n / 1_000_000).toFixed(1)}M/day`;
+  if (n >= 1_000)     return `+${(n / 1_000).toFixed(1)}K/day`;
+  return `+${Math.round(n)}/day`;
+}
+
 function TrendCard({ trend, onTurnIntoPostPlan }) {
   const isHashtag = trend.kind === 'hashtag';
   const isAudio = trend.kind === 'sound';
@@ -131,22 +146,33 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
     const rp = trend.rawPayload;
     const competitors = Array.isArray(rp.competitorHandles) ? rp.competitorHandles : [];
     const aggregators = Array.isArray(rp.aggregatorHandles) ? rp.aggregatorHandles : [];
-    // Phase C: prefer the global "N reels using this audio" number
-    // from the audio detail page when the audio-detail enrichment
-    // succeeded. We deliberately DO NOT fall back to sample counts
-    // (sampleReelCount or exampleReels.length) — those are misleading
-    // small numbers that look like "this audio is dead" when really
-    // it just means our scrape pulled it once. Better to show no
-    // count than a misleading one.
+    // Audio-spy era (2026-05-06+): rows carry totalViews +
+    // viewsPerDay from the doodledaron actor. Older rows from the
+    // pre-audio-spy handler may carry globalReelCount instead. Render
+    // whichever is available.
+    const totalViewsStr = formatTotalViewsClient(rp.totalViews);
+    const velocityStr = formatViewsPerDayClient(rp.viewsPerDay);
     const globalReelCountStr = formatGlobalReelCountClient(rp.globalReelCount);
     const subParts = [];
     if (rp.artistName) subParts.push(rp.artistName);
-    if (competitors.length > 0) subParts.push(`Used by ${formatHandlesClient(competitors, 3)}`);
-    if (globalReelCountStr) subParts.push(globalReelCountStr);
+    if (competitors.length > 0) {
+      subParts.push(`Used by ${formatHandlesClient(competitors, 3)}`);
+    } else if (aggregators.length > 0) {
+      subParts.push(`Featured by ${formatHandlesClient(aggregators, 2)}`);
+    }
+    if (totalViewsStr) subParts.push(totalViewsStr);
+    else if (globalReelCountStr) subParts.push(globalReelCountStr);
     subtitle = subParts.join(' · ') || trend.subtitle;
-    metric = aggregators.length > 0
-      ? `Featured by ${formatHandlesClient(aggregators, 2)}`
-      : '';
+    // Metric pill: prefer velocity (the most actionable signal) over
+    // the aggregator-features label. Only fall back to aggregators
+    // when velocity is unknown.
+    if (velocityStr) {
+      metric = velocityStr;
+    } else if (aggregators.length > 0 && competitors.length > 0) {
+      metric = `Featured by ${formatHandlesClient(aggregators, 2)}`;
+    } else {
+      metric = '';
+    }
   }
 
   return (
