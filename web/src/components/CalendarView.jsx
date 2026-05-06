@@ -17,6 +17,26 @@ const HEADING_FMT   = { month: 'short', year: 'numeric' };
 const WEEKDAY_LABEL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MAX_CHIPS_PER_CELL = 3;
 
+// Time-of-day greeting tail — restored from the sunset HomeView.
+// One short phrase per slot, kept in the same "lowercase, no terminal
+// punctuation" voice as the original. The 17–20 line was retuned for
+// the calendar (the original "let's wrap up something nice" was
+// brief-composer flavour; calendar is a planning surface so the tail
+// shifts to passive-observation).
+const GREETINGS = {
+  morning:   "it's a fresh morning at L+R",                 // 5 → 11
+  afternoon: "the afternoon's looking good at L+R",         // 12 → 16
+  evening:   "evening at L+R — checking what's shipped",    // 17 → 20
+  night:     "burning the late-night oil at L+R",           // 21 → 4
+};
+function greetingTail(now = new Date()) {
+  const h = now.getHours();
+  if (h >= 5  && h <= 11) return GREETINGS.morning;
+  if (h >= 12 && h <= 16) return GREETINGS.afternoon;
+  if (h >= 17 && h <= 20) return GREETINGS.evening;
+  return GREETINGS.night;
+}
+
 // Status order — earlier statuses sort first within a day so the brand
 // sees "things needing my attention" near the top of a busy cell.
 // Legacy enum values are mapped to the same slot as their new-enum
@@ -750,6 +770,7 @@ const CalendarView = ({
   setRoute,
   unreadByPlan,
   onPlanCreated,
+  auth = null,  // optional — drives the time-of-day greeting tail above the title
 }) => {
   const isAdmin = mode === 'admin';
 
@@ -947,7 +968,22 @@ const CalendarView = ({
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <div className="tiny" style={{ marginBottom: 8 }}>Schedule</div>
+          <div className="greeting" style={{ marginBottom: 8 }}>
+            {/* Override the legacy green status-dot to the L+R accent so
+                the greeting reads as a brand flourish, not a "system
+                online" indicator. */}
+            <span
+              className="status-dot"
+              style={{ background: 'var(--accent)', boxShadow: '0 0 0 3px var(--accent-soft)' }}
+            />
+            <span>
+              {auth?.name
+                ? `Hello, ${auth.name.split(' ')[0]} — ${greetingTail()}`
+                : auth
+                  ? `Hello — ${greetingTail()}`
+                  : 'Welcome to L+R — a calmer way to plan your social.'}
+            </span>
+          </div>
           <h1>Social Calendar</h1>
           <div className="sub">
             Plan and preview every Instagram, LinkedIn, and X post for your brand.
