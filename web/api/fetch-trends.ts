@@ -1619,91 +1619,104 @@ async function handleInstagramAudios(
     };
   }
 
-  // Concat competitors + aggregators into the audio-spy username list.
-  // The actor returns top tracks across the input set with virality
-  // signals (totalViews, viewsPerDay, usedBy). We tag tracks as
-  // "competitor" or "aggregator" sourced after the fact via Set lookup.
+  // Hybrid pipeline (2026-05-06 #2):
+  //   Step 1: apify/instagram-scraper on competitor handles (fast,
+  //           ~30s for any number of handles). Gives us reels we
+  //           can bucket-by-audio for the "Used by @competitor"
+  //           signal across ALL the brand's competitors.
+  //   Step 2: doodledaron/instagram-audio-spy on aggregator handles
+  //           ONLY (3 fixed handles, ~150-200s, 1 chunk). Returns
+  //           top tracks with totalViews + viewsPerDay (the global
+  //           virality signal we want to display).
+  //   Step 3: merge results by audioId. An audio with both signals
+  //           shows "{Artist} · Used by @h1, @h2 · 1.2M views" +
+  //           "+12K/day" pill. An audio with only competitor data
+  //           shows "Used by @h1, @h2" (no views — we omit rather
+  //           than show a misleading scrape-sample number).
+  //
+  // Why split the work: audio-spy alone can only handle 5 usernames
+  // per call (actor cap) AND each call is slow because it internally
+  // launches apify/instagram-reel-scraper which takes minutes. Free
+  // Apify also has an 8GB concurrent-memory cap that prevents running
+  // multiple audio-spy chunks in parallel. By using audio-spy ONLY
+  // for the 3 fixed aggregator handles (one chunk, no scaling needed)
+  // we get the global virality data without hitting any constraint,
+  // and instagram-scraper covers the per-brand competitor signal in
+  // a single fast call regardless of competitor count. Total runtime
+  // ~210-240s, comfortably within Vercel's 300s function timeout.
   const aggregatorHandlesNorm = IG_AGGREGATOR_HANDLES
     .map((h) => h.trim().replace(/^@/, "").toLowerCase())
     .filter((h) => h.length > 0 && /^[a-z0-9._]+$/i.test(h));
-  const handlesSet = new Set<string>(competitorHandles);
-  for (const h of aggregatorHandlesNorm) handlesSet.add(h);
-  const handles = Array.from(handlesSet);
   const aggregatorSet = new Set(aggregatorHandlesNorm);
 
   const capturedAt = new Date();
   const summary: InstagramRegionSummary = {
     region: "global",
-    handles,
+    handles: [...competitorHandles, ...aggregatorHandlesNorm],
     fetched: 0,
     written: 0,
     errors: [],
   };
 
-  // The audio-spy actor has a hard cap of 5 usernames per call
-  // ("Too many competitors! Max is 5"). Chunk the handle list — but
-  // run chunks SEQUENTIALLY, not in parallel. The actor internally
-  // launches apify/instagram-reel-scraper as a child run reserving
-  // 1024MB. Apify's free plan caps total concurrent run memory at
-  // 8GB; running two parents in parallel meant both tried to launch
-  // their 1024MB children at the same time and the second child
-  // would 400 with "you will exceed the memory limit of 8192MB" —
-  // taking the entire chunk down. Sequential keeps memory under cap
-  // (one parent + one child = ~5GB max). Trade-off: refresh latency
-  // grows linearly with chunk count (~2-3 min each, so 9 handles =
-  // 2 chunks = ~5 min). Acceptable for a manual refresh; we'll move
-  // to a cron when we want lower latency.
-  const CHUNK_SIZE = 5;
-  const chunks: string[][] = [];
-  for (let i = 0; i < handles.length; i += CHUNK_SIZE) {
-    chunks.push(handles.slice(i, i + CHUNK_SIZE));
-  }
-  console.log("[fetch-trends] audio-spy", chunks.length, "chunks of up to", CHUNK_SIZE, "usernames each (sequential)");
-  const spyResults: AudioSpyResponse[] = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const c = chunks[i];
-    console.log(`[fetch-trends] audio-spy chunk ${i + 1}/${chunks.length}: ${c.join(", ")}`);
-    const r = await callApifyAudioSpy({ usernames: c });
-    if (r.error) {
-      summary.errors.push(`chunk ${i + 1}: ${r.error}`);
-      console.warn(`[fetch-trends] audio-spy chunk ${i + 1} failed: ${r.error}`);
-    }
-    if (r.result) {
-      spyResults.push(r.result);
-      console.log(`[fetch-trends] audio-spy chunk ${i + 1} ok`);
-    }
-  }
-  if (spyResults.length === 0) {
-    return {
-      status: 200,
-      payload: {
-        ok: true,
-        source: "instagram",
-        mode: "competitors",
-        accountId: body.accountId,
-        written: 0,
-        summaries: [summary],
-        note: "audio-spy returned no data across all chunks — see errors.",
-      },
-    };
-  }
-
-  // Merge tracks from both `top_5_tracks` (top across all input
-  // usernames) and `fastest_growing_by_competitor` (one per username).
-  // The same audio can appear in both with different `usedBy` arrays;
-  // dedupe on audioId and merge the usedBy sets.
+  // Shared bucket structure across both scrapers — keyed by audioId
+  // so an audio that BOTH a competitor uses AND an aggregator features
+  // gets both signals merged onto a single trend_signals row.
   type MergedAudio = {
     audioId: string;
     songName: string | null;
     artistName: string | null;
     audioUrl: string;
-    totalViews: number;
-    viewsPerDay: number;
+    totalViews: number;        // from audio-spy (0 when not surfaced)
+    viewsPerDay: number;       // from audio-spy (0 when not surfaced)
     competitorsUsing: Set<string>;
     aggregatorsUsing: Set<string>;
   };
   const merged = new Map<string, MergedAudio>();
-  const ingestTrack = (t: AudioSpyTrack | undefined) => {
+
+  // ---- Step 1: competitor reel scrape ------------------------------
+  // 8 reels per handle for ~50 reels with detectable musicInfo.
+  const RESULTS_PER_HANDLE = 8;
+  console.log("[fetch-trends] step 1: instagram-scraper for", competitorHandles.length, "competitors");
+  const { items: postItems, error: postErr } = await callApifyInstagramPosts({
+    handles: competitorHandles,
+    resultsLimit: RESULTS_PER_HANDLE,
+  });
+  if (postErr) {
+    summary.errors.push(`competitor-scrape: ${postErr}`);
+    console.warn("[fetch-trends] competitor-scrape error:", postErr);
+  }
+  console.log("[fetch-trends] step 1: got", postItems.length, "posts from competitors");
+
+  postItems.forEach((post, originalIdx) => {
+    const audio = extractAudioFromPost(post);
+    if (!audio) return;
+    const inputHandle = competitorHandles[Math.floor(originalIdx / RESULTS_PER_HANDLE)] ?? competitorHandles[competitorHandles.length - 1];
+    const ownerHandle = extractOwnerHandle(post) ?? inputHandle ?? "unknown";
+
+    let m = merged.get(audio.audioId);
+    if (!m) {
+      m = {
+        audioId: audio.audioId,
+        songName: audio.songName,
+        artistName: audio.artistName,
+        audioUrl: `https://www.instagram.com/reels/audio/${encodeURIComponent(audio.audioId)}/`,
+        totalViews: 0,
+        viewsPerDay: 0,
+        competitorsUsing: new Set(),
+        aggregatorsUsing: new Set(),
+      };
+      merged.set(audio.audioId, m);
+    }
+    m.competitorsUsing.add(ownerHandle);
+    // Backfill song/artist if the post had it but we already created the bucket without it.
+    if (!m.songName && audio.songName) m.songName = audio.songName;
+    if (!m.artistName && audio.artistName) m.artistName = audio.artistName;
+  });
+  console.log("[fetch-trends] step 1: bucketed into", merged.size, "audios");
+
+  // ---- Step 2: audio-spy on aggregators only -----------------------
+  // 3 aggregator handles → 1 chunk, single call, fits in ~200s.
+  const ingestSpyTrack = (t: AudioSpyTrack | undefined) => {
     if (!t || typeof t !== "object") return;
     const audioId = extractAudioIdFromUrl(t.audioUrl);
     if (!audioId) return;
@@ -1721,43 +1734,53 @@ async function handleInstagramAudios(
       };
       merged.set(audioId, m);
     }
-    // Take the largest reported numbers across duplicate appearances.
+    // Backfill metadata when audio-spy has it and we don't.
+    if (!m.songName && typeof t.songName === "string" && t.songName.trim()) m.songName = t.songName.trim();
+    if (!m.artistName && typeof t.artist === "string" && t.artist.trim()) m.artistName = t.artist.trim();
     if (typeof t.totalViews === "number" && t.totalViews > m.totalViews) m.totalViews = t.totalViews;
     if (typeof t.viewsPerDay === "number" && t.viewsPerDay > m.viewsPerDay) m.viewsPerDay = t.viewsPerDay;
+    // For aggregator-sourced rows: usedBy entries are aggregator handles.
     if (Array.isArray(t.usedBy)) {
       for (const u of t.usedBy) {
         if (typeof u !== "string") continue;
         const norm = u.trim().replace(/^@/, "").toLowerCase();
         if (!norm) continue;
         if (aggregatorSet.has(norm)) m.aggregatorsUsing.add(norm);
-        else                          m.competitorsUsing.add(norm);
       }
     }
   };
-  let totalTop5 = 0;
-  let totalByCompetitor = 0;
-  for (const result of spyResults) {
-    for (const t of result.top_5_tracks ?? []) {
-      ingestTrack(t);
-      totalTop5++;
+
+  if (aggregatorHandlesNorm.length > 0) {
+    console.log("[fetch-trends] step 2: audio-spy for", aggregatorHandlesNorm.length, "aggregators");
+    const { result: spyResult, error: spyErr } = await callApifyAudioSpy({ usernames: aggregatorHandlesNorm });
+    if (spyErr) {
+      summary.errors.push(`audio-spy: ${spyErr}`);
+      console.warn("[fetch-trends] audio-spy error:", spyErr);
     }
-    for (const t of result.fastest_growing_by_competitor ?? []) {
-      ingestTrack(t);
-      totalByCompetitor++;
+    if (spyResult) {
+      for (const t of spyResult.top_5_tracks ?? []) ingestSpyTrack(t);
+      for (const t of spyResult.fastest_growing_by_competitor ?? []) ingestSpyTrack(t);
+      ingestSpyTrack(spyResult.fastest_growing_overall);
+      console.log("[fetch-trends] step 2: merged audio-spy data into", merged.size, "audios total");
     }
-    ingestTrack(result.fastest_growing_overall);
   }
 
-  console.log("[fetch-trends] audio-spy merged", merged.size, "unique audios across", spyResults.length, "chunks. top_5 entries:", totalTop5, "by-competitor entries:", totalByCompetitor);
   summary.fetched = merged.size;
 
-  // Rank by viewsPerDay desc (the velocity signal — actively climbing
-  // beats absolute size); tiebreak by totalViews desc; then by
-  // competitor count so brand-relevant audios surface above
-  // aggregator-only ones at the same velocity.
+  // Rank: audios with audio-spy data (totalViews > 0) get top spots
+  // sorted by viewsPerDay desc (velocity — actively climbing beats
+  // historic size). Audios with only competitor data sort below by
+  // competitor count desc. This way the strategist always sees the
+  // virality-confirmed audios first, then category-relevant audios
+  // their competitors are riding even without aggregator coverage.
   const ranked = Array.from(merged.values()).sort((a, b) => {
-    if (b.viewsPerDay !== a.viewsPerDay) return b.viewsPerDay - a.viewsPerDay;
-    if (b.totalViews !== a.totalViews)   return b.totalViews - a.totalViews;
+    const aHasViews = a.totalViews > 0 ? 1 : 0;
+    const bHasViews = b.totalViews > 0 ? 1 : 0;
+    if (bHasViews !== aHasViews) return bHasViews - aHasViews;
+    if (aHasViews) {
+      if (b.viewsPerDay !== a.viewsPerDay) return b.viewsPerDay - a.viewsPerDay;
+      if (b.totalViews !== a.totalViews)   return b.totalViews - a.totalViews;
+    }
     return b.competitorsUsing.size - a.competitorsUsing.size;
   });
 
@@ -1782,8 +1805,11 @@ async function handleInstagramAudios(
       ? m.songName
       : `Audio · ${m.audioId.slice(-8)}`;
 
-    // Subtitle: artist + competitor handles + total views.
-    // Velocity goes in the metric pill below.
+    // Subtitle: artist + brand-relevance signal + global views.
+    // Brand-relevance prefers competitor handles (the brand's own
+    // category context); falls back to "Featured by @aggregator"
+    // when no competitor surfaced the audio (early-mover signal).
+    // Velocity goes in the metric pill.
     const subtitleParts: string[] = [];
     if (m.artistName) subtitleParts.push(m.artistName);
     if (competitorList.length > 0) {
