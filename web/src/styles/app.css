@@ -3349,6 +3349,111 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 /* =========================================================
+   Trends Radar — IG audio cards (BCD-lite, 2026-05-06)
+   When the trend has thumbnailUrl set (kind='sound' on IG),
+   render an audio cover thumbnail + sparkle badge as the
+   visual anchor of the card. Without this, audio cards look
+   identical to hashtag/topic cards which is wrong: audio
+   identity is fundamentally visual (the cover art).
+   ========================================================= */
+
+.trend-card-wrap.has-thumb .trend-card {
+  align-items: stretch;
+}
+
+.trend-card-thumb {
+  position: relative;
+  flex: 0 0 56px;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.trend-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.trend-card-thumb-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+/* =========================================================
+   Trends Radar — missing-competitors banner (BCD-lite)
+   Inline banner that appears on the IG tab when the active
+   brand has no competitors configured. Pushes the user into
+   Brand Intelligence to populate the list before scraping.
+   ========================================================= */
+
+.trends-missing-competitors {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+.trends-missing-competitors-icon {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.trends-missing-competitors-body {
+  flex: 1;
+  min-width: 0;
+}
+.trends-missing-competitors-body h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 4px;
+}
+.trends-missing-competitors-body p {
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.5;
+  margin: 0 0 var(--space-3);
+}
+.trends-missing-competitors-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.trends-missing-competitors-cta:hover {
+  opacity: 0.85;
+}
+
+/* =========================================================
    TurnIntoPostPlanModal — Phase 5 of Trends Radar
    ========================================================= */
 

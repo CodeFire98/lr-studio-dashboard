@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-05 (Calendar List view; density toggle retired)
+**Last updated:** 2026-05-06 (Trends Radar IG tab pivots to viral-audio leaderboard — competitor + aggregator reels grouped by audio_id, ranked by competitor adoption; brand-scoped at `/c/:slug/trends`)
 
 ---
 
@@ -11,6 +11,38 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-06 — Trends Radar viral-audio leaderboard (BCD-lite)
+Builds on the Phase A brand-scoping refactor below. The IG tab pivots from "list of competitor posts" to "list of audios sorted by category-adoption signal."
+
+**The signal:** for each audio appearing in a recent reel from one of (the brand's competitors ∪ a hand-picked set of viral-audio aggregator accounts), we count the # of *distinct* competitor handles using it. An audio used by 4 different competitors in the last week is the textbook signature of a category trend — much stronger signal than any single brand's reel hitting a high view count, because it's already filtered to brand-relevant context.
+
+- **Server side ([web/api/fetch-trends.ts](web/api/fetch-trends.ts))** — `handleInstagramCompetitors` is replaced by `handleInstagramAudios`. The dispatcher (`handleInstagram`) now always routes IG calls to the audios pipeline; `mode='competitors'` is kept as a backward-compat token from the UI side. `handleInstagramRegion` (the old "Top in region" path) is retained as dead code for one cycle in case we revive a global trending feed once aggregator-account seeding gets its own admin UI. Pipeline:
+  1. Read `brand_kits.competitors` (jsonb, migration 0033) and `brand_kits.competitor_handles` (text[], legacy 0032). Normalise + dedupe → competitor handles.
+  2. Concat with `IG_AGGREGATOR_HANDLES` constant (`creators`, `early.trending.audio`, `notsorrysocial` — user-supplied 2026-05-06; will move to a `trend_aggregator_accounts` table in Phase B-extension).
+  3. Single `apify/instagram-scraper` call with all handles (`resultsLimit: 8` per handle → ~120 posts).
+  4. New helper `extractAudioFromPost` defensively parses `musicInfo` / `clipsMusicMetadata.music_info.music_asset_info` / `original_sound_info` shapes to extract `{audioId, songName, artistName}`.
+  5. Group reels by `audioId` into `AudioBucket`s tracking `competitors: Set<handle>`, `aggregators: Set<handle>`, and example reels (with their source classification).
+  6. Sort by competitor count desc, tiebreak by aggregator count desc, then by total reel count.
+  7. Emit one `trend_signals` row per audio with `kind='sound'`, `platform='instagram'`, `region='global'`, `account_id=brand`, `metric_value=competitorCount` (or aggregatorCount when no competitor uses), `metric_label='competitor uses'` / `'aggregator features'`. Subtitle: `"{Artist} · {N} competitors · Featured by {M} aggregators"` (omits empty parts). URL points at `instagram.com/reels/audio/{audioId}/`. `raw_payload` keeps the full audio metadata, competitor + aggregator handle lists, and 3 example-reel URLs for the future "preview reels" UI in Phase D-full.
+  8. `sweepStaleTrends` is scoped to `kind='sound'` only — legacy `kind='post'` IG rows from the pre-2026-05-06 handler age out via the 14-day expiry instead of getting wiped.
+- **Client side ([web/src/components/TrendsView.jsx](web/src/components/TrendsView.jsx))** — `PLATFORM_KINDS.instagram = ['all', 'sound']` (was `['all', 'post']`). New `DEFAULT_KIND_FOR_PLATFORM = { instagram: 'sound' }` so clicking the IG tab lands the user on the audio leaderboard rather than `'all'` (which would mix in legacy posts during the transition window). `TrendCard` now renders `trend.thumbnailUrl` as a 56×56 audio cover with a sparkle-badge overlay when `kind === 'sound'`. New `competitorCount` state + a `loadBrandKit` effect detects when the active brand has no competitors and renders a `trends-missing-competitors` banner above the leaderboard with a CTA into `/c/:slug/brand` (Brand Intelligence) — the audio pipeline still runs (using just the global aggregator handles) but the user is told what's missing.
+- **Style ([web/src/styles/app.css](web/src/styles/app.css))** — `.trend-card-thumb` + `.trend-card-thumb-badge` for the audio cover thumbnail; `.trends-missing-competitors` banner + CTA. Banner uses an accent left-border to differentiate from `trends-flash` error/info banners.
+- **Cost** — single Apify call per refresh, ~12 competitors + 3 aggregators × 8 reels = ~120 results × $2.30/1k ≈ **$0.30 per refresh** (lower than the earlier $0.50 estimate because we're only making one call with the existing actor, not adding the audio-detail enrichment yet).
+- **What's deferred:**
+  - **Global usage_count** ("127K reels using this audio") — Phase C will add a follow-up Apify call to the audio detail page for the top N candidates per refresh, with snapshots over time enabling the `↑ +34% this week` velocity chip.
+  - **Hashtag-reel seeding** — `brand_kits.trend_hashtags` already exists from migration 0030; Phase B-extension will add a third source feeding the same audio-bucket pipeline.
+  - **Aggregator admin UI** — `IG_AGGREGATOR_HANDLES` is hardcoded today; Phase B-extension introduces a `trend_aggregator_accounts` table + agency-only "Add aggregator handle" admin surface.
+  - **Audio licensing flag** — Meta's Sound Collection commercial-safe library isn't exposed via any API. The UI should grow a "verify license before posting on a brand account" warning on each audio card before this surface is opened to non-agency users.
+- **Sections touched:** Recent changes log; §6 Data model (note: `trend_signals` IG rows now `kind='sound'` instead of `'post'`); §10 Edge functions / integrations (fetch-trends IG handler rewrite); §13 Known decisions (new entry: "competitor adoption count" as the v1 IG virality signal — pragmatically more brand-relevant than scraping global "N reels" counts).
+
+### 2026-05-06 — Trends Radar brand-scoped (Phase A of viral-audio rework)
+First slice of a multi-phase rework that converts the IG tab from "list of posts" into a velocity-tracked viral-audio leaderboard. Phase A is pure refactor — no scraper changes, no schema changes, just relocating the surface so subsequent phases can layer on cleanly.
+- **Routing** — `'trends'` moves out of agency-only top-level into `BRAND_SCOPED_VIEWS` and `SIMPLE_VIEWS` in [App.jsx](web/src/App.jsx). Trends Radar now lives at `/c/:slug/trends`. The bare `/trends` path still parses (via `parsePathToRoute`) so old bookmarks redirect to the slugged variant via the redirect-to-slug effect, but it's no longer a valid all-clients destination. The snap-effect's `allClientsRoutes` set drops `'trends'`; `inBrandRoutes` adds it. Default landing for an all-clients agency on an invalid route flips from `/trends` → `/clients`.
+- **Sidebar** — `buildAllClientsNav()` returns `{ primary: [], secondary: [] }` instead of a single Trends entry. The All-Clients sidebar is now empty by design (BrandPicker is the only meaningful affordance) — every workflow including Trends lives inside a brand. `buildBrandNav` already had Trends Radar for agency users so brand-scoped users see it where it belongs.
+- **TrendsView** ([web/src/components/TrendsView.jsx](web/src/components/TrendsView.jsx)) — props change from `{ brandAccounts, defaultAccountId, … }` to `{ accountId, brandName, brandSlug, brandAccounts, … }`. Dropped the `igMode` state ("Top in region" / "Brand's competitors" toggle) and the brand `<select>` — IG is implicitly per-brand now via `PER_BRAND_PLATFORMS = new Set(['instagram'])`. Header subtitle gains `Viral signal for ${brandName}`. Region selector hides on the IG tab. The `refreshTrends` call for IG always passes `mode: 'competitors'` (kept as a backward-compat arg for the existing fetch-trends handler — Phase B/C will replace this whole call with the seed-pool + audio-velocity pipeline and `mode` can drop). The TurnIntoPostPlanModal still receives `brandAccounts` so the agency can re-target a plan to a sibling brand from the modal — only the Trends *view* itself is locked to one brand.
+- **No data model changes yet.** Old IG `account_id IS NULL` regional rows in `trend_signals` simply stop appearing because the load query always passes `accountId` for IG. They'll age out of the table on the existing 14-day expiry. Phases B–E land the new tables (`trend_audio_seeds`, `trend_audio_snapshots`, `trend_aggregator_accounts`, `trend_seed_creators`) + the velocity-tracking pipeline.
+- **Sections touched:** Recent changes log; §8 Routes/Views (`/trends` → `/c/:slug/trends`); §13 Known decisions (new entry: brand-scoping over agency-level for Trends Radar). Glossary unchanged in this slice.
 
 ### 2026-05-05 — Calendar List view + retired density toggle
 The `Comfortable / Compact` density toggle on month view was a half-measure — compact mode was visually almost identical to comfortable, and a real "see everything in chronological order" surface was missing. Replaced it with a third primary view mode: `Month / Week / List`.

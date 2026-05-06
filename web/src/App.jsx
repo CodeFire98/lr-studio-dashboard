@@ -63,7 +63,7 @@ import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 //   /c/:brandSlug/team             → brand team
 //   /c/:brandSlug/performance      → performance
 //   /c/:brandSlug/settings         → settings
-//   /trends                        → Trends Radar (agency, cross-client)
+//   /c/:brandSlug/trends           → Trends Radar (agency, scoped to brand)
 //   /clients /members /profile     → agency-only / user-level (no brand segment)
 //
 // Bare paths (no brand slug) still resolve — they just don't carry brand
@@ -72,7 +72,7 @@ import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 
 const SIMPLE_VIEWS = new Set([
   'calendar', 'ideate', 'library', 'brand', 'team',
-  'performance', 'profile', 'settings', 'clients', 'members',
+  'performance', 'profile', 'settings', 'clients', 'members', 'trends',
 ]);
 
 function parsePathToRoute(pathname) {
@@ -131,7 +131,7 @@ function findFullId(prefix, items) {
 // Views NOT in this set (profile, clients, members) stay at the root.
 const BRAND_SCOPED_VIEWS = new Set([
   'calendar', 'plan', 'ideate', 'library', 'brand',
-  'team', 'performance', 'settings',
+  'team', 'performance', 'settings', 'trends',
 ]);
 
 function viewToPath(next, brandSlug) {
@@ -280,7 +280,9 @@ const App = () => {
     if (route.brandSlug) return;
     // Don't redirect non-brand-scoped views.
     if (!BRAND_SCOPED_VIEWS.has(route.view)) return;
-    // Agency in All-clients mode: bare /trends is correct.
+    // Agency in All-clients mode: brand-scoped views aren't legal here.
+    // Let the snap effect below bounce them to /clients instead of trying
+    // to ferry them to a brand they haven't picked.
     if (auth.isAgency && (activeAdminBrandId === ALL_CLIENTS || !activeAdminBrandId)) return;
 
     const slug = (() => {
@@ -522,17 +524,19 @@ const App = () => {
 
   // Snap the route when the picker switches contexts so the user never
   // sits on a route hidden in the new context. Routes legal in each:
-  //   All clients (agency) — trends, profile, settings, clients, members
+  //   All clients (agency) — profile, settings, clients, members
+  //                          (Trends Radar is brand-scoped now — it lives
+  //                           under /c/:slug/trends, not at the root)
   //   In a brand          — calendar, plan, ideate, brand, library,
-  //                          performance, team, profile, settings,
-  //                          clients (still reachable for agency)
+  //                          performance, team, trends, profile, settings,
+  //                          clients/members (still reachable for agency)
   useEffect(() => {
     if (!auth?.isAgency) return;
     const r = route.view;
-    const allClientsRoutes = new Set(['profile', 'settings', 'clients', 'members', 'trends', 'not_found']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'performance', 'team', 'profile', 'settings', 'clients', 'members', 'trends', 'not_found']);
+    const allClientsRoutes = new Set(['profile', 'settings', 'clients', 'members', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'performance', 'team', 'trends', 'profile', 'settings', 'clients', 'members', 'not_found']);
     if (isAllClientsMode) {
-      if (!allClientsRoutes.has(r)) navigate('/trends');
+      if (!allClientsRoutes.has(r)) navigate('/clients');
     } else {
       if (!inBrandRoutes.has(r)) {
         const slug = brandAccounts.find((b) => b.id === activeAdminBrandId)?.slug;
@@ -789,17 +793,32 @@ const App = () => {
       return <AdminClientsView onOpenClient={(c) => handleSelectBrand(c.id)}/>;
     }
     if (auth?.isAgency && route.view === "trends") {
+      // Trends Radar is brand-scoped now — agencies in All-clients mode
+      // can't reach it (the snap effect bumps them to /clients). The
+      // active brand is whichever the picker is on.
+      const activeBrand = brandAccounts.find((b) => b.id === activeAdminBrandId);
+      if (!activeBrand) {
+        return (
+          <div className="view"><div className="view-inner">
+            <div className="empty" style={{padding: 32, textAlign: 'center', color: 'var(--ink-3)'}}>
+              Pick a brand from the sidebar to see Trends Radar.
+            </div>
+          </div></div>
+        );
+      }
       return (
         <TrendsView
+          accountId={activeBrand.id}
+          brandName={activeBrand.name}
+          brandSlug={activeBrand.slug}
           brandAccounts={brandAccounts}
-          defaultAccountId={isAllClientsMode ? null : activeAdminBrandId}
           userId={auth?.id}
+          setRoute={setRoute}
           navigateToPlan={(planId, brandSlug) => {
-            // The plan may belong to a brand other than the agency's
-            // currently-active one (Trends Radar is agency-level + lets
-            // them pick the destination brand at create-time). So we
-            // construct the URL with the plan's actual brand slug
-            // instead of relying on setRoute's currentBrandSlug.
+            // Plan may end up on the active brand (default) or on
+            // whatever brand the user picked in the modal — pass the
+            // resolved slug rather than relying on setRoute's current
+            // slug, in case they re-target a different brand.
             navigate(viewToPath({ view: 'plan', id: planId }, brandSlug || null));
           }}
         />

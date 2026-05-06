@@ -1012,6 +1012,86 @@ function extractOwnerHandle(post: ApifyInstagramPost): string | null {
   return null;
 }
 
+// Extract audio metadata from an Instagram reel/post. Apify's
+// instagram-scraper output puts music info in different shapes
+// depending on actor version + post type. Try every known shape:
+//   - `musicInfo` (most common on reels): { audio_canonical_id,
+//     song_name, artist_name, ... }
+//   - `clipsMusicMetadata.music_info.music_asset_info`: more recent
+//     variant with audio_cluster_id, title, display_artist
+//   - `original_sound_info` / `originalSoundInfo`: original audio
+//     uploaded by the creator (no licensed song); we still want these
+//     because creator-original sounds go viral too
+// Returns null when the post has no detectable audio (carousel image,
+// audio stripped by IG, etc.).
+type ParsedReelAudio = {
+  audioId: string;
+  songName: string | null;
+  artistName: string | null;
+};
+function extractAudioFromPost(post: ApifyInstagramPost): ParsedReelAudio | null {
+  const p = post as Record<string, unknown>;
+
+  const tryStr = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    return t.length > 0 ? t : null;
+  };
+
+  // Shape 1: post.musicInfo.{audio_canonical_id|audio_id, song_name, artist_name}
+  const mi = p.musicInfo as Record<string, unknown> | undefined;
+  if (mi && typeof mi === "object") {
+    const audioId =
+      tryStr(mi.audio_canonical_id) ?? tryStr(mi.audio_id) ?? tryStr(mi.canonical_id);
+    if (audioId) {
+      return {
+        audioId,
+        songName: tryStr(mi.song_name) ?? tryStr(mi.title),
+        artistName: tryStr(mi.artist_name) ?? tryStr(mi.artist),
+      };
+    }
+  }
+
+  // Shape 2: post.clipsMusicMetadata.music_info.music_asset_info
+  const cm = p.clipsMusicMetadata as Record<string, unknown> | undefined;
+  if (cm && typeof cm === "object") {
+    const muInfo = cm.music_info as Record<string, unknown> | undefined;
+    const mai = muInfo?.music_asset_info as Record<string, unknown> | undefined;
+    if (mai && typeof mai === "object") {
+      const audioId =
+        tryStr(mai.audio_cluster_id) ?? tryStr(mai.id);
+      if (audioId) {
+        return {
+          audioId,
+          songName: tryStr(mai.title) ?? tryStr(mai.subtitle),
+          artistName: tryStr(mai.display_artist) ?? tryStr(mai.artist),
+        };
+      }
+    }
+  }
+
+  // Shape 3: original_sound_info — creator-original audio
+  const osi =
+    (p.originalSoundInfo as Record<string, unknown> | undefined) ??
+    (p.original_sound_info as Record<string, unknown> | undefined);
+  if (osi && typeof osi === "object") {
+    const audioId =
+      tryStr(osi.audio_asset_id) ??
+      tryStr(osi.original_audio_id) ??
+      tryStr(osi.id);
+    if (audioId) {
+      return {
+        audioId,
+        songName: tryStr(osi.original_audio_title) ?? tryStr(osi.title),
+        artistName:
+          tryStr(osi.username) ?? tryStr(osi.audio_owner) ?? "Original audio",
+      };
+    }
+  }
+
+  return null;
+}
+
 function parseInstagramPost(args: {
   post: ApifyInstagramPost;
   ownerHandle: string;        // fallback @handle when the post doesn't expose owner — typically the handle we asked Apify to scrape, derived from input position
@@ -1122,12 +1202,17 @@ async function handleInstagram(
   body: FetchTrendsRequest,
   serviceClient: SupabaseClient,
 ): Promise<{ status: number; payload: unknown }> {
-  const mode = body.mode === "competitors" ? "competitors" : "region";
-
-  if (mode === "competitors") {
-    return handleInstagramCompetitors(body, serviceClient);
-  }
-  return handleInstagramRegion(body, serviceClient);
+  // Pre-2026-05-06 the IG handler had two modes: 'region' (curated
+  // creators per region, global) and 'competitors' (per-brand). The
+  // 'region' mode was retired with the brand-scoping refactor — every
+  // IG fetch is now per-brand and produces audio-level rows
+  // (kind='sound') via handleInstagramAudios. The dispatcher accepts
+  // mode='competitors' as a backward-compat token (it's what the UI
+  // still sends) and routes any IG call to the audios pipeline.
+  // handleInstagramRegion is preserved below as dead code for one
+  // cycle in case we want to revive a global "trending audio" feed
+  // (e.g. once aggregator-account seeding lands in Phase B-extension).
+  return handleInstagramAudios(body, serviceClient);
 }
 
 async function handleInstagramRegion(
@@ -1225,7 +1310,38 @@ async function handleInstagramRegion(
   };
 }
 
-async function handleInstagramCompetitors(
+// Aggregator IG accounts that manually curate viral-audio reels.
+// Reels from these accounts seed the candidate audio pool alongside
+// each brand's competitors — humans pre-filter for virality so the
+// signal density is higher than random hashtag reels. Hardcoded for
+// now; Phase B-extension will move this to a `trend_aggregator_accounts`
+// table with a small agency-only admin UI for adding handles.
+//
+// User-supplied initial set (2026-05-06): `creators`,
+// `early.trending.audio`, `notsorrysocial`.
+const IG_AGGREGATOR_HANDLES: readonly string[] = [
+  "creators",
+  "early.trending.audio",
+  "notsorrysocial",
+];
+
+// Replaces the post-shaped handler that shipped 2026-05-02. New shape:
+// scrape (competitor handles + global aggregator handles) → group reels
+// by audio_id → emit one trend_signals row per UNIQUE AUDIO
+// (kind='sound') ranked by competitor adoption count.
+//
+// The "competitor adoption count" is the # of distinct competitor
+// handles using the audio in their recent reels. It's a stronger signal
+// than absolute likes/views because it's already filtered to the
+// brand's category — a single brand having one viral reel doesn't move
+// the needle, but 4 of their competitors all picking the same audio in
+// a week is the textbook category-trend signature. Aggregator handles
+// add a parallel signal: "Featured by @creators" tells the strategist
+// that human curators flagged this audio as climbing globally. Phase C
+// will layer in the global "N reels using this audio" usage_count via a
+// follow-up audio-detail Apify call; this lite version ships actionable
+// data from one Apify call (~$0.50 per refresh).
+async function handleInstagramAudios(
   body: FetchTrendsRequest,
   serviceClient: SupabaseClient,
 ): Promise<{ status: number; payload: unknown }> {
@@ -1252,14 +1368,14 @@ async function handleInstagramCompetitors(
     ...fromJsonb.map((c) => (typeof c?.handle === "string" ? c.handle : "")),
     ...fromLegacy,
   ];
-  const handles = Array.from(
+  const competitorHandles = Array.from(
     new Set(
       allHandlesRaw
         .map((h) => String(h).trim().replace(/^@/, "").toLowerCase())
         .filter((h) => h.length > 0 && /^[a-z0-9._]+$/i.test(h)),
     ),
   ).slice(0, 12);
-  if (handles.length === 0) {
+  if (competitorHandles.length === 0) {
     return {
       status: 200,
       payload: {
@@ -1274,6 +1390,22 @@ async function handleInstagramCompetitors(
     };
   }
 
+  // Concat competitors + aggregators into a single Apify call. Same
+  // cost-per-result as one big call vs two separate calls. Track which
+  // bucket each handle belongs to via a Set lookup so we can attribute
+  // "competitor uses" vs "featured by aggregator" downstream without
+  // re-querying the brand kit.
+  const aggregatorHandlesNorm = IG_AGGREGATOR_HANDLES
+    .map((h) => h.trim().replace(/^@/, "").toLowerCase())
+    .filter((h) => h.length > 0 && /^[a-z0-9._]+$/i.test(h));
+  // Dedupe in case a brand somehow lists an aggregator as a competitor.
+  // The Set keeps insertion order so competitor positions in the input
+  // array stay stable for the chunk-index attribution downstream.
+  const handlesSet = new Set<string>(competitorHandles);
+  for (const h of aggregatorHandlesNorm) handlesSet.add(h);
+  const handles = Array.from(handlesSet);
+  const aggregatorSet = new Set(aggregatorHandlesNorm);
+
   const capturedAt = new Date();
   const summary: InstagramRegionSummary = {
     region: "global",
@@ -1283,34 +1415,132 @@ async function handleInstagramCompetitors(
     errors: [],
   };
 
-  const RESULTS_PER_HANDLE = 6;
+  // 8 reels per handle balances "enough audio variety to detect
+  // category trends" against per-call cost. With 12 competitors + 3
+  // aggregators that's ~120 posts; typically 50-80 of those are
+  // actually reels with detectable musicInfo (the rest are
+  // carousels/photos).
+  const RESULTS_PER_HANDLE = 8;
   const { items, error } = await callApifyInstagramPosts({ handles, resultsLimit: RESULTS_PER_HANDLE });
   if (error) summary.errors.push(error);
   summary.fetched = items.length;
 
-  // Same input-position-based attribution as the region handler — see
-  // comment there. Apify returns posts grouped by input handle in the
-  // order we supplied them, so the chunk index is reliable.
-  const tagged = items.map((post, originalIdx) => ({
-    post,
-    inputHandle: handles[Math.floor(originalIdx / RESULTS_PER_HANDLE)] ?? handles[handles.length - 1],
-  }));
-  tagged.sort((a, b) => {
-    const am = (a.post.likesCount ?? a.post.videoViewCount ?? 0);
-    const bm = (b.post.likesCount ?? b.post.videoViewCount ?? 0);
-    return bm - am;
+  // Group reels by audio. Same input-position attribution as elsewhere:
+  // Apify returns posts in the order we supplied handles, so the chunk
+  // index reliably identifies which input handle a post came from when
+  // the post itself doesn't expose the owner. Competitor handles and
+  // aggregator handles get separated into different sets per bucket so
+  // the UI can render badges differentiating "category-trend" signal
+  // (competitors using it) from "globally-curated" signal (aggregators
+  // featuring it).
+  type AudioBucket = {
+    audio: ParsedReelAudio;
+    competitors: Set<string>;     // handles in the brand's competitor list
+    aggregators: Set<string>;     // handles in IG_AGGREGATOR_HANDLES
+    reels: Array<{
+      url: string;
+      thumbnail: string | null;
+      ownerHandle: string;
+      source: "competitor" | "aggregator";
+    }>;
+  };
+  const buckets = new Map<string, AudioBucket>();
+
+  items.forEach((post, originalIdx) => {
+    const audio = extractAudioFromPost(post);
+    if (!audio) return;
+    const inputHandle = handles[Math.floor(originalIdx / RESULTS_PER_HANDLE)] ?? handles[handles.length - 1];
+    const ownerHandle = extractOwnerHandle(post) ?? inputHandle ?? "unknown";
+    // Use the input handle for source classification — the post's owner
+    // handle should match it, but if Apify returns a re-share or we lose
+    // attribution, the input handle is what we *asked* to scrape and
+    // that's the authoritative source label.
+    const source: "competitor" | "aggregator" = aggregatorSet.has(inputHandle)
+      ? "aggregator"
+      : "competitor";
+
+    let bucket = buckets.get(audio.audioId);
+    if (!bucket) {
+      bucket = { audio, competitors: new Set(), aggregators: new Set(), reels: [] };
+      buckets.set(audio.audioId, bucket);
+    }
+    if (source === "competitor") bucket.competitors.add(ownerHandle);
+    else                          bucket.aggregators.add(ownerHandle);
+    if (post.url) {
+      bucket.reels.push({
+        url: post.url,
+        thumbnail: post.displayUrl ?? null,
+        ownerHandle,
+        source,
+      });
+    }
   });
 
-  const inserts: TrendInsertRow[] = [];
-  tagged.forEach(({ post, inputHandle }, i) => {
-    const row = parseInstagramPost({
-      post,
-      ownerHandle: inputHandle,
+  // Rank: competitor count desc (the brand-specific signal), tiebreak
+  // by aggregator count (global curation signal), then by total reel
+  // mentions desc. An audio with 0 competitors but 2 aggregators still
+  // surfaces — useful for "your competitors haven't picked this up yet
+  // but human curators flagged it" early-mover plays.
+  const ranked = Array.from(buckets.values()).sort((a, b) => {
+    if (b.competitors.size !== a.competitors.size) {
+      return b.competitors.size - a.competitors.size;
+    }
+    if (b.aggregators.size !== a.aggregators.size) {
+      return b.aggregators.size - a.aggregators.size;
+    }
+    return b.reels.length - a.reels.length;
+  });
+
+  const inserts: TrendInsertRow[] = ranked.map((b, i) => {
+    const competitorCount = b.competitors.size;
+    const aggregatorCount = b.aggregators.size;
+    // Title falls back to a short audio-id stub when the song is
+    // untitled (creator-original audio without a label). Without this
+    // every untitled audio collides on the dedupe key and we'd lose
+    // them all to the higher-metric winner.
+    const songName = b.audio.songName?.trim();
+    const title = songName && songName.length > 0
+      ? songName
+      : `Audio · ${b.audio.audioId.slice(-8)}`;
+    const subtitleParts: string[] = [];
+    if (b.audio.artistName) subtitleParts.push(b.audio.artistName);
+    if (competitorCount > 0) {
+      subtitleParts.push(
+        `${competitorCount} ${competitorCount === 1 ? "competitor" : "competitors"}`,
+      );
+    }
+    if (aggregatorCount > 0) {
+      const label = aggregatorCount === 1 ? "aggregator" : "aggregators";
+      subtitleParts.push(`Featured by ${aggregatorCount} ${label}`);
+    }
+    // Metric: prefer competitor count when present (brand-relevant
+    // signal); fall back to aggregator count for the early-mover case.
+    const metricValue = competitorCount > 0 ? competitorCount : aggregatorCount;
+    const metricLabel = competitorCount > 0
+      ? (competitorCount === 1 ? "competitor use" : "competitor uses")
+      : (aggregatorCount === 1 ? "aggregator feature" : "aggregator features");
+    return {
+      platform: "instagram",
+      kind: "sound",
       region: "global",
-      accountId: body.accountId!,
-      fallbackRank: i + 1,
-    });
-    if (row) inserts.push(row);
+      title: title.slice(0, 280),
+      subtitle: subtitleParts.join(" · "),
+      url: `https://www.instagram.com/reels/audio/${encodeURIComponent(b.audio.audioId)}/`,
+      thumbnail_url: b.reels[0]?.thumbnail ?? null,
+      metric_value: metricValue,
+      metric_label: metricLabel,
+      rank: i + 1,
+      trend_window: "now",
+      raw_payload: {
+        audioId: b.audio.audioId,
+        songName: b.audio.songName,
+        artistName: b.audio.artistName,
+        competitorHandles: Array.from(b.competitors),
+        aggregatorHandles: Array.from(b.aggregators),
+        exampleReels: b.reels.slice(0, 3),
+      },
+      account_id: body.accountId!,
+    };
   });
 
   if (inserts.length > 0) {
@@ -1320,9 +1550,13 @@ async function handleInstagramCompetitors(
   }
 
   if (summary.written > 0) {
+    // Only sweep stale `kind='sound'` rows — we don't want to wipe out
+    // the legacy `kind='post'` IG rows from the pre-2026-05-06 handler
+    // until they age out via the 14-day expires_at on their own.
     await sweepStaleTrends(serviceClient, {
       platform: "instagram",
       region: "global",
+      kind: "sound",
       accountId: body.accountId,
       cutoff: capturedAt,
     });
@@ -1337,6 +1571,8 @@ async function handleInstagramCompetitors(
       accountId: body.accountId,
       written: summary.written,
       summaries: [summary],
+      audiosFound: buckets.size,
+      reelsScraped: items.length,
     },
   };
 }

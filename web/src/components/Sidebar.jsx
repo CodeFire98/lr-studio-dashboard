@@ -2,8 +2,10 @@
 /* Sidebar — three modes:
    - Guest: a teaser nav + Log In button.
    - Brand owner: per-brand workflow nav scoped to their active brand.
-   - Agency: same per-brand nav when working in a brand, OR Trends Radar
-     when the brand picker is set to "All clients."
+   - Agency: same per-brand nav when working in a brand. In All-clients
+     mode the sidebar nav is empty — every workflow lives inside a brand
+     (Trends Radar moved to /c/:slug/trends), so the BrandPicker is the
+     only meaningful affordance.
 
    The L+R Agency wordmark stays at the top regardless. The BrandPicker
    sits below it once signed in and drives every other surface's scope. */
@@ -45,14 +47,12 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
   return { primary, secondary };
 };
 
-// Agency "All clients" nav — cross-client surfaces only. Inbox + All tasks
-// have moved away (Inbox is now per-brand on the new ideas table; tasks
-// are sunsetted entirely). Trends Radar stays — it's the only cross-brand
-// surface left in the sidebar; Clients/Manage live inside BrandPicker.
+// Agency "All clients" nav — empty. Every workflow is brand-scoped now,
+// including Trends Radar (which moved to /c/:slug/trends on 2026-05-06).
+// Clients/Manage live inside BrandPicker; the empty sidebar pushes the
+// agency to pick a brand to do anything meaningful.
 const buildAllClientsNav = () => ({
-  primary: [
-    { key: "trends", label: "Trends Radar", icon: "sparkles" },
-  ],
+  primary: [],
   secondary: [],
 });
 
