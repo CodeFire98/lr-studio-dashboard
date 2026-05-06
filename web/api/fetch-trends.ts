@@ -1640,14 +1640,29 @@ async function handleInstagramAudios(
     errors: [],
   };
 
-  // Single audio-spy call covers every input handle — the actor does
-  // its own per-username scraping and aggregation internally. ~$0.005-
-  // 0.02 per refresh depending on how many reels it crawls under the
-  // hood (PAY_PER_EVENT model). Replaces the prior 1-2 Apify calls.
-  console.log("[fetch-trends] audio-spy requesting", handles.length, "usernames:", handles);
-  const { result: spyResult, error: spyErr } = await callApifyAudioSpy({ usernames: handles });
-  if (spyErr) summary.errors.push(spyErr);
-  if (spyResult == null) {
+  // The audio-spy actor has a hard cap of 5 usernames per call
+  // (run errors with "Too many competitors! Max is 5"). Chunk our
+  // handle list and run in parallel. With 12 competitors + 3
+  // aggregators that's 3 chunks; ~$0.005-0.02 per chunk so
+  // ~$0.015-0.06 per refresh total. Still cheap.
+  const CHUNK_SIZE = 5;
+  const chunks: string[][] = [];
+  for (let i = 0; i < handles.length; i += CHUNK_SIZE) {
+    chunks.push(handles.slice(i, i + CHUNK_SIZE));
+  }
+  console.log("[fetch-trends] audio-spy requesting", chunks.length, "chunks of up to", CHUNK_SIZE, "usernames each");
+  const chunkResults = await Promise.all(
+    chunks.map((c, i) => callApifyAudioSpy({ usernames: c }).then((r) => {
+      console.log("[fetch-trends] audio-spy chunk", i + 1, "of", chunks.length, "→", r.result ? "ok" : `error: ${r.error ?? "no result"}`);
+      return r;
+    })),
+  );
+  const spyResults: AudioSpyResponse[] = [];
+  for (const r of chunkResults) {
+    if (r.error) summary.errors.push(r.error);
+    if (r.result) spyResults.push(r.result);
+  }
+  if (spyResults.length === 0) {
     return {
       status: 200,
       payload: {
@@ -1657,7 +1672,7 @@ async function handleInstagramAudios(
         accountId: body.accountId,
         written: 0,
         summaries: [summary],
-        note: "audio-spy returned no data — try again, or check the Apify run for errors.",
+        note: "audio-spy returned no data across all chunks — see errors.",
       },
     };
   }
@@ -1708,11 +1723,21 @@ async function handleInstagramAudios(
       }
     }
   };
-  for (const t of spyResult.top_5_tracks ?? []) ingestTrack(t);
-  for (const t of spyResult.fastest_growing_by_competitor ?? []) ingestTrack(t);
-  ingestTrack(spyResult.fastest_growing_overall);
+  let totalTop5 = 0;
+  let totalByCompetitor = 0;
+  for (const result of spyResults) {
+    for (const t of result.top_5_tracks ?? []) {
+      ingestTrack(t);
+      totalTop5++;
+    }
+    for (const t of result.fastest_growing_by_competitor ?? []) {
+      ingestTrack(t);
+      totalByCompetitor++;
+    }
+    ingestTrack(result.fastest_growing_overall);
+  }
 
-  console.log("[fetch-trends] audio-spy merged", merged.size, "unique audios. top_5:", spyResult.top_5_tracks?.length ?? 0, "by-competitor:", spyResult.fastest_growing_by_competitor?.length ?? 0);
+  console.log("[fetch-trends] audio-spy merged", merged.size, "unique audios across", spyResults.length, "chunks. top_5 entries:", totalTop5, "by-competitor entries:", totalByCompetitor);
   summary.fetched = merged.size;
 
   // Rank by viewsPerDay desc (the velocity signal — actively climbing
