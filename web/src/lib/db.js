@@ -2079,6 +2079,12 @@ function mapTrendSignalRow(row) {
     capturedAt: row.captured_at,
     expiresAt: row.expires_at,
     accountId: row.account_id || null,
+    // raw_payload carries source-specific extras the UI uses for richer
+    // rendering (e.g. IG audio rows store competitor + aggregator handle
+    // lists here so cards can show "@glossier, @drunkelephant" inline
+    // without re-querying). Pass it through as-is — it's already small
+    // jsonb, no need to project specific fields client-side.
+    rawPayload: row.raw_payload || null,
   };
 }
 

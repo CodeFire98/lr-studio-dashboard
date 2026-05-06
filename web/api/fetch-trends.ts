@@ -1516,14 +1516,26 @@ async function handleInstagramAudios(
       : `Audio · ${b.audio.audioId.slice(-8)}`;
 
     // Subtitle: artist + the actual competitor handles using the
-    // audio. Listing handles is more informative than a count —
-    // strategists can immediately see which competitors are riding
-    // the audio, which doubles as a "is this audio relevant to my
-    // brand?" check. Capped at 3 to keep the card readable.
+    // audio + total reels in our scrape sample using it. Listing
+    // handles is more informative than a count — strategists can
+    // immediately see which competitors are riding the audio, which
+    // doubles as a "is this audio relevant to my brand?" check.
+    // Capped at 3 to keep the card readable.
+    //
+    // The reel count is the number of distinct reels in *our scrape
+    // sample* using this audio (not the global "127K reels using
+    // this audio" number — that needs the audio-detail Apify call
+    // landing in Phase C). Still a useful relative ranking signal:
+    // an audio appearing in 8 of our scraped reels is more locked-in
+    // across the brand's competitive set than one in 2.
+    const reelCount = b.reels.length;
     const subtitleParts: string[] = [];
     if (b.audio.artistName) subtitleParts.push(b.audio.artistName);
     if (competitorList.length > 0) {
       subtitleParts.push(`Used by ${formatHandles(competitorList, 3)}`);
+    }
+    if (reelCount > 0) {
+      subtitleParts.push(`${reelCount} ${reelCount === 1 ? "reel" : "reels"}`);
     }
 
     // Metric pill: surfaces the aggregator-featured signal as a
@@ -1563,6 +1575,10 @@ async function handleInstagramAudios(
         artistName: b.audio.artistName,
         competitorHandles: competitorList,
         aggregatorHandles: aggregatorList,
+        // Total reels in the scrape sample using this audio (not
+        // global). The client uses this to render the subtitle even
+        // for old rows whose stored `subtitle` string is stale.
+        reelCount,
         exampleReels: b.reels.slice(0, 3),
       },
       account_id: body.accountId!,

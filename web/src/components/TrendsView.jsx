@@ -88,17 +88,51 @@ function formatMetric(value, label) {
   return label ? `${formatted} ${label}` : formatted;
 }
 
+// Build a comma-joined "@handle, @handle, @handle + N more" string.
+// Mirrors the server's formatHandles in fetch-trends.ts so cards
+// render the same string whether we use the server's stored subtitle
+// or this client-side derivation (which we do for IG audio rows so
+// old DB rows render the new format without needing a fresh refresh).
+function formatHandlesClient(handles, cap = 3) {
+  if (!Array.isArray(handles) || handles.length === 0) return '';
+  const at = handles.map((h) => `@${h}`);
+  if (at.length <= cap) return at.join(', ');
+  return `${at.slice(0, cap).join(', ')} + ${at.length - cap} more`;
+}
+
 function TrendCard({ trend, onTurnIntoPostPlan }) {
   const isHashtag = trend.kind === 'hashtag';
   const isAudio = trend.kind === 'sound';
   const display = isHashtag ? `#${trend.title}` : trend.title;
-  const metric = formatMetric(trend.metricValue, trend.metricLabel);
-  // Thumbnails only render meaningfully for audio cards in the IG flow
-  // — TikTok sound rows don't carry one and a hashtag card with a
-  // generic image looks noisy.
-  const showThumb = isAudio && !!trend.thumbnailUrl;
+
+  // For IG audio rows, derive subtitle + metric from rawPayload so the
+  // card always renders the latest format (artist · @handles · N reels +
+  // "Featured by @aggregator" pill) regardless of when the row was last
+  // upserted. The stored row.subtitle / row.metric_label still get
+  // written by the server — they're a fallback for surfaces that don't
+  // know about rawPayload (Turn-into-post-plan modal, future
+  // notifications, etc).
+  let subtitle = trend.subtitle;
+  let metric = formatMetric(trend.metricValue, trend.metricLabel);
+  if (isAudio && trend.rawPayload && typeof trend.rawPayload === 'object') {
+    const rp = trend.rawPayload;
+    const competitors = Array.isArray(rp.competitorHandles) ? rp.competitorHandles : [];
+    const aggregators = Array.isArray(rp.aggregatorHandles) ? rp.aggregatorHandles : [];
+    const reelCount = typeof rp.reelCount === 'number'
+      ? rp.reelCount
+      : (Array.isArray(rp.exampleReels) ? rp.exampleReels.length : 0);
+    const subParts = [];
+    if (rp.artistName) subParts.push(rp.artistName);
+    if (competitors.length > 0) subParts.push(`Used by ${formatHandlesClient(competitors, 3)}`);
+    if (reelCount > 0) subParts.push(`${reelCount} ${reelCount === 1 ? 'reel' : 'reels'}`);
+    subtitle = subParts.join(' · ') || trend.subtitle;
+    metric = aggregators.length > 0
+      ? `Featured by ${formatHandlesClient(aggregators, 2)}`
+      : '';
+  }
+
   return (
-    <div className={'trend-card-wrap' + (showThumb ? ' has-thumb' : '')}>
+    <div className="trend-card-wrap">
       <a
         className="trend-card"
         href={trend.url || undefined}
@@ -108,18 +142,10 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
         onClick={(e) => { if (!trend.url) e.preventDefault(); }}
       >
         <div className="trend-card-rank">{trend.rank ? `#${trend.rank}` : ''}</div>
-        {showThumb && (
-          <div className="trend-card-thumb" aria-hidden="true">
-            <img src={trend.thumbnailUrl} alt="" loading="lazy" />
-            <span className="trend-card-thumb-badge">
-              <Icon name="sparkles" size={12} />
-            </span>
-          </div>
-        )}
         <div className="trend-card-body">
           <div className="trend-card-title">{display}</div>
-          {trend.subtitle && (
-            <div className="trend-card-sub">{trend.subtitle}</div>
+          {subtitle && (
+            <div className="trend-card-sub">{subtitle}</div>
           )}
           {metric && (
             <div className="trend-card-metric">{metric}</div>
