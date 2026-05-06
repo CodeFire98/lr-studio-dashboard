@@ -1,14 +1,15 @@
 /* eslint-disable */
-/* TrendsView — agency-only "Trends Radar" surface.
+/* TrendsView — agency-only "Trends Radar" surface, brand-scoped at
+   /c/:slug/trends as of 2026-05-06.
    Compartmentalized away from the rest of the dashboard:
-   - Reads from public.trend_signals (RLS agency-only)
+   - Reads from public.trend_signals filtered by the active brand
    - Refetch via the fetch-trends edge function (agency-only)
-   - No coupling to post plans / brand kits / tasks — yet. The
-     "turn into post plan" action is a deliberate Phase 5 follow-on.
-   Phase 1 ships TikTok only; Twitter and Instagram tabs land later. */
+   - Owns the "turn into post plan" CTA per trend card
+   The IG tab feeds the brand's competitor reels through the
+   audio-velocity pipeline (Phase B/C/D); TikTok + X stay region-based. */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon.jsx';
-import { loadTrendSignals, refreshTrends } from '../lib/db.js';
+import { loadTrendSignals, refreshTrends, loadBrandKit } from '../lib/db.js';
 import { TurnIntoPostPlanModal } from './TurnIntoPostPlanModal.jsx';
 
 // Country code → display label. Easy to extend; the same codes drive the
@@ -30,10 +31,10 @@ const PLATFORMS = [
 ];
 
 // Platforms that scrape per-brand (require an accountId in the request).
-// Empty for now — Instagram pivoted back to global on 2026-05-02 to match
-// TikTok / Twitter behaviour. Kept as a Set so adding a per-brand source
-// later (e.g. competitor monitoring in Phase 8) is a one-line change.
-const PER_BRAND_PLATFORMS = new Set();
+// Instagram only — TikTok and Twitter trends are region-global. Adding
+// another per-brand platform here is a one-line change; the load + refresh
+// paths read from this set, not a per-platform special case.
+const PER_BRAND_PLATFORMS = new Set(['instagram']);
 
 const KIND_LABEL = {
   hashtag: 'Hashtags',
@@ -49,8 +50,19 @@ const KIND_LABEL = {
 const PLATFORM_KINDS = {
   tiktok:    ['all', 'hashtag', 'sound'],
   twitter:   ['all', 'hashtag', 'topic'],
-  instagram: ['all', 'post'],
+  // IG produces audio rows now (kind='sound') from the competitor reel
+  // pipeline. Old kind='post' rows from the pre-2026-05-06 handler age
+  // out via the 14-day expiry; we don't list 'post' as a filter so the
+  // user always lands on the new audio leaderboard.
+  instagram: ['all', 'sound'],
   linkedin:  ['all', 'topic'],
+};
+
+// When the user clicks a platform tab, default the kind filter to the
+// platform's most-useful view rather than 'all'. For IG that's 'sound'
+// — every other platform sticks with 'all'.
+const DEFAULT_KIND_FOR_PLATFORM = {
+  instagram: 'sound',
 };
 
 function formatRelative(iso) {
@@ -76,10 +88,93 @@ function formatMetric(value, label) {
   return label ? `${formatted} ${label}` : formatted;
 }
 
+// Build a comma-joined "@handle, @handle, @handle + N more" string.
+// Mirrors the server's formatHandles in fetch-trends.ts so cards
+// render the same string whether we use the server's stored subtitle
+// or this client-side derivation (which we do for IG audio rows so
+// old DB rows render the new format without needing a fresh refresh).
+function formatHandlesClient(handles, cap = 3) {
+  if (!Array.isArray(handles) || handles.length === 0) return '';
+  const at = handles.map((h) => `@${h}`);
+  if (at.length <= cap) return at.join(', ');
+  return `${at.slice(0, cap).join(', ')} + ${at.length - cap} more`;
+}
+
+// Format the global "N reels using this audio" count. Mirrors the
+// server's formatGlobalReelCount so the client can re-format from
+// raw_payload.globalReelCount even if the stored subtitle string is
+// stale. Returns "" when n is null/undefined so callers can do
+// `if (str)` rather than null-check.
+function formatGlobalReelCountClient(n) {
+  if (n == null || typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B reels`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M reels`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K reels`;
+  return `${n} reel${n === 1 ? '' : 's'}`;
+}
+
+function formatTotalViewsClient(n) {
+  if (n == null || typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B views`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M views`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K views`;
+  return `${n} view${n === 1 ? '' : 's'}`;
+}
+
+function formatViewsPerDayClient(n) {
+  if (n == null || typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000) return `+${(n / 1_000_000).toFixed(1)}M/day`;
+  if (n >= 1_000)     return `+${(n / 1_000).toFixed(1)}K/day`;
+  return `+${Math.round(n)}/day`;
+}
+
 function TrendCard({ trend, onTurnIntoPostPlan }) {
   const isHashtag = trend.kind === 'hashtag';
+  const isAudio = trend.kind === 'sound';
   const display = isHashtag ? `#${trend.title}` : trend.title;
-  const metric = formatMetric(trend.metricValue, trend.metricLabel);
+
+  // For IG audio rows, derive subtitle + metric from rawPayload so the
+  // card always renders the latest format (artist · @handles · N reels +
+  // "Featured by @aggregator" pill) regardless of when the row was last
+  // upserted. The stored row.subtitle / row.metric_label still get
+  // written by the server — they're a fallback for surfaces that don't
+  // know about rawPayload (Turn-into-post-plan modal, future
+  // notifications, etc).
+  let subtitle = trend.subtitle;
+  let metric = formatMetric(trend.metricValue, trend.metricLabel);
+  if (isAudio && trend.rawPayload && typeof trend.rawPayload === 'object') {
+    const rp = trend.rawPayload;
+    const competitors = Array.isArray(rp.competitorHandles) ? rp.competitorHandles : [];
+    const aggregators = Array.isArray(rp.aggregatorHandles) ? rp.aggregatorHandles : [];
+    // Audio-spy era (2026-05-06+): rows carry totalViews +
+    // viewsPerDay from the doodledaron actor. Older rows from the
+    // pre-audio-spy handler may carry globalReelCount instead. Render
+    // whichever is available.
+    const totalViewsStr = formatTotalViewsClient(rp.totalViews);
+    const velocityStr = formatViewsPerDayClient(rp.viewsPerDay);
+    const globalReelCountStr = formatGlobalReelCountClient(rp.globalReelCount);
+    const subParts = [];
+    if (rp.artistName) subParts.push(rp.artistName);
+    if (competitors.length > 0) {
+      subParts.push(`Used by ${formatHandlesClient(competitors, 3)}`);
+    } else if (aggregators.length > 0) {
+      subParts.push(`Featured by ${formatHandlesClient(aggregators, 2)}`);
+    }
+    if (totalViewsStr) subParts.push(totalViewsStr);
+    else if (globalReelCountStr) subParts.push(globalReelCountStr);
+    subtitle = subParts.join(' · ') || trend.subtitle;
+    // Metric pill: prefer velocity (the most actionable signal) over
+    // the aggregator-features label. Only fall back to aggregators
+    // when velocity is unknown.
+    if (velocityStr) {
+      metric = velocityStr;
+    } else if (aggregators.length > 0 && competitors.length > 0) {
+      metric = `Featured by ${formatHandlesClient(aggregators, 2)}`;
+    } else {
+      metric = '';
+    }
+  }
+
   return (
     <div className="trend-card-wrap">
       <a
@@ -93,8 +188,8 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
         <div className="trend-card-rank">{trend.rank ? `#${trend.rank}` : ''}</div>
         <div className="trend-card-body">
           <div className="trend-card-title">{display}</div>
-          {trend.subtitle && (
-            <div className="trend-card-sub">{trend.subtitle}</div>
+          {subtitle && (
+            <div className="trend-card-sub">{subtitle}</div>
           )}
           {metric && (
             <div className="trend-card-metric">{metric}</div>
@@ -118,25 +213,17 @@ function TrendCard({ trend, onTurnIntoPostPlan }) {
   );
 }
 
-function EmptyState({ onRefresh, refreshing, hasError, platform, igMode }) {
+function EmptyState({ onRefresh, refreshing, hasError, platform, brandName }) {
   const headline = (() => {
     if (platform === 'tiktok')    return 'Pull the latest from TikTok';
     if (platform === 'twitter')   return "Pull what's trending on X right now";
-    if (platform === 'instagram') {
-      return igMode === 'competitors'
-        ? "Pull this brand's competitors' latest posts"
-        : "Pull what top creators are posting in this region";
-    }
+    if (platform === 'instagram') return `Pull viral audio for ${brandName || 'this brand'}`;
     return 'Fetch the latest trends';
   })();
   const body = (() => {
     if (platform === 'tiktok')    return "We'll fetch trending hashtags and sounds for each region from TikTok Creative Center. Returns in ~10s per region.";
     if (platform === 'twitter')   return 'Real-time trending topics + hashtags by region. Returns in a few seconds.';
-    if (platform === 'instagram') {
-      return igMode === 'competitors'
-        ? "We'll scrape recent posts from this brand's competitor accounts (configured in Brand Intelligence → Competitors), engagement-sorted."
-        : "We'll scrape recent posts from a curated set of high-engagement creators per region, engagement-sorted. Better signal than discovery hashtags because every account is hand-picked.";
-    }
+    if (platform === 'instagram') return "We'll scrape recent reels from this brand's competitors and category hashtags, then check which audios are climbing fast — so you can post a reel using a viral sound before it saturates.";
     return '';
   })();
 
@@ -163,57 +250,82 @@ function EmptyState({ onRefresh, refreshing, hasError, platform, igMode }) {
 }
 
 const TrendsView = ({
-  // From App.jsx — used by the Turn-into-post-plan modal so the user can
-  // pick which brand the new post plan should land on.
+  // The brand this Trends Radar surface is scoped to. Resolved by
+  // App.jsx from the URL slug — trends-radar is brand-scoped now, so
+  // there's always exactly one brand in context (or the surface
+  // doesn't render at all).
+  accountId,
+  brandName,
+  brandSlug,
+  // Full brand list — only used by the Turn-into-post-plan modal so an
+  // agency user can optionally re-target the new plan to a sister brand.
+  // Defaults to the active brand so the common case is one click.
   brandAccounts = [],
-  defaultAccountId = null,
   userId = null,
+  setRoute,              // forwarded from App so we can deep-link to /brand
   navigateToPlan,        // (planId, brandSlug) => void
 }) => {
   const [activePlatform, setActivePlatform] = useState('tiktok');
   const [activeRegion, setActiveRegion] = useState('US');
   const [activeKind, setActiveKind] = useState('all'); // 'all' | 'hashtag' | 'sound' | 'topic' | 'post'
-  // For Instagram tab only: choose between regional curated creators or
-  // the active brand's competitors. Other platforms ignore this state.
-  const [igMode, setIgMode] = useState('region'); // 'region' | 'competitors'
-  // Active brand for IG competitors mode. Null until the user picks one
-  // — without it we can't read or write per-brand IG signals.
-  const [activeAccountId, setActiveAccountId] = useState(defaultAccountId || (brandAccounts[0]?.id ?? null));
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshSummary, setRefreshSummary] = useState(null);
   const [refreshError, setRefreshError] = useState(null);
-  // Phase 5: Turn-into-post-plan modal state.
   const [turnTrend, setTurnTrend] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // null = not yet checked, 0 = brand has no competitors, >0 = count.
+  // Drives the missing-competitors banner on the IG tab so the user
+  // sees a CTA into Brand Intelligence instead of an empty grid.
+  const [competitorCount, setCompetitorCount] = useState(null);
 
-  // Keep activeAccountId reasonable: if the agency switches the active
-  // admin brand from the sidebar, follow them; if no brands exist, null.
+  // IG always reads brand-scoped rows now. Other platforms stay global.
+  const isPerBrand = PER_BRAND_PLATFORMS.has(activePlatform);
+
+  // When the active brand changes (or on mount), peek at the brand kit
+  // to know if competitors are populated. Only matters for IG since
+  // that's the only platform whose pipeline depends on competitor
+  // handles. Cheap RLS-protected read; no scraper calls.
   useEffect(() => {
-    if (defaultAccountId) setActiveAccountId(defaultAccountId);
-    else if (brandAccounts.length > 0) setActiveAccountId((prev) => prev || brandAccounts[0].id);
-  }, [defaultAccountId, brandAccounts]);
-
-  // "Per brand" is a function of (platform, mode) now: only IG in
-  // competitors mode reads/writes brand-scoped rows. Region mode for IG
-  // is global, just like TikTok / Twitter.
-  const isPerBrand = activePlatform === 'instagram' && igMode === 'competitors';
+    let cancelled = false;
+    if (!accountId) {
+      setCompetitorCount(null);
+      return () => {};
+    }
+    loadBrandKit(accountId)
+      .then((kit) => {
+        if (cancelled) return;
+        const fromJsonb = Array.isArray(kit?.competitors) ? kit.competitors : [];
+        const fromLegacy = Array.isArray(kit?.competitorHandles) ? kit.competitorHandles : [];
+        const handles = new Set(
+          [...fromJsonb.map((c) => c?.handle), ...fromLegacy]
+            .map((h) => (typeof h === 'string' ? h.trim().replace(/^@/, '').toLowerCase() : ''))
+            .filter((h) => h.length > 0)
+        );
+        setCompetitorCount(handles.size);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        console.warn('loadBrandKit for trends competitor check failed', e);
+        // Treat unknown as "has competitors" so we don't block the user
+        // with a misleading CTA on a transient read failure.
+        setCompetitorCount(null);
+      });
+    return () => { cancelled = true; };
+  }, [accountId, reloadKey]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     const args = {
       platform: activePlatform,
-      accountId: isPerBrand ? activeAccountId : null,
+      accountId: isPerBrand ? accountId : null,
     };
-    if (activePlatform === 'instagram' && igMode === 'region') {
-      // IG region mode rows have region set per-row; filter by it.
-      args.region = activeRegion;
-    } else if (!isPerBrand) {
+    if (!isPerBrand) {
       args.region = activeRegion;
     }
-    if (isPerBrand && !activeAccountId) {
+    if (isPerBrand && !accountId) {
       setTrends([]);
       setLoading(false);
       return () => {};
@@ -223,7 +335,7 @@ const TrendsView = ({
       .catch((e) => { if (!cancelled) console.warn('loadTrendSignals failed', e); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activePlatform, activeRegion, activeAccountId, isPerBrand, igMode, reloadKey]);
+  }, [activePlatform, activeRegion, accountId, isPerBrand, reloadKey]);
 
   const visibleTrends = useMemo(() => {
     if (activeKind === 'all') return trends;
@@ -257,8 +369,8 @@ const TrendsView = ({
   }, [trends]);
 
   const onRefresh = async () => {
-    if (isPerBrand && !activeAccountId) {
-      setRefreshError('Pick a brand first.');
+    if (isPerBrand && !accountId) {
+      setRefreshError('No brand in context — open this from a brand sidebar.');
       return;
     }
     setRefreshing(true);
@@ -267,12 +379,13 @@ const TrendsView = ({
     try {
       const args = { source: activePlatform };
       if (activePlatform === 'instagram') {
-        args.mode = igMode;
-        if (igMode === 'competitors') {
-          args.accountId = activeAccountId;
-        } else {
-          args.regions = DEFAULT_REGIONS;
-        }
+        // IG is always brand-scoped now. The fetch-trends API still
+        // accepts `mode: 'competitors'` for backward-compat with the
+        // pre-2026-05-06 handler; Phase B/C will replace this with
+        // the seed-pool + audio-velocity pipeline and we can drop
+        // `mode` entirely.
+        args.mode = 'competitors';
+        args.accountId = accountId;
       } else {
         args.regions = DEFAULT_REGIONS;
         args.window = '7d';
@@ -294,7 +407,9 @@ const TrendsView = ({
         <div className="trends-header-row">
           <div>
             <div className="trends-eyebrow">Trends Radar · agency only</div>
-            <h2 className="trends-title">What's trending right now</h2>
+            <h2 className="trends-title">
+              {brandName ? `Viral signal for ${brandName}` : "What's trending right now"}
+            </h2>
             <p className="trends-sub">
               Live signal from social platforms — pick a trend and turn it into a post plan.
               {newestCapture && <span className="trends-stamp"> · last fetched {formatRelative(newestCapture)}</span>}
@@ -321,10 +436,11 @@ const TrendsView = ({
               onClick={() => {
                 if (!p.available) return;
                 setActivePlatform(p.key);
-                // Different platforms expose different kinds; reset to "all"
-                // so the user doesn't see an empty grid because the selected
-                // kind doesn't exist on the new platform.
-                setActiveKind('all');
+                // Default kind per platform: IG lands on "Sounds" (the
+                // useful audio leaderboard); other platforms reset to
+                // "all" so the user doesn't see an empty grid because
+                // the selected kind doesn't exist on the new platform.
+                setActiveKind(DEFAULT_KIND_FOR_PLATFORM[p.key] || 'all');
               }}
             >
               <Icon name={p.icon} size={14} />
@@ -335,46 +451,10 @@ const TrendsView = ({
         </nav>
 
         <div className="trends-filter-row">
-          {/* Instagram-only mode toggle: pick between regional curated
-              creators and the active brand's competitor list. Renders
-              before the Region/Brand selector so the user sees the
-              choice first. */}
-          {activePlatform === 'instagram' && (
-            <div className="trends-filter">
-              <label>Mode</label>
-              <div className="trends-kind-pills">
-                {[
-                  { key: 'region',      label: 'Top in region' },
-                  { key: 'competitors', label: "Brand's competitors" },
-                ].map((m) => (
-                  <button
-                    key={m.key}
-                    className={'trends-kind-pill' + (igMode === m.key ? ' active' : '')}
-                    onClick={() => setIgMode(m.key)}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {isPerBrand ? (
-            <div className="trends-filter">
-              <label>Brand</label>
-              <select
-                value={activeAccountId || ''}
-                onChange={(e) => setActiveAccountId(e.target.value || null)}
-              >
-                {brandAccounts.length === 0 && (
-                  <option value="">No brands available</option>
-                )}
-                {brandAccounts.map((b) => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
-                ))}
-              </select>
-            </div>
-          ) : (
+          {/* Region selector — only meaningful for region-scoped platforms
+              (TikTok / Twitter). Instagram is brand-scoped now, so the
+              region selector is hidden when on the IG tab. */}
+          {!isPerBrand && (
             <div className="trends-filter">
               <label>Region</label>
               <select
@@ -445,6 +525,38 @@ const TrendsView = ({
       </header>
 
       <div className="trends-body">
+        {/* Missing-competitors banner: only shown on the IG tab when the
+            brand kit's competitors list is empty. Pulls the user into
+            Brand Intelligence to populate competitors before scraping —
+            without competitors, the audio pipeline only has the global
+            aggregator handles to work with (still some signal, but
+            misses the brand-specific category trend). */}
+        {activePlatform === 'instagram' && competitorCount === 0 && (
+          <div className="trends-missing-competitors">
+            <div className="trends-missing-competitors-icon" aria-hidden="true">
+              <Icon name="brand" size={18} />
+            </div>
+            <div className="trends-missing-competitors-body">
+              <h4>No competitors identified for {brandName || 'this brand'} yet</h4>
+              <p>
+                Viral-audio detection works best when we know who your competitors are
+                — we'll cross-reference your brand's competitive set against
+                aggregator-curated audios to surface what's about to blow up in your
+                category. Add competitors in Brand Intelligence first; the brand-info
+                pull populates them automatically.
+              </p>
+              <button
+                className="trends-missing-competitors-cta"
+                onClick={() => setRoute?.({ view: 'brand' })}
+              >
+                <Icon name="brand" size={14} />
+                <span>Go to Brand Intelligence</span>
+                <Icon name="chevron-right" size={12} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="trends-loading">Loading trends…</div>
         ) : visibleTrends.length === 0 ? (
@@ -453,7 +565,7 @@ const TrendsView = ({
             refreshing={refreshing}
             hasError={!!refreshError}
             platform={activePlatform}
-            igMode={igMode}
+            brandName={brandName}
           />
         ) : (
           <>
@@ -481,18 +593,17 @@ const TrendsView = ({
         open={!!turnTrend}
         trend={turnTrend}
         brandAccounts={brandAccounts}
-        defaultAccountId={defaultAccountId}
+        defaultAccountId={accountId}
         userId={userId}
         onClose={() => setTurnTrend(null)}
         onCreated={(plan) => {
-          // Land the user in the new post plan's detail view inside the
-          // brand we just scheduled it for. We can't use the parent's
-          // setRoute because Trends Radar is agency-level (no implicit
-          // brand context); navigateToPlan resolves the slug from the
-          // plan's own accountId so we land on /c/:slug/calendar/:id.
+          // Defaults to the active brand, but the modal lets the user
+          // re-target to a sibling brand. Resolve the destination slug
+          // from the plan's own accountId so we always land on the
+          // right brand's calendar.
           setTurnTrend(null);
           const brand = brandAccounts.find((b) => b.id === plan.accountId);
-          navigateToPlan?.(plan.id, brand?.slug);
+          navigateToPlan?.(plan.id, brand?.slug || brandSlug);
         }}
       />
     </div>

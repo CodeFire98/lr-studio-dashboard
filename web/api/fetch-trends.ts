@@ -1012,6 +1012,86 @@ function extractOwnerHandle(post: ApifyInstagramPost): string | null {
   return null;
 }
 
+// Extract audio metadata from an Instagram reel/post. Apify's
+// instagram-scraper output puts music info in different shapes
+// depending on actor version + post type. Try every known shape:
+//   - `musicInfo` (most common on reels): { audio_canonical_id,
+//     song_name, artist_name, ... }
+//   - `clipsMusicMetadata.music_info.music_asset_info`: more recent
+//     variant with audio_cluster_id, title, display_artist
+//   - `original_sound_info` / `originalSoundInfo`: original audio
+//     uploaded by the creator (no licensed song); we still want these
+//     because creator-original sounds go viral too
+// Returns null when the post has no detectable audio (carousel image,
+// audio stripped by IG, etc.).
+type ParsedReelAudio = {
+  audioId: string;
+  songName: string | null;
+  artistName: string | null;
+};
+function extractAudioFromPost(post: ApifyInstagramPost): ParsedReelAudio | null {
+  const p = post as Record<string, unknown>;
+
+  const tryStr = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    return t.length > 0 ? t : null;
+  };
+
+  // Shape 1: post.musicInfo.{audio_canonical_id|audio_id, song_name, artist_name}
+  const mi = p.musicInfo as Record<string, unknown> | undefined;
+  if (mi && typeof mi === "object") {
+    const audioId =
+      tryStr(mi.audio_canonical_id) ?? tryStr(mi.audio_id) ?? tryStr(mi.canonical_id);
+    if (audioId) {
+      return {
+        audioId,
+        songName: tryStr(mi.song_name) ?? tryStr(mi.title),
+        artistName: tryStr(mi.artist_name) ?? tryStr(mi.artist),
+      };
+    }
+  }
+
+  // Shape 2: post.clipsMusicMetadata.music_info.music_asset_info
+  const cm = p.clipsMusicMetadata as Record<string, unknown> | undefined;
+  if (cm && typeof cm === "object") {
+    const muInfo = cm.music_info as Record<string, unknown> | undefined;
+    const mai = muInfo?.music_asset_info as Record<string, unknown> | undefined;
+    if (mai && typeof mai === "object") {
+      const audioId =
+        tryStr(mai.audio_cluster_id) ?? tryStr(mai.id);
+      if (audioId) {
+        return {
+          audioId,
+          songName: tryStr(mai.title) ?? tryStr(mai.subtitle),
+          artistName: tryStr(mai.display_artist) ?? tryStr(mai.artist),
+        };
+      }
+    }
+  }
+
+  // Shape 3: original_sound_info — creator-original audio
+  const osi =
+    (p.originalSoundInfo as Record<string, unknown> | undefined) ??
+    (p.original_sound_info as Record<string, unknown> | undefined);
+  if (osi && typeof osi === "object") {
+    const audioId =
+      tryStr(osi.audio_asset_id) ??
+      tryStr(osi.original_audio_id) ??
+      tryStr(osi.id);
+    if (audioId) {
+      return {
+        audioId,
+        songName: tryStr(osi.original_audio_title) ?? tryStr(osi.title),
+        artistName:
+          tryStr(osi.username) ?? tryStr(osi.audio_owner) ?? "Original audio",
+      };
+    }
+  }
+
+  return null;
+}
+
 function parseInstagramPost(args: {
   post: ApifyInstagramPost;
   ownerHandle: string;        // fallback @handle when the post doesn't expose owner — typically the handle we asked Apify to scrape, derived from input position
@@ -1118,16 +1198,246 @@ async function callApifyInstagramPosts(args: {
   return { items: Array.isArray(items) ? items : [] };
 }
 
+// Phase C — get audio virality data via doodledaron/instagram-audio-spy.
+// Pass the brand's competitor + aggregator usernames; actor returns
+// top tracks across the input set with `totalViews`, `viewsPerDay`
+// (the velocity signal), `usedBy` handles, and audio URLs all
+// pre-grouped. Single call per refresh covers everything.
+//
+// Note we tested apify/instagram-scraper directly with audio URLs
+// (`instagram.com/reels/audio/{id}/`) and it returns
+// {error:"no_items"} — that actor doesn't support audio URLs at
+// all. The doodledaron actor specifically does the right thing.
+//
+// Response shape (1 dataset item):
+//   {
+//     top_5_tracks: [{ songName, artist, totalViews, viewsPerDay, usedBy[], audioUrl }],
+//     fastest_growing_overall: {...},
+//     fastest_growing_by_competitor: [{...}, ...]  // one per input username
+//   }
+//
+// Since `usedBy` only contains the username that owned the source
+// reel for THAT audio entry (not all users of the audio), we have
+// to dedupe + merge ourselves when the same audio appears in both
+// `top_5_tracks` and `fastest_growing_by_competitor`.
+type AudioSpyTrack = {
+  songName?: string;
+  artist?: string;
+  totalViews?: number;
+  viewsPerDay?: number;
+  usedBy?: string[];
+  audioUrl?: string;
+};
+type AudioSpyResponse = {
+  top_5_tracks?: AudioSpyTrack[];
+  fastest_growing_overall?: AudioSpyTrack;
+  fastest_growing_by_competitor?: AudioSpyTrack[];
+};
+
+async function callApifyAudioSpy(args: {
+  usernames: string[];
+}): Promise<{ result: AudioSpyResponse | null; error?: string }> {
+  if (args.usernames.length === 0) return { result: null };
+  const url =
+    `https://api.apify.com/v2/acts/doodledaron~instagram-audio-spy` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // Actor input: { username: ["a","b",...] } — singular field, plural array.
+      body: JSON.stringify({ username: args.usernames }),
+    });
+  } catch (ex) {
+    return { result: null, error: `audio-spy network: ${(ex as Error).message}` };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { result: null, error: `audio-spy apify ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const items = await res.json().catch(() => null);
+  if (!Array.isArray(items) || items.length === 0) {
+    return { result: null, error: "audio-spy returned no items" };
+  }
+  return { result: items[0] as AudioSpyResponse };
+}
+
+// Pull the audio_id back out of an instagram.com/reels/audio/{id}/ URL
+// — used to keep stable dedupe identity even when the song name
+// collides (e.g. two creator-original audios both labeled with
+// the same artist handle).
+function extractAudioIdFromUrl(url: string | undefined | null): string | null {
+  if (typeof url !== "string") return null;
+  const m = url.match(/\/reels\/audio\/([^/?#]+)/i);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1];
+  }
+}
+
+// Format viewsPerDay velocity as "+12K/day" / "+1.2M/day".
+function formatViewsPerDay(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1_000_000) return `+${(n / 1_000_000).toFixed(1)}M/day`;
+  if (n >= 1_000)     return `+${(n / 1_000).toFixed(1)}K/day`;
+  return `+${Math.round(n)}/day`;
+}
+
+// Format totalViews as "1.2M views" / "127K views".
+function formatTotalViews(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B views`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M views`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K views`;
+  return `${n} view${n === 1 ? "" : "s"}`;
+}
+
+// Phase C v1 — DEAD CODE retained for one cycle. The
+// apify/instagram-scraper actor does not support audio URLs as
+// input (returns {error:"no_items"}). Kept here so the diff
+// reading the new code is small; remove when audio-spy approach
+// is bedded in.
+async function callApifyAudioDetail(args: {
+  audioUrls: string[];
+}): Promise<{ items: ApifyInstagramPost[]; error?: string }> {
+  if (args.audioUrls.length === 0) return { items: [] };
+  const url =
+    `https://api.apify.com/v2/acts/apify~instagram-scraper` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        directUrls: args.audioUrls,
+        resultsType: "posts",
+        resultsLimit: 1,
+        // addParentData=true asks Apify to include the parent media
+        // metadata (the audio object itself, not just the reel) when
+        // available. The audio object is where the global count
+        // typically lives.
+        addParentData: true,
+        searchType: "user",
+      }),
+    });
+  } catch (ex) {
+    return { items: [], error: `audio-detail network: ${(ex as Error).message}` };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { items: [], error: `audio-detail apify ${res.status}: ${text.slice(0, 200)}` };
+  }
+  const items = (await res.json().catch(() => [])) as ApifyInstagramPost[];
+  return { items: Array.isArray(items) ? items : [] };
+}
+
+// Defensively extract the global "N reels using this audio" count
+// from an Apify response item. The field location depends on actor
+// version + audio type (licensed song vs creator-original); we try
+// every known shape and return the first non-zero number found.
+// Returns null when no count is detectable.
+function extractAudioUsageCount(item: ApifyInstagramPost): number | null {
+  const p = item as Record<string, unknown>;
+  const get = (path: string): unknown => {
+    return path.split(".").reduce<unknown>((acc, key) => {
+      if (acc && typeof acc === "object") {
+        return (acc as Record<string, unknown>)[key];
+      }
+      return undefined;
+    }, p);
+  };
+  const candidatePaths = [
+    // Original sound (creator-recorded audio)
+    "clipsMusicMetadata.original_sound_info.use_count",
+    "clipsMusicMetadata.original_sound_info.original_audio_use_count",
+    "originalSoundInfo.use_count",
+    "originalSoundInfo.original_audio_use_count",
+    "original_sound_info.use_count",
+    // Licensed music
+    "clipsMusicMetadata.music_info.music_asset_info.use_count",
+    "clipsMusicMetadata.music_info.music_asset_info.video_count",
+    // Top-level musicInfo
+    "musicInfo.use_count",
+    "musicInfo.video_count",
+    "musicInfo.related_post_count",
+    "musicInfo.usage_count",
+    // Audio object directly
+    "audio.use_count",
+    "audio.video_count",
+    "audio.usage_count",
+    // Top-level shorthand fields some actors expose
+    "useCount",
+    "videoCount",
+    "usageCount",
+    "reels_count",
+    "reelsCount",
+  ];
+  for (const path of candidatePaths) {
+    const v = get(path);
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+    if (typeof v === "string" && /^\d+$/.test(v)) {
+      const n = parseInt(v, 10);
+      if (n > 0) return n;
+    }
+  }
+  return null;
+}
+
+// Pull the audio_id back out of the URL we sent to Apify so we can
+// re-associate the response items with our buckets. Apify echoes the
+// input URL on each item under `inputUrl` (sometimes `input` or
+// `url`); we try each shape.
+function parseAudioIdFromInputUrl(item: ApifyInstagramPost): string | null {
+  const p = item as Record<string, unknown>;
+  const candidateUrls: unknown[] = [
+    p.inputUrl,
+    p.input,
+    p.url,
+  ];
+  for (const u of candidateUrls) {
+    if (typeof u !== "string") continue;
+    const m = u.match(/\/reels\/audio\/([^/?#]+)/i);
+    if (m) {
+      try {
+        return decodeURIComponent(m[1]);
+      } catch {
+        return m[1];
+      }
+    }
+  }
+  return null;
+}
+
+// Format a global count as "1.2M reels" / "127K reels" / "987 reels".
+// Server-side formatter so the stored subtitle is readable without
+// relying on the client to format. The client also formats from
+// raw_payload so it can re-render if we change the format later.
+function formatGlobalReelCount(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B reels`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(1)}M reels`;
+  if (n >= 1_000)         return `${(n / 1_000).toFixed(1)}K reels`;
+  return `${n} reel${n === 1 ? "" : "s"}`;
+}
+
 async function handleInstagram(
   body: FetchTrendsRequest,
   serviceClient: SupabaseClient,
 ): Promise<{ status: number; payload: unknown }> {
-  const mode = body.mode === "competitors" ? "competitors" : "region";
-
-  if (mode === "competitors") {
-    return handleInstagramCompetitors(body, serviceClient);
-  }
-  return handleInstagramRegion(body, serviceClient);
+  // Pre-2026-05-06 the IG handler had two modes: 'region' (curated
+  // creators per region, global) and 'competitors' (per-brand). The
+  // 'region' mode was retired with the brand-scoping refactor — every
+  // IG fetch is now per-brand and produces audio-level rows
+  // (kind='sound') via handleInstagramAudios. The dispatcher accepts
+  // mode='competitors' as a backward-compat token (it's what the UI
+  // still sends) and routes any IG call to the audios pipeline.
+  // handleInstagramRegion is preserved below as dead code for one
+  // cycle in case we want to revive a global "trending audio" feed
+  // (e.g. once aggregator-account seeding lands in Phase B-extension).
+  return handleInstagramAudios(body, serviceClient);
 }
 
 async function handleInstagramRegion(
@@ -1225,7 +1535,42 @@ async function handleInstagramRegion(
   };
 }
 
-async function handleInstagramCompetitors(
+// Aggregator IG accounts that manually curate viral-audio reels.
+// Reels from these accounts seed the candidate audio pool alongside
+// each brand's competitors — humans pre-filter for virality so the
+// signal density is higher than random hashtag reels. Hardcoded for
+// now; Phase B-extension will move this to a `trend_aggregator_accounts`
+// table with a small agency-only admin UI for adding handles.
+//
+// User-supplied initial set (2026-05-06): `creators`,
+// `early.trending.audio`, `notsorrysocial`.
+const IG_AGGREGATOR_HANDLES: readonly string[] = [
+  "creators",
+  "early.trending.audio",
+  "notsorrysocial",
+];
+
+// Pivoted to doodledaron/instagram-audio-spy on 2026-05-06 because
+// the prior approach (scrape competitor reels via apify/instagram-scraper,
+// bucket by audio_id, then enrich each bucket with global counts via a
+// second Apify call) had two problems: (1) the bucket-grouping fallback
+// gave us "1 reel" sample counts that misled users into thinking audios
+// were unused; (2) apify/instagram-scraper does NOT support audio URLs
+// — it returns {error:"no_items"} when given /reels/audio/{id}/ as
+// directUrl. The doodledaron actor is purpose-built for this: pass it a
+// list of competitor + aggregator usernames and it returns top tracks
+// with `totalViews`, `viewsPerDay` (velocity!), `usedBy` handles, and
+// audio URLs already grouped — exactly what the user asked for.
+//
+// Trade-off vs the prior approach: doodledaron returns ~5-20 audios per
+// refresh (top_5_tracks + one per input username via
+// fastest_growing_by_competitor), where the prior approach surfaced
+// 30-50. Fewer rows but each carries real virality data instead of
+// noisy bucket counts. Better signal density beats volume.
+//
+// The legacy handler is preserved as `handleInstagramAudiosLegacy`
+// below in case audio-spy proves unreliable in production.
+async function handleInstagramAudios(
   body: FetchTrendsRequest,
   serviceClient: SupabaseClient,
 ): Promise<{ status: number; payload: unknown }> {
@@ -1252,14 +1597,14 @@ async function handleInstagramCompetitors(
     ...fromJsonb.map((c) => (typeof c?.handle === "string" ? c.handle : "")),
     ...fromLegacy,
   ];
-  const handles = Array.from(
+  const competitorHandles = Array.from(
     new Set(
       allHandlesRaw
         .map((h) => String(h).trim().replace(/^@/, "").toLowerCase())
         .filter((h) => h.length > 0 && /^[a-z0-9._]+$/i.test(h)),
     ),
   ).slice(0, 12);
-  if (handles.length === 0) {
+  if (competitorHandles.length === 0) {
     return {
       status: 200,
       payload: {
@@ -1274,43 +1619,240 @@ async function handleInstagramCompetitors(
     };
   }
 
+  // Hybrid pipeline (2026-05-06 #2):
+  //   Step 1: apify/instagram-scraper on competitor handles (fast,
+  //           ~30s for any number of handles). Gives us reels we
+  //           can bucket-by-audio for the "Used by @competitor"
+  //           signal across ALL the brand's competitors.
+  //   Step 2: doodledaron/instagram-audio-spy on aggregator handles
+  //           ONLY (3 fixed handles, ~150-200s, 1 chunk). Returns
+  //           top tracks with totalViews + viewsPerDay (the global
+  //           virality signal we want to display).
+  //   Step 3: merge results by audioId. An audio with both signals
+  //           shows "{Artist} · Used by @h1, @h2 · 1.2M views" +
+  //           "+12K/day" pill. An audio with only competitor data
+  //           shows "Used by @h1, @h2" (no views — we omit rather
+  //           than show a misleading scrape-sample number).
+  //
+  // Why split the work: audio-spy alone can only handle 5 usernames
+  // per call (actor cap) AND each call is slow because it internally
+  // launches apify/instagram-reel-scraper which takes minutes. Free
+  // Apify also has an 8GB concurrent-memory cap that prevents running
+  // multiple audio-spy chunks in parallel. By using audio-spy ONLY
+  // for the 3 fixed aggregator handles (one chunk, no scaling needed)
+  // we get the global virality data without hitting any constraint,
+  // and instagram-scraper covers the per-brand competitor signal in
+  // a single fast call regardless of competitor count. Total runtime
+  // ~210-240s, comfortably within Vercel's 300s function timeout.
+  const aggregatorHandlesNorm = IG_AGGREGATOR_HANDLES
+    .map((h) => h.trim().replace(/^@/, "").toLowerCase())
+    .filter((h) => h.length > 0 && /^[a-z0-9._]+$/i.test(h));
+  const aggregatorSet = new Set(aggregatorHandlesNorm);
+
   const capturedAt = new Date();
   const summary: InstagramRegionSummary = {
     region: "global",
-    handles,
+    handles: [...competitorHandles, ...aggregatorHandlesNorm],
     fetched: 0,
     written: 0,
     errors: [],
   };
 
-  const RESULTS_PER_HANDLE = 6;
-  const { items, error } = await callApifyInstagramPosts({ handles, resultsLimit: RESULTS_PER_HANDLE });
-  if (error) summary.errors.push(error);
-  summary.fetched = items.length;
+  // Shared bucket structure across both scrapers — keyed by audioId
+  // so an audio that BOTH a competitor uses AND an aggregator features
+  // gets both signals merged onto a single trend_signals row.
+  type MergedAudio = {
+    audioId: string;
+    songName: string | null;
+    artistName: string | null;
+    audioUrl: string;
+    totalViews: number;        // from audio-spy (0 when not surfaced)
+    viewsPerDay: number;       // from audio-spy (0 when not surfaced)
+    competitorsUsing: Set<string>;
+    aggregatorsUsing: Set<string>;
+  };
+  const merged = new Map<string, MergedAudio>();
 
-  // Same input-position-based attribution as the region handler — see
-  // comment there. Apify returns posts grouped by input handle in the
-  // order we supplied them, so the chunk index is reliable.
-  const tagged = items.map((post, originalIdx) => ({
-    post,
-    inputHandle: handles[Math.floor(originalIdx / RESULTS_PER_HANDLE)] ?? handles[handles.length - 1],
-  }));
-  tagged.sort((a, b) => {
-    const am = (a.post.likesCount ?? a.post.videoViewCount ?? 0);
-    const bm = (b.post.likesCount ?? b.post.videoViewCount ?? 0);
-    return bm - am;
+  // ---- Step 1: competitor reel scrape ------------------------------
+  // 8 reels per handle for ~50 reels with detectable musicInfo.
+  const RESULTS_PER_HANDLE = 8;
+  console.log("[fetch-trends] step 1: instagram-scraper for", competitorHandles.length, "competitors");
+  const { items: postItems, error: postErr } = await callApifyInstagramPosts({
+    handles: competitorHandles,
+    resultsLimit: RESULTS_PER_HANDLE,
+  });
+  if (postErr) {
+    summary.errors.push(`competitor-scrape: ${postErr}`);
+    console.warn("[fetch-trends] competitor-scrape error:", postErr);
+  }
+  console.log("[fetch-trends] step 1: got", postItems.length, "posts from competitors");
+
+  postItems.forEach((post, originalIdx) => {
+    const audio = extractAudioFromPost(post);
+    if (!audio) return;
+    const inputHandle = competitorHandles[Math.floor(originalIdx / RESULTS_PER_HANDLE)] ?? competitorHandles[competitorHandles.length - 1];
+    const ownerHandle = extractOwnerHandle(post) ?? inputHandle ?? "unknown";
+
+    let m = merged.get(audio.audioId);
+    if (!m) {
+      m = {
+        audioId: audio.audioId,
+        songName: audio.songName,
+        artistName: audio.artistName,
+        audioUrl: `https://www.instagram.com/reels/audio/${encodeURIComponent(audio.audioId)}/`,
+        totalViews: 0,
+        viewsPerDay: 0,
+        competitorsUsing: new Set(),
+        aggregatorsUsing: new Set(),
+      };
+      merged.set(audio.audioId, m);
+    }
+    m.competitorsUsing.add(ownerHandle);
+    // Backfill song/artist if the post had it but we already created the bucket without it.
+    if (!m.songName && audio.songName) m.songName = audio.songName;
+    if (!m.artistName && audio.artistName) m.artistName = audio.artistName;
+  });
+  console.log("[fetch-trends] step 1: bucketed into", merged.size, "audios");
+
+  // ---- Step 2: audio-spy on aggregators only -----------------------
+  // 3 aggregator handles → 1 chunk, single call, fits in ~200s.
+  const ingestSpyTrack = (t: AudioSpyTrack | undefined) => {
+    if (!t || typeof t !== "object") return;
+    const audioId = extractAudioIdFromUrl(t.audioUrl);
+    if (!audioId) return;
+    let m = merged.get(audioId);
+    if (!m) {
+      m = {
+        audioId,
+        songName: typeof t.songName === "string" && t.songName.trim().length > 0 ? t.songName.trim() : null,
+        artistName: typeof t.artist === "string" && t.artist.trim().length > 0 ? t.artist.trim() : null,
+        audioUrl: t.audioUrl ?? `https://www.instagram.com/reels/audio/${encodeURIComponent(audioId)}/`,
+        totalViews: 0,
+        viewsPerDay: 0,
+        competitorsUsing: new Set(),
+        aggregatorsUsing: new Set(),
+      };
+      merged.set(audioId, m);
+    }
+    // Backfill metadata when audio-spy has it and we don't.
+    if (!m.songName && typeof t.songName === "string" && t.songName.trim()) m.songName = t.songName.trim();
+    if (!m.artistName && typeof t.artist === "string" && t.artist.trim()) m.artistName = t.artist.trim();
+    if (typeof t.totalViews === "number" && t.totalViews > m.totalViews) m.totalViews = t.totalViews;
+    if (typeof t.viewsPerDay === "number" && t.viewsPerDay > m.viewsPerDay) m.viewsPerDay = t.viewsPerDay;
+    // For aggregator-sourced rows: usedBy entries are aggregator handles.
+    if (Array.isArray(t.usedBy)) {
+      for (const u of t.usedBy) {
+        if (typeof u !== "string") continue;
+        const norm = u.trim().replace(/^@/, "").toLowerCase();
+        if (!norm) continue;
+        if (aggregatorSet.has(norm)) m.aggregatorsUsing.add(norm);
+      }
+    }
+  };
+
+  if (aggregatorHandlesNorm.length > 0) {
+    console.log("[fetch-trends] step 2: audio-spy for", aggregatorHandlesNorm.length, "aggregators");
+    const { result: spyResult, error: spyErr } = await callApifyAudioSpy({ usernames: aggregatorHandlesNorm });
+    if (spyErr) {
+      summary.errors.push(`audio-spy: ${spyErr}`);
+      console.warn("[fetch-trends] audio-spy error:", spyErr);
+    }
+    if (spyResult) {
+      for (const t of spyResult.top_5_tracks ?? []) ingestSpyTrack(t);
+      for (const t of spyResult.fastest_growing_by_competitor ?? []) ingestSpyTrack(t);
+      ingestSpyTrack(spyResult.fastest_growing_overall);
+      console.log("[fetch-trends] step 2: merged audio-spy data into", merged.size, "audios total");
+    }
+  }
+
+  summary.fetched = merged.size;
+
+  // Rank: audios with audio-spy data (totalViews > 0) get top spots
+  // sorted by viewsPerDay desc (velocity — actively climbing beats
+  // historic size). Audios with only competitor data sort below by
+  // competitor count desc. This way the strategist always sees the
+  // virality-confirmed audios first, then category-relevant audios
+  // their competitors are riding even without aggregator coverage.
+  const ranked = Array.from(merged.values()).sort((a, b) => {
+    const aHasViews = a.totalViews > 0 ? 1 : 0;
+    const bHasViews = b.totalViews > 0 ? 1 : 0;
+    if (bHasViews !== aHasViews) return bHasViews - aHasViews;
+    if (aHasViews) {
+      if (b.viewsPerDay !== a.viewsPerDay) return b.viewsPerDay - a.viewsPerDay;
+      if (b.totalViews !== a.totalViews)   return b.totalViews - a.totalViews;
+    }
+    return b.competitorsUsing.size - a.competitorsUsing.size;
   });
 
-  const inserts: TrendInsertRow[] = [];
-  tagged.forEach(({ post, inputHandle }, i) => {
-    const row = parseInstagramPost({
-      post,
-      ownerHandle: inputHandle,
+  // Format up to `cap` @-handles into a comma-joined string, with a
+  // trailing "+ N more" when there are more.
+  const formatHandles = (handles: string[], cap = 3): string => {
+    if (handles.length === 0) return "";
+    const at = handles.map((h) => `@${h}`);
+    if (at.length <= cap) return at.join(", ");
+    return `${at.slice(0, cap).join(", ")} + ${at.length - cap} more`;
+  };
+
+  const inserts: TrendInsertRow[] = ranked.map((m, i) => {
+    const competitorList = Array.from(m.competitorsUsing);
+    const aggregatorList = Array.from(m.aggregatorsUsing);
+    // Title falls back to a short audio-id stub when songName is
+    // missing (creator-original audio without a labeled track).
+    // Without this, every untitled audio would collide on the dedupe
+    // key (platform, kind, region, title, ...) and we'd lose all but
+    // the highest-metric one.
+    const title = m.songName && m.songName.length > 0
+      ? m.songName
+      : `Audio · ${m.audioId.slice(-8)}`;
+
+    // Subtitle: artist + brand-relevance signal + global views.
+    // Brand-relevance prefers competitor handles (the brand's own
+    // category context); falls back to "Featured by @aggregator"
+    // when no competitor surfaced the audio (early-mover signal).
+    // Velocity goes in the metric pill.
+    const subtitleParts: string[] = [];
+    if (m.artistName) subtitleParts.push(m.artistName);
+    if (competitorList.length > 0) {
+      subtitleParts.push(`Used by ${formatHandles(competitorList, 3)}`);
+    } else if (aggregatorList.length > 0) {
+      subtitleParts.push(`Featured by ${formatHandles(aggregatorList, 2)}`);
+    }
+    if (m.totalViews > 0) {
+      subtitleParts.push(formatTotalViews(m.totalViews));
+    }
+
+    // Metric pill: velocity (viewsPerDay) — the actionable signal.
+    // "+12K/day" tells the strategist this audio is climbing now,
+    // not just historically big. When velocity is unknown we leave
+    // the pill empty rather than showing a misleading zero.
+    const velocityStr = formatViewsPerDay(m.viewsPerDay);
+    const metricLabel = velocityStr || null;
+
+    return {
+      platform: "instagram",
+      kind: "sound",
       region: "global",
-      accountId: body.accountId!,
-      fallbackRank: i + 1,
-    });
-    if (row) inserts.push(row);
+      title: title.slice(0, 280),
+      subtitle: subtitleParts.join(" · "),
+      url: m.audioUrl,
+      thumbnail_url: null,
+      metric_value: m.viewsPerDay > 0 ? Math.round(m.viewsPerDay) : null,
+      metric_label: metricLabel,
+      rank: i + 1,
+      trend_window: "now",
+      raw_payload: {
+        audioId: m.audioId,
+        songName: m.songName,
+        artistName: m.artistName,
+        // Real virality numbers from the audio-spy actor — both
+        // are aggregate global stats, not scrape-sample counts.
+        totalViews: m.totalViews,
+        viewsPerDay: m.viewsPerDay,
+        competitorHandles: competitorList,
+        aggregatorHandles: aggregatorList,
+      },
+      account_id: body.accountId!,
+    };
   });
 
   if (inserts.length > 0) {
@@ -1320,9 +1862,13 @@ async function handleInstagramCompetitors(
   }
 
   if (summary.written > 0) {
+    // Only sweep stale `kind='sound'` rows — leave legacy `kind='post'`
+    // IG rows from the pre-2026-05-06 handler to age out via the
+    // 14-day expires_at on their own.
     await sweepStaleTrends(serviceClient, {
       platform: "instagram",
       region: "global",
+      kind: "sound",
       accountId: body.accountId,
       cutoff: capturedAt,
     });
@@ -1337,6 +1883,7 @@ async function handleInstagramCompetitors(
       accountId: body.accountId,
       written: summary.written,
       summaries: [summary],
+      audiosFound: merged.size,
     },
   };
 }
