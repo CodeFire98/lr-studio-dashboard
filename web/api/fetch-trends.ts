@@ -1673,19 +1673,38 @@ async function handleInstagramAudios(
   };
   const merged = new Map<string, MergedAudio>();
 
-  // ---- Step 1: competitor reel scrape ------------------------------
-  // 8 reels per handle for ~50 reels with detectable musicInfo.
+  // Run both scrapers in PARALLEL via Promise.all. Originally split
+  // into sequential steps because TWO audio-spy parents in parallel
+  // bumped the Apify free-tier 8GB memory cap (each parent launches a
+  // 1024MB child reel-scraper). But ONE audio-spy + ONE
+  // instagram-scraper running together is ~6GB peak — under the cap.
+  // Real production timings for the sequential version drifted past
+  // Vercel's 300s function timeout (instagram-scraper 100-180s +
+  // audio-spy 150-260s = up to 440s, too risky). Parallelizing makes
+  // total wall time max(t1, t2) ≈ 260s, comfortably under 300s.
   const RESULTS_PER_HANDLE = 8;
-  console.log("[fetch-trends] step 1: instagram-scraper for", competitorHandles.length, "competitors");
-  const { items: postItems, error: postErr } = await callApifyInstagramPosts({
+  console.log("[fetch-trends] running competitor-scrape and audio-spy in parallel");
+
+  const competitorScrapePromise = callApifyInstagramPosts({
     handles: competitorHandles,
     resultsLimit: RESULTS_PER_HANDLE,
   });
+  const audioSpyPromise = aggregatorHandlesNorm.length > 0
+    ? callApifyAudioSpy({ usernames: aggregatorHandlesNorm })
+    : Promise.resolve({ result: null });
+
+  const [competitorRes, audioSpyRes] = await Promise.all([
+    competitorScrapePromise,
+    audioSpyPromise,
+  ]);
+
+  // ---- Step 1: ingest competitor reels ------------------------------
+  const { items: postItems, error: postErr } = competitorRes;
   if (postErr) {
     summary.errors.push(`competitor-scrape: ${postErr}`);
     console.warn("[fetch-trends] competitor-scrape error:", postErr);
   }
-  console.log("[fetch-trends] step 1: got", postItems.length, "posts from competitors");
+  console.log("[fetch-trends] competitor-scrape: got", postItems.length, "posts");
 
   postItems.forEach((post, originalIdx) => {
     const audio = extractAudioFromPost(post);
@@ -1708,14 +1727,12 @@ async function handleInstagramAudios(
       merged.set(audio.audioId, m);
     }
     m.competitorsUsing.add(ownerHandle);
-    // Backfill song/artist if the post had it but we already created the bucket without it.
     if (!m.songName && audio.songName) m.songName = audio.songName;
     if (!m.artistName && audio.artistName) m.artistName = audio.artistName;
   });
-  console.log("[fetch-trends] step 1: bucketed into", merged.size, "audios");
+  console.log("[fetch-trends] competitor-scrape: bucketed into", merged.size, "audios");
 
-  // ---- Step 2: audio-spy on aggregators only -----------------------
-  // 3 aggregator handles → 1 chunk, single call, fits in ~200s.
+  // ---- Step 2: ingest audio-spy results -----------------------------
   const ingestSpyTrack = (t: AudioSpyTrack | undefined) => {
     if (!t || typeof t !== "object") return;
     const audioId = extractAudioIdFromUrl(t.audioUrl);
@@ -1734,12 +1751,10 @@ async function handleInstagramAudios(
       };
       merged.set(audioId, m);
     }
-    // Backfill metadata when audio-spy has it and we don't.
     if (!m.songName && typeof t.songName === "string" && t.songName.trim()) m.songName = t.songName.trim();
     if (!m.artistName && typeof t.artist === "string" && t.artist.trim()) m.artistName = t.artist.trim();
     if (typeof t.totalViews === "number" && t.totalViews > m.totalViews) m.totalViews = t.totalViews;
     if (typeof t.viewsPerDay === "number" && t.viewsPerDay > m.viewsPerDay) m.viewsPerDay = t.viewsPerDay;
-    // For aggregator-sourced rows: usedBy entries are aggregator handles.
     if (Array.isArray(t.usedBy)) {
       for (const u of t.usedBy) {
         if (typeof u !== "string") continue;
@@ -1751,8 +1766,7 @@ async function handleInstagramAudios(
   };
 
   if (aggregatorHandlesNorm.length > 0) {
-    console.log("[fetch-trends] step 2: audio-spy for", aggregatorHandlesNorm.length, "aggregators");
-    const { result: spyResult, error: spyErr } = await callApifyAudioSpy({ usernames: aggregatorHandlesNorm });
+    const { result: spyResult, error: spyErr } = audioSpyRes as { result: AudioSpyResponse | null; error?: string };
     if (spyErr) {
       summary.errors.push(`audio-spy: ${spyErr}`);
       console.warn("[fetch-trends] audio-spy error:", spyErr);
@@ -1761,7 +1775,7 @@ async function handleInstagramAudios(
       for (const t of spyResult.top_5_tracks ?? []) ingestSpyTrack(t);
       for (const t of spyResult.fastest_growing_by_competitor ?? []) ingestSpyTrack(t);
       ingestSpyTrack(spyResult.fastest_growing_overall);
-      console.log("[fetch-trends] step 2: merged audio-spy data into", merged.size, "audios total");
+      console.log("[fetch-trends] audio-spy: merged into", merged.size, "audios total");
     }
   }
 
