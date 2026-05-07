@@ -548,11 +548,38 @@ const App = () => {
   useEffect(() => {
     if (!auth || !calendarAccountId) { setPostPlans([]); return; }
     let cancelled = false;
+    const fetchAll = () => {
+      loadPostPlans({ accountId: calendarAccountId })
+        .then((rows) => { if (!cancelled) setPostPlans(rows); })
+        .catch((e) => { console.error('loadPostPlans failed', e); });
+    };
+    fetchAll();
+    // Refetch on tab focus so a user returning to the calendar after
+    // hours away sees the latest statuses even if Supabase realtime
+    // dropped a message in the meantime. The realtime subscription
+    // (setup in the next effect) is the primary sync path; this is
+    // a belt-and-suspenders cover for the cases it misses.
+    const onFocus = () => fetchAll();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [auth?.id, calendarAccountId]);
+
+  // Refetch when navigating *into* calendar (or post-plan detail) from
+  // somewhere else — covers the case where a status change happened on
+  // another surface (e.g. an admin updated via the Inbox) and we land
+  // back on calendar with a cached, now-stale list.
+  useEffect(() => {
+    if (!auth || !calendarAccountId) return;
+    if (route.view !== 'calendar' && route.view !== 'plan') return;
+    let cancelled = false;
     loadPostPlans({ accountId: calendarAccountId })
       .then((rows) => { if (!cancelled) setPostPlans(rows); })
-      .catch((e) => { console.error('loadPostPlans failed', e); });
+      .catch((e) => console.warn('loadPostPlans (route refetch) failed', e));
     return () => { cancelled = true; };
-  }, [auth?.id, calendarAccountId]);
+  }, [route.view, auth?.id, calendarAccountId]);
 
   useEffect(() => {
     if (!auth || !calendarAccountId) return;

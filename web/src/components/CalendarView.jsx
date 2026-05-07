@@ -500,7 +500,7 @@ const StatPill = ({ icon, count, accent }) => {
   return (
     <span
       className={'cal-list-row-stat' + (accent ? ' is-accent' : '')}
-      aria-label={`${count} ${icon === 'comment' ? 'comments' : 'references'}`}
+      aria-label={`${count} ${icon === 'comment' ? 'comments' : 'attachments'}`}
     >
       <Icon name={icon} size={11} />
       <span>{count}</span>
@@ -508,16 +508,21 @@ const StatPill = ({ icon, count, accent }) => {
   );
 };
 
-const ReferencePopover = ({ refs }) => {
-  if (!refs || refs.length === 0) return null;
+const AttachmentPopover = ({ items }) => {
+  if (!items || items.length === 0) return null;
   return (
     <div className="cal-list-ref-popover" role="tooltip">
-      {refs.map((r) => {
-        const isImage = (r.mimeType || '').startsWith('image/') && r.url;
+      {items.map((a) => {
+        const isImage = (a.mimeType || '').startsWith('image/') && a.url;
+        const isFinal = a.kind === 'final';
         return (
-          <div key={r.id} className="cal-list-ref-thumb" title={r.filename}>
+          <div
+            key={a.id}
+            className={'cal-list-ref-thumb' + (isFinal ? ' is-final' : '')}
+            title={isFinal ? `${a.filename} (deliverable)` : a.filename}
+          >
             {isImage ? (
-              <img src={r.url} alt={r.filename} loading="lazy" />
+              <img src={a.url} alt={a.filename} loading="lazy" />
             ) : (
               <div className="cal-list-ref-thumb-fallback">
                 <Icon name="paperclip" size={14} />
@@ -530,10 +535,10 @@ const ReferencePopover = ({ refs }) => {
   );
 };
 
-const ListRow = ({ post, onOpen, onContextMenu, unreadCount, commentsCount, references }) => {
+const ListRow = ({ post, onOpen, onContextMenu, unreadCount, commentsCount, attachments }) => {
   const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt) || '—';
-  const referencesCount = references?.length || 0;
+  const attachmentsCount = attachments?.length || 0;
   return (
     <div
       role="button"
@@ -571,11 +576,11 @@ const ListRow = ({ post, onOpen, onContextMenu, unreadCount, commentsCount, refe
 
       <div className="cal-list-row-stats">
         <StatPill icon="comment" count={commentsCount} accent={unreadCount > 0} />
-        {referencesCount > 0 && (
-          <span className="cal-list-row-stat has-popover" aria-label={`${referencesCount} references`}>
+        {attachmentsCount > 0 && (
+          <span className="cal-list-row-stat has-popover" aria-label={`${attachmentsCount} attachments`}>
             <Icon name="paperclip" size={11} />
-            <span>{referencesCount}</span>
-            <ReferencePopover refs={references} />
+            <span>{attachmentsCount}</span>
+            <AttachmentPopover items={attachments} />
           </span>
         )}
       </div>
@@ -610,17 +615,18 @@ const ListView = ({ viewDate, postPlans, onOpenPost, onChipContextMenu, unreadBy
       .sort((a, b) => (a.scheduledAt || '').localeCompare(b.scheduledAt || ''));
   }, [postPlans, year, month]);
 
-  // Bulk-fetch comments + references for every visible plan in one shot.
-  // Re-runs whenever the visible-plan set changes (new month picked,
-  // status filter narrows, etc.). Also includes plan.updatedAt in the
-  // dep key so a fresh comment elsewhere triggers a refetch.
-  const [rollups, setRollups] = useState({ commentsByPlan: new Map(), referencesByPlan: new Map() });
+  // Bulk-fetch comments + attachments (references + deliverables) for
+  // every visible plan in one shot. Re-runs whenever the visible-plan
+  // set changes (new month picked, status filter narrows, etc.). Also
+  // includes plan.updatedAt in the dep key so a fresh comment elsewhere
+  // triggers a refetch.
+  const [rollups, setRollups] = useState({ commentsByPlan: new Map(), attachmentsByPlan: new Map() });
   const ids = monthPosts.map((p) => p.id);
   const idsKey = ids.join(',');
   useEffect(() => {
     let cancelled = false;
     if (ids.length === 0) {
-      setRollups({ commentsByPlan: new Map(), referencesByPlan: new Map() });
+      setRollups({ commentsByPlan: new Map(), attachmentsByPlan: new Map() });
       return undefined;
     }
     loadPostPlanListRollups({ postPlanIds: ids })
@@ -750,7 +756,7 @@ const ListView = ({ viewDate, postPlans, onOpenPost, onChipContextMenu, unreadBy
                           onContextMenu={onChipContextMenu}
                           unreadCount={unreadByPlan?.get(post.id) || 0}
                           commentsCount={rollups.commentsByPlan.get(post.id) || 0}
-                          references={rollups.referencesByPlan.get(post.id) || []}
+                          attachments={rollups.attachmentsByPlan.get(post.id) || []}
                         />
                       </React.Fragment>
                     ))}
