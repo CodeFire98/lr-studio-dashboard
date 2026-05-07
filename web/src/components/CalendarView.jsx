@@ -8,8 +8,14 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
-import { PlatformChip, STATUS_CONFIG, StatusPill } from './postPlanShared.jsx';
-import { createPostPlan, duplicatePostPlan, loadPostPlanListRollups } from '../lib/db.js';
+import { PlatformChip, STATUS_CONFIG, StatusPill, getDisplayStatus } from './postPlanShared.jsx';
+import {
+  createPostPlan,
+  duplicatePostPlan,
+  loadPostPlanListRollups,
+  loadPublicationsForPlanIds,
+  subscribeToAllPostPlanPublications,
+} from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { UpdateBrandModal } from './UpdateBrandModal.jsx';
 
@@ -39,8 +45,8 @@ function greetingTail(now = new Date()) {
 
 // Status order — earlier statuses sort first within a day so the brand
 // sees "things needing my attention" near the top of a busy cell.
-// Legacy enum values are mapped to the same slot as their new-enum
-// equivalent so a cached realtime payload still sorts sanely.
+// Posted (derived) sinks below Approved since it's "done, doesn't need
+// my eyes". Legacy enum values are mapped to their new-enum equivalent.
 const STATUS_ORDER = {
   needs_review:         0,
   needs_brand_feedback: 0,
@@ -51,18 +57,22 @@ const STATUS_ORDER = {
   delayed:              1,
   approved:             2,
   scheduled:            2,
-  posted:               2,
+  posted:               3,
 };
 
-// Filter buckets — the three workflow stages plus an All sentinel.
-// Each bucket's `statuses` array also includes the legacy enum values
-// so a row that hasn't yet been migrated still flows into the right
-// bucket on the calendar.
+// Filter buckets — the three workflow stages plus an All sentinel and
+// the derived Posted state. Each bucket's `displayStatuses` array maps
+// to display-status values returned by `getDisplayStatus(post, pubs)`.
+// The Posted bucket fires when a plan is approved AND has at least one
+// publication row; the Approved bucket excludes those, so "Approved"
+// becomes the actionable "approved-but-not-yet-live" pile the agency
+// can chase.
 const STATUS_GROUPS = {
-  all:          { label: 'All',          statuses: null },
-  drafting:     { label: 'Drafting',     statuses: ['drafting', 'not_started', 'wip', 'delayed'] },
-  needs_review: { label: 'Needs review', statuses: ['needs_review', 'needs_brand_feedback', 'needs_admin_revision'] },
-  approved:     { label: 'Approved',     statuses: ['approved', 'scheduled', 'posted'] },
+  all:          { label: 'All',          displayStatuses: null },
+  drafting:     { label: 'Drafting',     displayStatuses: ['drafting', 'not_started', 'wip', 'delayed'] },
+  needs_review: { label: 'Needs review', displayStatuses: ['needs_review', 'needs_brand_feedback', 'needs_admin_revision'] },
+  approved:     { label: 'Approved',     displayStatuses: ['approved', 'scheduled'] },
+  posted:       { label: 'Posted',       displayStatuses: ['posted'] },
 };
 
 const LS_VIEW_MODE     = 'lr_calendar_view_mode';
@@ -144,7 +154,8 @@ function buildMonthMatrix(viewYear, viewMonth) {
 }
 
 const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
-  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.drafting;
+  const displayStatus = post.displayStatus || post.status;
+  const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
   const titleSuffix = unreadCount > 0
     ? ` · ${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`
@@ -217,7 +228,8 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
 // matter more than times for content planning, and a stacked column
 // gives each plan enough room to be scannable without opening it.
 const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
-  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.drafting;
+  const displayStatus = post.displayStatus || post.status;
+  const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
   return (
     <button
@@ -252,7 +264,7 @@ const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
         {post.concept || 'Untitled post'}
       </div>
       <div className="cal-week-card-foot">
-        <StatusPill status={post.status} size="sm" />
+        <StatusPill status={displayStatus} size="sm" />
       </div>
     </button>
   );
@@ -536,7 +548,8 @@ const AttachmentPopover = ({ items }) => {
 };
 
 const ListRow = ({ post, onOpen, onContextMenu, unreadCount, commentsCount, attachments }) => {
-  const cfg = STATUS_CONFIG[post.status] || STATUS_CONFIG.drafting;
+  const displayStatus = post.displayStatus || post.status;
+  const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt) || '—';
   const attachmentsCount = attachments?.length || 0;
   return (
@@ -571,7 +584,7 @@ const ListRow = ({ post, onOpen, onContextMenu, unreadCount, commentsCount, atta
       </div>
 
       <div className="cal-list-row-status">
-        <StatusPill status={post.status} size="sm" />
+        <StatusPill status={displayStatus} size="sm" />
       </div>
 
       <div className="cal-list-row-stats">
@@ -819,11 +832,66 @@ const CalendarView = ({
   // Send-update modal state (agency-only).
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
 
+  // Publications-by-plan-id, used to derive "Posted" display status. We
+  // bulk-fetch on mount and whenever the visible plan-id set changes, and
+  // listen for realtime publication events so a plan flipped to posted
+  // from another tab updates the calendar without a manual refresh.
+  const [pubsByPlanId, setPubsByPlanId] = useState(new Map());
+  const planIdsKey = useMemo(() => postPlans.map((p) => p.id).sort().join(','), [postPlans]);
+  useEffect(() => {
+    let cancelled = false;
+    const ids = postPlans.map((p) => p.id);
+    if (ids.length === 0) {
+      setPubsByPlanId(new Map());
+      return undefined;
+    }
+    loadPublicationsForPlanIds(ids)
+      .then((m) => { if (!cancelled) setPubsByPlanId(m); })
+      .catch((e) => console.warn('loadPublicationsForPlanIds failed', e));
+    return () => { cancelled = true; };
+    // planIdsKey is the dependency-stable proxy for the ids array
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planIdsKey]);
+
+  useEffect(() => {
+    const idSet = new Set(postPlans.map((p) => p.id));
+    if (idSet.size === 0) return undefined;
+    const unsub = subscribeToAllPostPlanPublications((evt) => {
+      const planId = evt.publication?.postPlanId || evt.postPlanId;
+      if (!planId || !idSet.has(planId)) return;
+      setPubsByPlanId((prev) => {
+        const next = new Map(prev);
+        const list = next.get(planId) ? [...next.get(planId)] : [];
+        if (evt.type === 'DELETE') {
+          next.set(planId, list.filter((p) => p.id !== evt.id));
+        } else if (evt.publication) {
+          const idx = list.findIndex((p) => p.id === evt.publication.id);
+          if (idx === -1) list.push(evt.publication);
+          else list[idx] = evt.publication;
+          next.set(planId, list);
+        }
+        return next;
+      });
+    });
+    return () => unsub?.();
+  }, [planIdsKey]);
+
+  // Decorate every plan with its derived `displayStatus` once. Every
+  // surface downstream (chip, week card, list row, sort, filter) reads
+  // displayStatus instead of plan.status so "Posted" shows up uniformly
+  // wherever a plan is rendered.
+  const decoratedPostPlans = useMemo(() => {
+    return postPlans.map((p) => ({
+      ...p,
+      displayStatus: getDisplayStatus(p, pubsByPlanId.get(p.id)),
+    }));
+  }, [postPlans, pubsByPlanId]);
+
   const filteredPostPlans = useMemo(() => {
-    const allowed = STATUS_GROUPS[statusFilter]?.statuses;
-    if (!allowed) return postPlans;
-    return postPlans.filter((p) => allowed.includes(p.status));
-  }, [postPlans, statusFilter]);
+    const allowed = STATUS_GROUPS[statusFilter]?.displayStatuses;
+    if (!allowed) return decoratedPostPlans;
+    return decoratedPostPlans.filter((p) => allowed.includes(p.displayStatus));
+  }, [decoratedPostPlans, statusFilter]);
 
   // Counts per status group — drive the small badge inside each filter
   // pill so the agency lead can see at a glance "5 things in review,
@@ -831,12 +899,12 @@ const CalendarView = ({
   const groupCounts = useMemo(() => {
     const out = {};
     for (const [key, group] of Object.entries(STATUS_GROUPS)) {
-      out[key] = group.statuses
-        ? postPlans.filter((p) => group.statuses.includes(p.status)).length
-        : postPlans.length;
+      out[key] = group.displayStatuses
+        ? decoratedPostPlans.filter((p) => group.displayStatuses.includes(p.displayStatus)).length
+        : decoratedPostPlans.length;
     }
     return out;
-  }, [postPlans]);
+  }, [decoratedPostPlans]);
 
   const postsByDate = useMemo(() => {
     const map = new Map();
@@ -849,7 +917,7 @@ const CalendarView = ({
     }
     for (const [, list] of map) {
       list.sort((a, b) => {
-        const sd = (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99);
+        const sd = (STATUS_ORDER[a.displayStatus] ?? 99) - (STATUS_ORDER[b.displayStatus] ?? 99);
         if (sd !== 0) return sd;
         return (a.scheduledAt || '').localeCompare(b.scheduledAt || '');
       });
