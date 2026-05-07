@@ -17,6 +17,7 @@ import {
   StatusPill,
   toDatetimeLocal,
   fromDatetimeLocal,
+  getDisplayStatus,
 } from './postPlanShared.jsx';
 import {
   loadPostPlanById,
@@ -31,8 +32,13 @@ import {
   markPostPlanSeen,
   loadPostPlanStatusLog,
   duplicatePostPlan,
+  loadPostPlanPublications,
+  upsertPostPlanPublication,
+  deletePostPlanPublication,
+  subscribeToPostPlanPublications,
 } from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
+import { MarkAsPostedModal } from './MarkAsPostedModal.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 import { useLightbox } from './Lightbox.jsx';
 
@@ -487,6 +493,34 @@ const PostPlanDetailView = ({
     // status changes AND realtime-relayed changes from another tab/user.
   }, [postPlanId, plan?.updatedAt]);
 
+  // ---- Publications (the "Posted" terminal state) ----
+  // A plan is shown as Posted when it's approved AND has at least one
+  // publication row. The publications themselves carry the live URLs
+  // surfaced by the brand-wide Live Posts repository.
+  const [publications, setPublications] = useState([]);
+  const [postedModalOpen, setPostedModalOpen] = useState(false);
+  useEffect(() => {
+    if (!postPlanId) return;
+    let cancelled = false;
+    loadPostPlanPublications(postPlanId)
+      .then((rows) => { if (!cancelled) setPublications(rows); })
+      .catch((e) => console.warn('loadPostPlanPublications failed', e));
+    const unsub = subscribeToPostPlanPublications(postPlanId, (evt) => {
+      if (evt.type === 'DELETE') {
+        setPublications((prev) => prev.filter((p) => p.id !== evt.id));
+      } else if (evt.publication) {
+        setPublications((prev) => {
+          const idx = prev.findIndex((p) => p.id === evt.publication.id);
+          if (idx === -1) return [evt.publication, ...prev];
+          const next = [...prev];
+          next[idx] = evt.publication;
+          return next;
+        });
+      }
+    });
+    return () => { cancelled = true; unsub?.(); };
+  }, [postPlanId]);
+
   const referenceAttachments = useMemo(
     () => attachments.filter((a) => a.kind === 'reference'),
     [attachments]
@@ -720,12 +754,44 @@ const PostPlanDetailView = ({
     }
   };
 
+  // ---- Mark-as-posted submit ------------------------------------------
+  // The modal hands us batched upserts + deletes; we apply them serially
+  // (per-platform) and update local state optimistically. Bumping the
+  // plan's updatedAt via a no-op persist is intentional — it nudges the
+  // status log + viewer "last seen" stamping on save without writing
+  // anything new to the post_plans row itself.
+  const handleMarkPostedSubmit = async ({ upserts, deletes }) => {
+    if (!plan?.id || !userId) return;
+    const created = [];
+    for (const u of upserts) {
+      const row = await upsertPostPlanPublication({
+        postPlanId: plan.id,
+        platform: u.platform,
+        liveUrl: u.liveUrl,
+        publishedBy: userId,
+      });
+      created.push(row);
+    }
+    for (const id of deletes) {
+      await deletePostPlanPublication(id);
+    }
+    setPublications((prev) => {
+      const byKey = new Map(prev.map((p) => [p.id, p]));
+      for (const id of deletes) byKey.delete(id);
+      for (const r of created) byKey.set(r.id, r);
+      return Array.from(byKey.values()).sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''));
+    });
+    markPostPlanSeen(plan.id, userId);
+    onPlanSeen?.(plan.id);
+    setPostedModalOpen(false);
+  };
+
   // ---- Activity feed (synthesized) ------------------------------------
   // No dedicated activity table — we synthesize the timeline from the
   // events we store across post_plans, post_plan_comments,
-  // post_plan_attachments, and post_plan_status_log. Hook stays above
-  // the null-plan early-return so React sees the same hook count on
-  // every render (Rules of Hooks).
+  // post_plan_attachments, post_plan_status_log, and
+  // post_plan_publications. Hook stays above the null-plan early-return
+  // so React sees the same hook count on every render (Rules of Hooks).
   const activityFeed = useMemo(() => {
     if (!plan) return [];
     const items = [];
@@ -765,8 +831,18 @@ const PostPlanDetailView = ({
         label: `${s.actor?.name || 'Someone'} ${verb}`,
       });
     }
+    for (const p of publications) {
+      const platLabel = PLATFORM_BY_KEY[p.platform]?.label || p.platform;
+      items.push({
+        id: `pub_${p.id}`, kind: 'posted',
+        actor: p.publisher,
+        time: p.publishedAt || p.createdAt,
+        label: `${p.publisher?.name || 'Someone'} marked posted on ${platLabel}`,
+        body: p.liveUrl || null,
+      });
+    }
     return items.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
-  }, [plan?.createdAt, plan?.creator, comments, attachments, statusLog]);
+  }, [plan?.createdAt, plan?.creator, comments, attachments, statusLog, publications]);
 
   // ---- Loading / not-found --------------------------------------------
 
@@ -909,7 +985,7 @@ const PostPlanDetailView = ({
             )}
           </div>
           <div className="sub" style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
-            <StatusPill status={status} size="lg"/>
+            <StatusPill status={getDisplayStatus({ status }, publications)} size="lg"/>
             <span>·</span>
             <input
               type="datetime-local"
@@ -956,6 +1032,29 @@ const PostPlanDetailView = ({
               {a.label}
             </button>
           ))}
+          {/* Mark-as-posted CTA — available to agency AND brand once
+              the plan is approved. Both can mark posted (per workflow
+              decision: agency often handles the actual posting via
+              scheduling tools). Button label flips to Edit live posts
+              once at least one publication row exists. */}
+          {statusBucket === 'approved' && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setPostedModalOpen(true)}
+              title={publications.length > 0
+                ? 'Edit which platforms this is live on and the live-post URLs'
+                : 'Mark as posted and (optionally) add live-post URLs'}
+              style={
+                publications.length === 0
+                  ? { background: '#7C5CFF', borderColor: '#7C5CFF', color: '#fff' }
+                  : undefined
+              }
+            >
+              <Icon name="send" size={13}/>
+              {publications.length > 0 ? 'Edit live posts' : 'Mark as posted'}
+            </button>
+          )}
           {isAdmin && (
             <button
               type="button"
@@ -1302,6 +1401,93 @@ const PostPlanDetailView = ({
                 isAgency={isAdmin}
               />
 
+              {/* Live posts — populated once anyone clicks "Mark as
+                  posted". Each row is a (platform, URL?) tuple. Hidden
+                  entirely when there are no publications AND the plan
+                  isn't approved yet, so it doesn't loiter on early-stage
+                  plans. */}
+              {(publications.length > 0 || statusBucket === 'approved') && (
+                <div className="card">
+                  <div className="card-head">
+                    <div>
+                      <div className="card-title">Live posts</div>
+                      <div className="card-sub">
+                        {publications.length === 0
+                          ? 'Mark this plan as posted once it goes live, and drop in the URL for the live-posts repository.'
+                          : 'Where this post is live. URLs feed the brand-wide Live Posts dashboard.'}
+                      </div>
+                    </div>
+                    {statusBucket === 'approved' && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => setPostedModalOpen(true)}
+                      >
+                        <Icon name="send" size={13}/>
+                        {publications.length > 0 ? 'Edit' : 'Mark as posted'}
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ padding: '0 16px 16px' }}>
+                    {publications.length === 0 ? (
+                      <div className="empty" style={{ padding: 20, color: 'var(--ink-4)', fontSize: 13 }}>
+                        Nothing posted yet.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {publications.map((p) => {
+                          const cfg = PLATFORM_BY_KEY[p.platform];
+                          return (
+                            <div
+                              key={p.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 10,
+                                padding: '10px 12px',
+                                border: '1px solid var(--line)',
+                                borderRadius: 8,
+                                background: 'var(--surface)',
+                              }}
+                            >
+                              <PlatformChip platform={p.platform} size="md"/>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 13, color: 'var(--ink-1)', fontWeight: 500 }}>
+                                  {cfg?.label || p.platform}
+                                </div>
+                                {p.liveUrl ? (
+                                  <a
+                                    href={p.liveUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{
+                                      fontSize: 12,
+                                      color: 'var(--accent-ink)',
+                                      textDecoration: 'underline',
+                                      wordBreak: 'break-all',
+                                    }}
+                                  >
+                                    {p.liveUrl}
+                                  </a>
+                                ) : (
+                                  <span style={{ fontSize: 12, color: 'var(--ink-4)' }}>
+                                    No URL added
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--ink-4)', whiteSpace: 'nowrap' }}>
+                                {p.publisher?.name || 'Someone'} ·{' '}
+                                {p.publishedAt ? new Date(p.publishedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {isAdmin && (
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
                   <button type="button" className="btn btn-ghost btn-sm" onClick={handleDelete} style={{ color: 'var(--accent)' }}>
@@ -1449,11 +1635,24 @@ const PostPlanDetailView = ({
           <div className="card">
             <div className="card-head"><div className="card-title" style={{ fontSize: 18 }}>Timeline</div></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, padding: '0 16px 16px' }}>
-              {[
-                { k: 'Created', v: plan.createdAt, on: !!plan.createdAt },
-                { k: 'Submitted for review', v: null, on: ['needs_review','needs_brand_feedback','needs_admin_revision','approved','scheduled','posted'].includes(plan.status) },
-                { k: 'Approved', v: plan.approvedAt, on: !!plan.approvedAt },
-              ].map((step, i) => (
+              {(() => {
+                // The Posted step lights up off the publications list
+                // (the source of truth for "is this live") and the
+                // earliest publishedAt becomes the step's timestamp —
+                // so when a plan goes live on IG first and LinkedIn a
+                // day later, the timeline shows the IG moment.
+                const earliestPub = publications.reduce((earliest, p) => {
+                  if (!p.publishedAt) return earliest;
+                  if (!earliest || p.publishedAt < earliest) return p.publishedAt;
+                  return earliest;
+                }, null);
+                return [
+                  { k: 'Created', v: plan.createdAt, on: !!plan.createdAt },
+                  { k: 'Submitted for review', v: null, on: ['needs_review','needs_brand_feedback','needs_admin_revision','approved','scheduled','posted'].includes(plan.status) },
+                  { k: 'Approved', v: plan.approvedAt, on: !!plan.approvedAt },
+                  { k: 'Posted', v: earliestPub, on: publications.length > 0 },
+                ];
+              })().map((step, i) => (
                 <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <span style={{
                     width: 8, height: 8, borderRadius: 4,
@@ -1479,6 +1678,14 @@ const PostPlanDetailView = ({
         onConfirm={handleDuplicateConfirm}
         onCancel={() => setDupPickerOpen(false)}
         sourcePlan={plan}
+      />
+
+      <MarkAsPostedModal
+        open={postedModalOpen}
+        plan={plan}
+        publications={publications}
+        onSubmit={handleMarkPostedSubmit}
+        onCancel={() => setPostedModalOpen(false)}
       />
     </div></div>
   );

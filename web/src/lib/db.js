@@ -1963,6 +1963,199 @@ export async function deletePostPlanAttachment(attachment) {
 }
 
 // =====================================================================
+// Post-plan publications (the "Posted" terminal state)
+// =====================================================================
+// A publication row records that a plan went live on a given platform,
+// optionally with a URL to the live post. The "Posted" pill in the UI is
+// derived: a plan is shown as Posted when status='approved' AND it has
+// at least one publications row. The status enum stays at 3 values.
+// One row per (plan, platform); upsert on the unique constraint.
+
+const POST_PLAN_PUBLICATION_SELECT = `
+  *,
+  publisher:profiles!published_by(id, display_name, initials, avatar_color, is_agency)
+`;
+
+export function mapPostPlanPublicationRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    postPlanId: row.post_plan_id,
+    platform: row.platform,
+    liveUrl: row.live_url || '',
+    publishedAt: row.published_at,
+    publishedBy: row.published_by,
+    publisher: personFromProfile(row.publisher),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function loadPostPlanPublications(postPlanId) {
+  if (!postPlanId) return [];
+  const { data, error } = await supabase
+    .from('post_plan_publications')
+    .select(POST_PLAN_PUBLICATION_SELECT)
+    .eq('post_plan_id', postPlanId)
+    .order('published_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapPostPlanPublicationRow);
+}
+
+// Bulk loader — returns Map<postPlanId, publications[]> for the calendar
+// chip rendering (so each chip can derive its display status). One query
+// for all plan ids, grouped client-side.
+export async function loadPublicationsForPlanIds(postPlanIds) {
+  if (!Array.isArray(postPlanIds) || postPlanIds.length === 0) return new Map();
+  const { data, error } = await supabase
+    .from('post_plan_publications')
+    .select(POST_PLAN_PUBLICATION_SELECT)
+    .in('post_plan_id', postPlanIds)
+    .order('published_at', { ascending: false });
+  if (error) throw error;
+  const grouped = new Map();
+  for (const r of data || []) {
+    const mapped = mapPostPlanPublicationRow(r);
+    const list = grouped.get(mapped.postPlanId) || [];
+    list.push(mapped);
+    grouped.set(mapped.postPlanId, list);
+  }
+  return grouped;
+}
+
+// Joined loader for the brand-wide Live Posts repository view. Each row
+// carries enough plan context (concept, scheduled_at, platforms) so the
+// repository tile can render without a follow-up plan fetch.
+export async function loadBrandPublications(accountId) {
+  if (!accountId) return [];
+  const { data, error } = await supabase
+    .from('post_plan_publications')
+    .select(`
+      *,
+      publisher:profiles!published_by(id, display_name, initials, avatar_color, is_agency),
+      post_plan:post_plans!post_plan_id(
+        id, account_id, scheduled_at, platforms, concept, status, account:accounts(id, name)
+      )
+    `)
+    .order('published_at', { ascending: false });
+  if (error) throw error;
+  // Filter client-side by accountId via the joined post_plan; doing it as
+  // a Postgres filter on a joined column requires a foreign-table syntax
+  // that's clunkier than just dropping non-matches here.
+  return (data || [])
+    .filter((r) => r.post_plan?.account_id === accountId)
+    .map((r) => ({
+      ...mapPostPlanPublicationRow(r),
+      plan: r.post_plan
+        ? {
+            id: r.post_plan.id,
+            accountId: r.post_plan.account_id,
+            accountName: r.post_plan.account?.name || null,
+            scheduledAt: r.post_plan.scheduled_at,
+            platforms: Array.isArray(r.post_plan.platforms) ? r.post_plan.platforms : [],
+            concept: r.post_plan.concept || '',
+            status: r.post_plan.status,
+          }
+        : null,
+    }));
+}
+
+// Insert-or-update a publication row. The DB has a unique constraint on
+// (post_plan_id, platform), so re-marking the same platform updates the
+// existing row's URL/timestamp instead of stacking a duplicate.
+export async function upsertPostPlanPublication({ postPlanId, platform, liveUrl, publishedBy }) {
+  if (!postPlanId) throw new Error('upsertPostPlanPublication: postPlanId is required');
+  if (!platform)   throw new Error('upsertPostPlanPublication: platform is required');
+  if (!publishedBy) throw new Error('upsertPostPlanPublication: publishedBy is required');
+  const trimmed = (liveUrl || '').trim();
+  const payload = {
+    post_plan_id: postPlanId,
+    platform,
+    live_url: trimmed || null,
+    published_by: publishedBy,
+    // Stamp published_at on the way in so the row's "live moment" is the
+    // marking moment, not a default-only created_at. On conflict we leave
+    // the original published_at alone (the user is editing the URL, not
+    // re-publishing) by sending it only when null.
+  };
+  const { data, error } = await supabase
+    .from('post_plan_publications')
+    .upsert(payload, { onConflict: 'post_plan_id,platform' })
+    .select(POST_PLAN_PUBLICATION_SELECT)
+    .single();
+  if (error) throw error;
+  return mapPostPlanPublicationRow(data);
+}
+
+export async function deletePostPlanPublication(id) {
+  if (!id) throw new Error('deletePostPlanPublication: id is required');
+  const { error } = await supabase.from('post_plan_publications').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export function subscribeToPostPlanPublications(postPlanId, onChange) {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const channel = supabase
+    .channel(`lr_post_plan_publications_${postPlanId}_${suffix}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'post_plan_publications', filter: `post_plan_id=eq.${postPlanId}` },
+      async (payload) => {
+        try {
+          if (payload.eventType === 'DELETE') {
+            onChange({ type: 'DELETE', id: payload.old.id });
+            return;
+          }
+          const { data } = await supabase
+            .from('post_plan_publications')
+            .select(POST_PLAN_PUBLICATION_SELECT)
+            .eq('id', payload.new.id)
+            .maybeSingle();
+          if (data) onChange({ type: payload.eventType, publication: mapPostPlanPublicationRow(data) });
+        } catch (e) {
+          console.warn('post_plan_publications realtime failed', e);
+        }
+      }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// Stream every publication change in the project — used by surfaces
+// that show many plans at once (CalendarView, LivePostsView). Callers
+// re-filter by their own plan id set; a full-table channel is cheaper
+// than juggling per-plan channels for dozens of rows.
+export function subscribeToAllPostPlanPublications(onChange) {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const channel = supabase
+    .channel(`lr_post_plan_publications_stream_${suffix}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'post_plan_publications' },
+      async (payload) => {
+        try {
+          if (payload.eventType === 'DELETE') {
+            onChange({ type: 'DELETE', id: payload.old.id, postPlanId: payload.old.post_plan_id });
+            return;
+          }
+          const { data } = await supabase
+            .from('post_plan_publications')
+            .select(POST_PLAN_PUBLICATION_SELECT)
+            .eq('id', payload.new.id)
+            .maybeSingle();
+          if (data) {
+            onChange({ type: payload.eventType, publication: mapPostPlanPublicationRow(data) });
+          }
+        } catch (e) {
+          console.warn('post_plan_publications stream realtime failed', e);
+        }
+      }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// =====================================================================
 // Post-plan unread tracking (post_plan_views)
 // =====================================================================
 // A comment counts as "unread" for user U if either there's no view row
