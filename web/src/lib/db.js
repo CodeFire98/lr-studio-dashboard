@@ -1741,16 +1741,23 @@ export function mapPostPlanCommentRow(row, viewerUserId) {
   };
 }
 
-// Bulk loader for the calendar List view: comment counts + reference
-// attachments per plan, in two parallel queries. Returns
+// Bulk loader for the calendar List view: comment counts + ALL
+// attachments (references + deliverables/finals) per plan, in two
+// parallel queries. Returns
 //   { commentsByPlan: Map<id, count>,
-//     referencesByPlan: Map<id, [{ id, filename, mimeType, url }, …]> }
-// `referencesByPlan` is what backs the hover-paperclip thumbnail
+//     attachmentsByPlan: Map<id, [{ id, kind, filename, mimeType, url }, …]> }
+// `attachmentsByPlan` is what backs the hover-paperclip thumbnail
 // popover; we cap at 6 per plan client-side so a hugely-attached plan
-// doesn't dump dozens of items into the DOM.
+// doesn't dump dozens of items into the DOM. Deliverables (kind='final')
+// rank above references (kind='reference') in the cap so the user sees
+// the work product first when both are present.
+//
+// `referencesByPlan` is kept as a back-compat alias on the return so
+// any older caller still mounted in the same session keeps working.
 export async function loadPostPlanListRollups({ postPlanIds }) {
   if (!Array.isArray(postPlanIds) || postPlanIds.length === 0) {
-    return { commentsByPlan: new Map(), referencesByPlan: new Map() };
+    const empty = new Map();
+    return { commentsByPlan: new Map(), attachmentsByPlan: empty, referencesByPlan: empty };
   }
   const [commentsRes, attachmentsRes] = await Promise.all([
     supabase
@@ -1760,7 +1767,6 @@ export async function loadPostPlanListRollups({ postPlanIds }) {
     supabase
       .from('post_plan_attachments')
       .select('id, post_plan_id, kind, storage_path, filename, mime_type, created_at')
-      .eq('kind', 'reference')
       .in('post_plan_id', postPlanIds)
       .order('created_at', { ascending: false }),
   ]);
@@ -1772,23 +1778,39 @@ export async function loadPostPlanListRollups({ postPlanIds }) {
     commentsByPlan.set(r.post_plan_id, (commentsByPlan.get(r.post_plan_id) || 0) + 1);
   }
 
-  const referencesByPlan = new Map();
+  // Group all attachments first, then sort each group so deliverables
+  // surface ahead of references at the per-plan cap. Within a kind we
+  // already get newest-first from the SQL ORDER BY.
+  const grouped = new Map();
   for (const a of attachmentsRes.data || []) {
-    const existing = referencesByPlan.get(a.post_plan_id) || [];
-    if (existing.length >= 6) continue;
-    const { data: pub } = supabase.storage
-      .from(POST_PLAN_ATTACHMENT_BUCKET)
-      .getPublicUrl(a.storage_path);
-    existing.push({
-      id: a.id,
-      filename: a.filename,
-      mimeType: a.mime_type,
-      url: pub?.publicUrl,
+    const list = grouped.get(a.post_plan_id) || [];
+    list.push(a);
+    grouped.set(a.post_plan_id, list);
+  }
+  const ATTACHMENT_KIND_RANK = { final: 1, reference: 2 };
+  const attachmentsByPlan = new Map();
+  for (const [planId, list] of grouped.entries()) {
+    list.sort((x, y) => {
+      const dr = (ATTACHMENT_KIND_RANK[x.kind] ?? 99) - (ATTACHMENT_KIND_RANK[y.kind] ?? 99);
+      if (dr !== 0) return dr;
+      return (y.created_at || '').localeCompare(x.created_at || '');
     });
-    referencesByPlan.set(a.post_plan_id, existing);
+    const capped = list.slice(0, 6).map((a) => {
+      const { data: pub } = supabase.storage
+        .from(POST_PLAN_ATTACHMENT_BUCKET)
+        .getPublicUrl(a.storage_path);
+      return {
+        id: a.id,
+        kind: a.kind,
+        filename: a.filename,
+        mimeType: a.mime_type,
+        url: pub?.publicUrl,
+      };
+    });
+    attachmentsByPlan.set(planId, capped);
   }
 
-  return { commentsByPlan, referencesByPlan };
+  return { commentsByPlan, attachmentsByPlan, referencesByPlan: attachmentsByPlan };
 }
 
 export async function loadPostPlanComments(postPlanId, viewerUserId) {

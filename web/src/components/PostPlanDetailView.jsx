@@ -331,9 +331,19 @@ const PostPlanDetailView = ({
 
   // Sync local state with realtime updates from App.jsx (which already
   // subscribes to post_plans). When the App list refreshes the row, our
-  // detail view picks up the change without a manual refetch.
+  // detail view picks up the change without a manual refetch — but only
+  // if fromList is at least as fresh as our local plan. Without this
+  // updatedAt guard, a stale postPlans cache (e.g. App's list loaded
+  // hours ago, realtime missed an out-of-band status change) would clobber
+  // the fresh row we just got from loadPostPlanById.
   useEffect(() => {
-    if (fromList) setPlan(fromList);
+    if (!fromList) return;
+    setPlan((prev) => {
+      if (!prev) return fromList;
+      const a = prev.updatedAt ? new Date(prev.updatedAt).getTime() : 0;
+      const b = fromList.updatedAt ? new Date(fromList.updatedAt).getTime() : 0;
+      return b >= a ? fromList : prev;
+    });
   }, [fromList]);
 
   // Tabs.
