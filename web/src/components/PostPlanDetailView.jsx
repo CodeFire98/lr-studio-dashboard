@@ -103,7 +103,7 @@ const formatBytes = (n) => {
 
 const isImageMime = (m) => typeof m === 'string' && m.startsWith('image/');
 
-const AttachmentTile = ({ att, canDelete, onDelete }) => {
+const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
   const showImage = isImageMime(att.mimeType) && att.url;
   const lightbox = useLightbox();
   const openInLightbox = () => {
@@ -114,6 +114,10 @@ const AttachmentTile = ({ att, canDelete, onDelete }) => {
       name: att.filename,
       alt: att.filename,
       downloadUrl: att.url,
+      // Agency-only delete from the preview. The Lightbox shows its own
+      // confirm modal; the callback should do the bare delete + parent
+      // state update without re-prompting.
+      onDelete: onLightboxDelete ? () => onLightboxDelete(att) : undefined,
     });
   };
   return (
@@ -228,6 +232,10 @@ const AttachmentsCard = ({
   uploading,
   onUpload,
   currentUserId,
+  // Agency-only: enables a Delete button in the preview lightbox for
+  // every attachment in this card, regardless of who uploaded it.
+  // Brand viewers don't see it (the prop is undefined for them).
+  isAgency = false,
 }) => {
   const inputRef = useRef(null);
   const onPick = () => inputRef.current?.click();
@@ -282,6 +290,7 @@ const AttachmentsCard = ({
                 att={a}
                 canDelete={canUpload && a.uploadedBy === currentUserId}
                 onDelete={(att) => onUpload([], att)}
+                onLightboxDelete={isAgency ? (att) => onUpload([], att) : undefined}
               />
             ))}
           </div>
@@ -1257,6 +1266,7 @@ const PostPlanDetailView = ({
                 uploading={uploadingKind === 'reference'}
                 currentUserId={userId}
                 onUpload={(files, toDelete) => handleAttachmentChange('reference', files, toDelete)}
+                isAgency={isAdmin}
               />
 
               {/* Deliverables — admin uploads final creatives, both sides view. */}
@@ -1273,6 +1283,7 @@ const PostPlanDetailView = ({
                 uploading={uploadingKind === 'final'}
                 currentUserId={userId}
                 onUpload={(files, toDelete) => handleAttachmentChange('final', files, toDelete)}
+                isAgency={isAdmin}
               />
 
               {isAdmin && (
