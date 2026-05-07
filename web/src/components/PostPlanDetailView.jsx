@@ -120,6 +120,22 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
       onDelete: onLightboxDelete ? () => onLightboxDelete(att) : undefined,
     });
   };
+  // Tile-level delete (the small × badge on the thumbnail). Other
+  // surfaces (TaskDetailView, BrandKitView ReferencesCard) already
+  // confirm at the tile level; PostPlan was the inconsistent one and
+  // would delete on a single accidental click. Now matches the
+  // lightbox path's safety.
+  const handleTileDelete = async () => {
+    const ok = await confirmDialog({
+      title: att.filename ? `Delete ${att.filename}?` : 'Delete this file?',
+      body: 'This permanently removes the file. This action cannot be undone.',
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!ok) return;
+    onDelete(att);
+  };
   return (
     <div
       style={{
@@ -197,7 +213,7 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
       {canDelete && (
         <button
           type="button"
-          onClick={() => onDelete(att)}
+          onClick={handleTileDelete}
           aria-label="Delete attachment"
           title="Delete"
           style={{

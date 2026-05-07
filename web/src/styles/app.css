@@ -2683,10 +2683,14 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 /* ============== Login Modal ============== */
+/* z-index must sit above the Lightbox (which is set to 9999 inline so
+   it covers all in-page chrome). Confirm dialogs reuse this backdrop
+   class and need to render *over* the lightbox so the user can answer
+   "Delete?" prompts that originate from the lightbox itself. */
 .login-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: 10000;
   background: color-mix(in oklab, var(--ink) 52%, transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
