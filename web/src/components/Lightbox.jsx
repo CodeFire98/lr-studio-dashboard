@@ -1,7 +1,7 @@
 /* eslint-disable */
 /* Media lightbox + provider.
 
-   Any component can call `useLightbox().open({ src, mimeType, name, alt, downloadUrl })`
+   Any component can call `useLightbox().open({ src, mimeType, name, alt, downloadUrl, onDelete })`
    to display a full-size image, video, PDF, or generic file in a modal overlay
    on the current screen. ESC and scrim-click both close.
 
@@ -10,9 +10,16 @@
    - application/pdf → <iframe> embed
    - anything else / unknown → filename + size + download button
 
+   `onDelete` is optional. When provided, a Delete button appears in the top
+   action bar; clicking it shows a confirmation modal, and on confirm the
+   lightbox calls `onDelete()` then closes. Callers should pass it only when
+   the current viewer is allowed to delete the file (agency-only across our
+   surfaces — brand users don't see Delete).
+
    Designed to share a single root-mounted instance; mount <LightboxProvider>
    once near the app root and everything below it gets `useLightbox()`. */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
 const LightboxContext = createContext({ open: () => {}, close: () => {} });
 
@@ -61,8 +68,30 @@ function classifyMime(mimeType, src) {
 }
 
 const MediaLightbox = ({ media, onClose }) => {
-  const { src, mimeType, name, alt, downloadUrl } = media;
+  const { src, mimeType, name, alt, downloadUrl, onDelete } = media;
   const kind = classifyMime(mimeType, src);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteClick = async () => {
+    if (deleting) return;
+    const ok = await confirmDialog({
+      title: name ? `Delete ${name}?` : 'Delete this file?',
+      body: 'This permanently removes the file. This action cannot be undone.',
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      danger: true,
+    });
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await onDelete();
+      onClose();
+    } catch (e) {
+      console.error('lightbox delete failed', e);
+      setDeleting(false);
+      alert(`Couldn't delete: ${e?.message || e}`);
+    }
+  };
 
   useEffect(() => {
     const h = (e) => { if (e.key === 'Escape') onClose(); };
@@ -114,6 +143,26 @@ const MediaLightbox = ({ media, onClose }) => {
                 border: '1px solid rgba(255,255,255,0.18)',
               }}
             >Download</button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              onClick={handleDeleteClick}
+              disabled={deleting}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '6px 12px', borderRadius: 6,
+                // Subtle red tint so the destructive action reads clearly
+                // even on the dark scrim, without going full bright-red
+                // and clashing with the rest of the bar.
+                background: deleting ? 'rgba(220, 80, 80, 0.20)' : 'rgba(220, 80, 80, 0.18)',
+                color: '#fff',
+                fontSize: 13,
+                cursor: deleting ? 'wait' : 'pointer',
+                border: '1px solid rgba(255, 120, 120, 0.42)',
+                opacity: deleting ? 0.7 : 1,
+              }}
+            >{deleting ? 'Deleting…' : 'Delete'}</button>
           )}
           <button
             onClick={onClose}

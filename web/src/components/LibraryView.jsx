@@ -5,7 +5,13 @@
    Deliverables for backward-compat). */
 import React, { useState, useEffect, useMemo } from 'react';
 import { Icon } from './Icon.jsx';
-import { loadLibraryAssets, loadLibraryPostPlanAttachments, assetSignedUrl } from '../lib/db.js';
+import {
+  loadLibraryAssets,
+  loadLibraryPostPlanAttachments,
+  assetSignedUrl,
+  deleteAsset,
+  deletePostPlanAttachment,
+} from '../lib/db.js';
 import { useLightbox } from './Lightbox.jsx';
 
 const LS_LIBRARY_KIND = 'lr_library_kind';
@@ -179,6 +185,22 @@ const LibraryView = ({ auth, accountId, setRoute }) => {
   }, [filtered]);
 
   const lightbox = useLightbox();
+  const isAgency = !!auth?.isAgency;
+
+  // Source-aware delete: post-plan attachments use the post_plan_attachments
+  // table + bucket; legacy task deliverables use the assets table + 'assets'
+  // bucket. Lightbox shows its own confirm before calling this — no need
+  // to re-prompt here. Refresh the matching local list on success.
+  const deleteFromLibrary = async (a) => {
+    if (a.source === 'post_plan') {
+      await deletePostPlanAttachment(a);
+    } else {
+      await deleteAsset(a);
+    }
+    setDeliverables((prev) => prev.filter((x) => !(x.source === a.source && x.id === a.id)));
+    setReferences((prev)   => prev.filter((x) => !(x.source === a.source && x.id === a.id)));
+  };
+
   const handleOpen = async (a) => {
     try {
       // Post-plan finals already have a public URL on the row; only task
@@ -192,6 +214,7 @@ const LibraryView = ({ auth, accountId, setRoute }) => {
         name: a.filename,
         alt: a.filename,
         downloadUrl: url,
+        onDelete: isAgency ? () => deleteFromLibrary(a) : undefined,
       });
     } catch (e) { alert(`Couldn't open: ${e.message || e}`); }
   };

@@ -609,19 +609,29 @@ async function exportBrandKit(kit) {
 // Generic visual library the brand uploads for the agency to draw from:
 // past creatives, mood images, packaging shots, etc. Stored in the public
 // 'brand-assets' bucket under the account UUID prefix.
-const ReferencesCard = ({ accountId }) => {
+const ReferencesCard = ({ accountId, isAgency = false }) => {
   const fileInputRef = useRef(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState('');
   const lightbox = useLightbox();
+
+  // Bare delete used by both the tile button (via handleDelete which
+  // confirms first) and the lightbox Delete button (which has its own
+  // confirm). Either path lands here.
+  const actuallyDelete = async (item) => {
+    await deleteBrandAsset(item.path);
+    setItems((prev) => prev.filter((x) => x.path !== item.path));
+  };
+
   const openItem = (item) => lightbox.open({
     src: item.url,
     mimeType: item.mimeType,
     name: item.name,
     alt: item.name,
     downloadUrl: item.url,
+    onDelete: isAgency ? () => actuallyDelete(item) : undefined,
   });
 
   useEffect(() => {
@@ -675,8 +685,7 @@ const ReferencesCard = ({ accountId }) => {
     });
     if (!ok) return;
     try {
-      await deleteBrandAsset(item.path);
-      setItems((prev) => prev.filter((x) => x.path !== item.path));
+      await actuallyDelete(item);
     } catch (ex) {
       alert(ex?.message || 'Delete failed.');
     }
@@ -2063,7 +2072,7 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
         </div>
       )}
 
-      <ReferencesCard accountId={accountId}/>
+      <ReferencesCard accountId={accountId} isAgency={!!auth.isAgency}/>
 
       {(inspiration.length > 0 || pastCreatives.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>

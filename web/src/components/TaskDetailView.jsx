@@ -286,6 +286,16 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
   };
 
   const lightbox = useLightbox();
+  const isAgency = mode === 'admin';
+
+  // Bare delete used by both the tile button (which prompts via
+  // confirmDialog first) and the lightbox Delete button (which prompts
+  // via its own internal confirm). Either path lands here.
+  const actuallyDeleteAsset = async (asset) => {
+    await deleteAsset(asset);
+    setAssets((prev) => prev.filter((a) => a.id !== asset.id));
+  };
+
   const handleOpenAsset = async (asset) => {
     try {
       const url = await assetSignedUrl(asset.storagePath);
@@ -295,6 +305,7 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
         name: asset.filename,
         alt: asset.filename,
         downloadUrl: url,
+        onDelete: isAgency ? () => actuallyDeleteAsset(asset) : undefined,
       });
     } catch (e) {
       alert(`Couldn't get file: ${e.message || e}`);
@@ -311,8 +322,7 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
     });
     if (!ok) return;
     try {
-      await deleteAsset(asset);
-      setAssets((prev) => prev.filter((a) => a.id !== asset.id));
+      await actuallyDeleteAsset(asset);
     } catch (e) {
       alert(`Delete failed: ${e.message || e}`);
     }
