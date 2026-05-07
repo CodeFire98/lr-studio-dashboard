@@ -303,28 +303,15 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
           const posts = postsByDate.get(c.iso) || [];
           const visible = posts.slice(0, maxChips);
           const overflow = posts.length - visible.length;
-          // Admins can click the empty area of a cell to drop a new plan
-          // onto that day. Brands can't create — clicking an empty cell is
-          // a no-op for them so they don't get a confusing dead button.
-          const cellClickable = isAdmin;
-          const handleCellClick = (e) => {
-            // Don't fire when the click came from a chip (chips stop
-            // propagation), but guard anyway in case bubbling slips through.
-            if (e.target !== e.currentTarget && e.target.tagName === 'BUTTON') return;
-            if (cellClickable) onOpenDay(c);
-          };
+          // Admins can plan a new post by clicking the small `+` button in
+          // the cell header. The whole-cell click target was removed
+          // (2026-05-07) because users were creating accidental post plans
+          // from stray clicks on empty space below the day number. Now
+          // only the explicit `+` button creates — matches week view.
+          const canCreate = isAdmin && c.inMonth;
           return (
             <div
               key={c.iso + '_' + i}
-              onClick={handleCellClick}
-              role={cellClickable ? 'button' : undefined}
-              tabIndex={cellClickable ? 0 : undefined}
-              onKeyDown={(e) => {
-                if (cellClickable && (e.key === 'Enter' || e.key === ' ')) {
-                  e.preventDefault();
-                  onOpenDay(c);
-                }
-              }}
               style={{
                 padding: 6,
                 borderRight: (i % 7 === 6) ? 'none' : '1px solid var(--line-2)',
@@ -336,7 +323,6 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                 display: 'flex',
                 flexDirection: 'column',
                 minWidth: 0,
-                cursor: cellClickable ? 'pointer' : 'default',
               }}
             >
               <div
@@ -354,13 +340,38 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                   {c.day}
                   {c.isToday && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500 }}>Today</span>}
                 </span>
-                {cellClickable && c.inMonth && (
-                  <span
-                    aria-hidden
-                    style={{ fontSize: 12, color: 'var(--ink-4)', opacity: 0.6 }}
+                {canCreate && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenDay(c);
+                    }}
+                    title="Plan a new post on this day"
+                    aria-label={`Plan a new post on ${c.iso}`}
+                    style={{
+                      border: 0,
+                      background: 'transparent',
+                      padding: '0 4px',
+                      fontSize: 14,
+                      lineHeight: 1,
+                      color: 'var(--ink-4)',
+                      cursor: 'pointer',
+                      borderRadius: 4,
+                      opacity: 0.6,
+                      transition: 'opacity 120ms, color 120ms',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.opacity = '1';
+                      e.currentTarget.style.color = 'var(--ink)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.opacity = '0.6';
+                      e.currentTarget.style.color = 'var(--ink-4)';
+                    }}
                   >
                     +
-                  </span>
+                  </button>
                 )}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -987,7 +998,7 @@ const CalendarView = ({
           <h1>Social Calendar</h1>
           <div className="sub">
             Plan and preview every Instagram, LinkedIn, and X post for your brand.
-            {isAdmin ? ' Click any day to plan a new post.' : ' Click a post to review and give feedback.'}
+            {isAdmin ? ' Click the + on any day to plan a new post.' : ' Click a post to review and give feedback.'}
           </div>
         </div>
         {isAdmin && (
