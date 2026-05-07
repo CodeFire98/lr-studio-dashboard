@@ -12,6 +12,7 @@ import { LoginModal } from './components/LoginModal.jsx';
 import { IdeateView } from './components/IdeateView.jsx';
 import { IdeateInboxView } from './components/IdeateInboxView.jsx';
 import { LibraryView } from './components/LibraryView.jsx';
+import { LivePostsView } from './components/LivePostsView.jsx';
 import { PerformanceView } from './components/PerformanceView.jsx';
 import { TeamView } from './components/TeamView.jsx';
 import { BrandKitView } from './components/BrandKitView.jsx';
@@ -71,7 +72,7 @@ import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 // per-brand variant when one is active.
 
 const SIMPLE_VIEWS = new Set([
-  'calendar', 'ideate', 'library', 'brand', 'team',
+  'calendar', 'ideate', 'library', 'posts', 'brand', 'team',
   'performance', 'profile', 'settings', 'clients', 'members', 'trends',
 ]);
 
@@ -93,6 +94,7 @@ function parsePathToRoute(pathname) {
   if (path === '/' || path === '/calendar') return { view: 'calendar' };
   if (path === '/ideate') return { view: 'ideate' };
   if (path === '/library') return { view: 'library' };
+  if (path === '/posts') return { view: 'posts' };
   if (path === '/brand') return { view: 'brand' };
   if (path === '/team') return { view: 'team' };
   if (path === '/performance') return { view: 'performance' };
@@ -130,7 +132,7 @@ function findFullId(prefix, items) {
 // Views that live under /c/:brandSlug/ — everything that's brand-scoped.
 // Views NOT in this set (profile, clients, members) stay at the root.
 const BRAND_SCOPED_VIEWS = new Set([
-  'calendar', 'plan', 'ideate', 'library', 'brand',
+  'calendar', 'plan', 'ideate', 'library', 'posts', 'brand',
   'team', 'performance', 'settings', 'trends',
 ]);
 
@@ -925,6 +927,7 @@ const App = () => {
       return <IdeateView auth={auth} accountId={calendarAccountId}/>;
     }
     if (route.view === "library") return <LibraryView auth={auth} accountId={calendarAccountId} setRoute={setRoute}/>;
+    if (route.view === "posts") return <LivePostsView accountId={calendarAccountId} accountName={calendarAccountName} setRoute={setRoute}/>;
     if (route.view === "performance") return <PerformanceView accountId={calendarAccountId}/>;
     if (route.view === "team") return <TeamView overrideAccountId={auth?.isAgency ? calendarAccountId : null} />;
     if (route.view === "brand") return <BrandKitView accountId={calendarAccountId}/>;

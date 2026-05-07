@@ -32,6 +32,7 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
       : { key: "ideate", label: "Got ideas?", icon: "send" },
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
+    { key: "posts", label: "Live posts", icon: "link" },
   ];
   if (isAgency) {
     // Trends Radar is agency-only and sits below Library — same as before.
