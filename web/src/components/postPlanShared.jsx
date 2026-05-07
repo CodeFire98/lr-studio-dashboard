@@ -42,15 +42,27 @@ export const PLATFORM_BY_KEY = Object.fromEntries(PLATFORMS.map((p) => [p.key, p
 // row-remap from the legacy 8-value enum. Comments are how the brand
 // signals "needs changes" — there's no separate revision status.
 //
+// `posted` is NOT a real status enum value (migration 0035 removed it).
+// It's a derived display state — see `getDisplayStatus` below — that
+// fires when a plan is approved AND has at least one publications row.
+// We keep its STATUS_CONFIG entry so the same <StatusPill> machinery
+// can render it without a special case.
+//
 // Legacy keys (`not_started`, `wip`, `needs_brand_feedback`, etc.) are
 // kept here as fallback aliases so any cached client / server cron that
 // fires a row through realtime with an old value still renders with a
 // sane label and colour. Once we're confident no surface still emits
 // the old values we can prune the aliases.
+//
+// Posted colour: a violet that reads as "shipped, complete" — distinct
+// from approved-green so a calendar full of approved-but-not-yet-posted
+// plans visually separates from the actually-live ones.
+const POSTED_TINT = '#7C5CFF';
 export const STATUS_CONFIG = {
   drafting:     { label: 'Drafting',     color: 'var(--ink-4)',         background: 'var(--surface-2)' },
   needs_review: { label: 'Needs review', color: 'var(--status-review)', background: 'color-mix(in oklab, var(--status-review) 14%, var(--surface))' },
   approved:     { label: 'Approved',     color: 'var(--good)',          background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
+  posted:       { label: 'Posted',       color: POSTED_TINT,            background: `color-mix(in oklab, ${POSTED_TINT} 16%, var(--surface))` },
 
   // Legacy aliases — render any cached row that slips through with a
   // sensible bucket equivalent rather than the unknown-status fallback.
@@ -60,8 +72,22 @@ export const STATUS_CONFIG = {
   needs_brand_feedback: { label: 'Needs review', color: 'var(--status-review)', background: 'color-mix(in oklab, var(--status-review) 14%, var(--surface))' },
   needs_admin_revision: { label: 'Needs review', color: 'var(--status-review)', background: 'color-mix(in oklab, var(--status-review) 14%, var(--surface))' },
   scheduled:            { label: 'Approved',     color: 'var(--good)',          background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
-  posted:               { label: 'Approved',     color: 'var(--good)',          background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
 };
+
+// Derive the display status for a plan, given any publications it has.
+// "Posted" is a derived terminal state, not a stored enum value —
+// approved + has ≥1 publication row = display as Posted. Every surface
+// rendering a status pill should call this instead of reading
+// `plan.status` directly so the calendar / detail view / repo all agree.
+export function getDisplayStatus(plan, publications) {
+  if (!plan) return 'drafting';
+  const isApproved = plan.status === 'approved'
+    || plan.status === 'scheduled'   // legacy
+    || plan.status === 'posted';     // legacy
+  const hasPub = Array.isArray(publications) && publications.length > 0;
+  if (isApproved && hasPub) return 'posted';
+  return plan.status || 'drafting';
+}
 
 // =====================================================================
 // Display chips
