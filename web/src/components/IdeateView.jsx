@@ -199,7 +199,7 @@ const IdeateView = ({ auth, accountId }) => {
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <h1>Got ideas?</h1>
+          <h1>Idea dump</h1>
           <div className="sub">Drop an idea for the team — title, details, when you'd like it posted, and where. We'll turn it into a post plan.</div>
         </div>
       </div>

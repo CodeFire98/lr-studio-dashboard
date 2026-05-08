@@ -29,7 +29,7 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
     { key: "calendar", label: "Social Calendar", icon: "calendar", badge: calendarUnreadCount || undefined },
     isAgency
       ? { key: "ideate", label: "Inbox", icon: "home", badge: ideaQueueCount || undefined }
-      : { key: "ideate", label: "Got ideas?", icon: "send" },
+      : { key: "ideate", label: "Idea dump", icon: "send" },
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
     { key: "posts", label: "Live posts", icon: "link" },
@@ -40,7 +40,7 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
   }
   const secondary = [
     { key: "performance", label: "Performance", icon: "chart" },
-    { key: "team", label: "Brand team", icon: "team" },
+    { key: "team", label: isAgency ? "Brand team" : "Team", icon: "team" },
   ];
   if (isAgency) {
     secondary.push({ key: "members", label: "L+R Team", icon: "team" });

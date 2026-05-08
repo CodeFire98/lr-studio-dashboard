@@ -31,9 +31,10 @@ import { BrandOnboardingModal } from './components/BrandOnboardingModal.jsx';
 import { ConfirmHost } from './components/ConfirmDialog.jsx';
 import { CreateBrandHost } from './components/CreateBrandModal.jsx';
 import MOCK from './lib/mockData.js';
-import { readAuth, writeAuth, setActiveBrand } from './lib/auth.js';
+import { readAuth, writeAuth, setActiveBrand, signOut } from './lib/auth.js';
 import {
   acceptInvitation,
+  previewInvitation,
   loadBrandOnboardingStatus,
   completeBrandOnboarding,
   skipBrandOnboarding,
@@ -58,7 +59,7 @@ import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 //   /                              → calendar (universal landing; redirects to /c/:slug/calendar when brand known)
 //   /c/:brandSlug/calendar         → calendar scoped to brand
 //   /c/:brandSlug/calendar/:id     → post plan detail (lives under calendar — its parent surface)
-//   /c/:brandSlug/ideate           → brand "Got ideas?" composer / agency "Inbox"
+//   /c/:brandSlug/ideate           → brand "Idea dump" composer / agency "Inbox"
 //   /c/:brandSlug/library          → library
 //   /c/:brandSlug/brand            → brand intelligence
 //   /c/:brandSlug/team             → brand team
@@ -388,6 +389,36 @@ const App = () => {
     const token = localStorage.getItem('lr_pending_invite');
     if (!token) return;
     (async () => {
+      // Pre-flight: peek at the invite to make sure the right user is signed
+      // in. If they're not, accept_invitation throws an email-mismatch error
+      // — and historically the catch handler below nuked the token, leaving
+      // the invitee with no recovery path. Now we surface a clear "wrong
+      // account" banner with a one-click sign-out, and only call
+      // accept_invitation when the session matches the invite.
+      let preview = null;
+      try { preview = await previewInvitation(token); } catch { /* fall through to acceptInvitation, which will surface the real error */ }
+
+      const inviteEmail = preview?.email?.trim().toLowerCase() || null;
+      const sessionEmail = auth.email?.trim().toLowerCase() || null;
+      if (inviteEmail && sessionEmail && inviteEmail !== sessionEmail) {
+        setInviteBanner({
+          status: 'error',
+          text: `This invite is for ${preview.email}. You're signed in as ${auth.email}. Sign out and back in with ${preview.email} to accept.`,
+          action: {
+            label: 'Sign out & switch account',
+            onClick: async () => {
+              // Token stays in localStorage — Effect re-fires after the
+              // user signs back in with the right email, and redemption
+              // proceeds.
+              await signOut();
+              setLoginReason(`Sign in with ${preview.email} to accept your invite.`);
+              setLoginOpen(true);
+            },
+          },
+        });
+        return;
+      }
+
       try {
         const newAccountId = await acceptInvitation(token);
         localStorage.removeItem('lr_pending_invite');
@@ -403,8 +434,15 @@ const App = () => {
         }
         setTimeout(() => setInviteBanner(null), 3500);
       } catch (e) {
-        localStorage.removeItem('lr_pending_invite');
-        setInviteBanner({ status: 'error', text: `Couldn't accept invite: ${e.message || e}` });
+        const msg = e?.message || String(e);
+        // Truly-dead invites (expired, wrong token, already redeemed by
+        // another account) get cleared so we don't keep retrying. Anything
+        // else (transient network, an email-mismatch we somehow missed in
+        // pre-flight) leaves the token alive so a reload or re-sign-in can
+        // recover.
+        const isDeadInvite = /invalid or expired/i.test(msg);
+        if (isDeadInvite) localStorage.removeItem('lr_pending_invite');
+        setInviteBanner({ status: 'error', text: `Couldn't accept invite: ${msg}` });
       }
     })();
   }, [auth?.id]);
@@ -786,7 +824,7 @@ const App = () => {
       return <><a onClick={() => setRoute({view: "calendar"})} style={{cursor: "pointer"}}>Social Calendar</a><span className="crumb-sep">/</span><strong>{p?.concept || "Post plan"}</strong></>;
     }
     if (route.view === "ideate") {
-      return <><strong>{auth?.isAgency ? "Inbox" : "Got ideas?"}</strong></>;
+      return <><strong>{auth?.isAgency ? "Inbox" : "Idea dump"}</strong></>;
     }
     if (route.view === "library") return <><strong>Library</strong></>;
     if (route.view === "clients") return <><strong>Clients</strong></>;
@@ -1009,7 +1047,18 @@ const App = () => {
               color: inviteBanner.status === 'error' ? 'var(--accent-ink)' : 'var(--good)',
             }}
           >
-            <span className="dot"/>{inviteBanner.text}
+            <span className="dot"/>
+            <span style={{ flex: 1 }}>{inviteBanner.text}</span>
+            {inviteBanner.action && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ marginLeft: 12 }}
+                onClick={inviteBanner.action.onClick}
+              >
+                {inviteBanner.action.label}
+              </button>
+            )}
           </div>
         )}
         {agencyBanner && (
