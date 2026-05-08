@@ -7,7 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { Modal } from './primitives.jsx';
-import { updateAccountName } from '../lib/db.js';
+import { updateAccountName, loadDailyReminderEnabled, updateDailyReminderEnabled } from '../lib/db.js';
 import { supabase } from '../lib/supabase';
 import { signOut } from '../lib/auth.js';
 
@@ -26,7 +26,41 @@ const SettingsView = ({ auth, mode }) => {
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState('');
 
+  // Daily-digest reminder toggle (brand-only — agency workspace doesn't
+  // get the email; the cron route filters to type='brand' anyway).
+  const [reminderEnabled, setReminderEnabled] = useState(true);
+  const [reminderSaving, setReminderSaving] = useState(false);
+  const [reminderErr, setReminderErr] = useState('');
+
   useEffect(() => { setName(account?.name || ''); }, [account?.name]);
+
+  // Hydrate the reminder toggle from the brand row on mount + when the
+  // active brand changes. Default to ON if the row hasn't been migrated
+  // yet (matches the column's default — migration 0037).
+  useEffect(() => {
+    if (!account?.id || isAdminWorkspace) return;
+    let cancelled = false;
+    loadDailyReminderEnabled(account.id)
+      .then((v) => { if (!cancelled) setReminderEnabled(v); })
+      .catch((e) => { if (!cancelled) setReminderErr(e?.message || 'Could not load preference'); });
+    return () => { cancelled = true; };
+  }, [account?.id, isAdminWorkspace]);
+
+  const toggleReminder = async (next) => {
+    if (!account?.id) return;
+    // Optimistic — flip the UI immediately, revert on failure.
+    setReminderEnabled(next);
+    setReminderSaving(true);
+    setReminderErr('');
+    try {
+      await updateDailyReminderEnabled(account.id, next);
+    } catch (e) {
+      setReminderEnabled(!next);
+      setReminderErr(e?.message || 'Save failed');
+    } finally {
+      setReminderSaving(false);
+    }
+  };
 
   const dirty = (name || '').trim() !== (account?.name || '').trim() && !!name.trim();
 
@@ -128,6 +162,73 @@ const SettingsView = ({ auth, mode }) => {
           )}
         </div>
       </section>
+
+      {/* Notifications — brand-only. Agency users don't get the daily
+          digest in v1; a separate agency-side notification flow is on the
+          roadmap (REFERENCE.md §14). */}
+      {!isAdminWorkspace && (
+        <section className="card" style={{ marginBottom: 16 }}>
+          <div className="card-head">
+            <div>
+              <div className="card-title">Notifications</div>
+              <div className="card-sub">
+                Email everyone in this brand the night before about tomorrow's scheduled posts.
+              </div>
+            </div>
+          </div>
+          <div className="pf-list">
+            <div className="pf-row pf-toggle-row">
+              <div>
+                <div className="pf-row-t">Daily 6pm IST reminder</div>
+                <div className="pf-row-s">
+                  When ON, we email every member of this brand at 6pm IST with tomorrow's posts —
+                  what still needs your approval and what's ready to ship. We skip days with nothing scheduled.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={reminderEnabled}
+                onClick={() => toggleReminder(!reminderEnabled)}
+                disabled={reminderSaving}
+                title={reminderEnabled ? 'Turn off daily reminder' : 'Turn on daily reminder'}
+                style={{
+                  position: 'relative',
+                  width: 44,
+                  height: 24,
+                  borderRadius: 99,
+                  border: 0,
+                  background: reminderEnabled ? 'var(--good)' : 'var(--ink-5)',
+                  cursor: reminderSaving ? 'wait' : 'pointer',
+                  transition: 'background 150ms',
+                  flexShrink: 0,
+                  padding: 0,
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    position: 'absolute',
+                    top: 2,
+                    left: reminderEnabled ? 22 : 2,
+                    width: 20,
+                    height: 20,
+                    borderRadius: 99,
+                    background: '#fff',
+                    transition: 'left 150ms',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </div>
+          </div>
+          {reminderErr && (
+            <div style={{ padding: '0 16px 12px', fontSize: 12.5, color: 'var(--accent-ink)' }}>
+              {reminderErr}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Danger zone — brand-only */}
       {!isAdminWorkspace && (

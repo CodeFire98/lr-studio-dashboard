@@ -9,6 +9,12 @@
       "maxDuration": 300
     }
   },
+  "crons": [
+    {
+      "path": "/api/daily-digest",
+      "schedule": "30 12 * * *"
+    }
+  ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ],
