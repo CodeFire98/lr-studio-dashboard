@@ -122,6 +122,7 @@ type BrandResult = {
   needsReview: number;
   approved: number;
   skipReason: string | null;
+  skipDetails?: string | null;
 };
 
 // =====================================================================
@@ -134,6 +135,7 @@ async function digestForBrand(
   windowStartUtc: string,
   windowEndUtc: string,
   istDateLabel: string,
+  emailByUserId: Map<string, string>,
 ): Promise<BrandResult> {
   // 1. Plans scheduled in tomorrow's window (IST), status filter
   const { data: plans, error: plansErr } = await client
@@ -189,18 +191,29 @@ async function digestForBrand(
     if (pub?.publicUrl) thumbByPlan.set(f.post_plan_id, pub.publicUrl);
   }
 
-  // 4. Recipients via the existing account_members_with_email RPC.
-  const { data: members, error: memErr } = await client.rpc(
-    "account_members_with_email",
-    { p_account_id: brand.id },
-  );
+  // 4. Recipients — direct query rather than the
+  // `account_members_with_email` RPC. The RPC has an `auth.uid() is null →
+  // raise` guard at the top, designed for user-scoped UI calls; the cron
+  // runs with service-role + no user JWT, so the RPC would always bail
+  // with "must be signed in".
+  //
+  // PostgREST doesn't expose `auth` schema by default, so we can't
+  // cross-schema join from `public.account_members` straight to
+  // `auth.users.email`. Instead: pull user_ids from the membership table
+  // (RLS-bypassed by service-role), then look up emails from the
+  // pre-loaded user-id → email map (built once per cron run via
+  // `auth.admin.listUsers()`, see top-level handler).
+  const { data: members, error: memErr } = await client
+    .from("account_members")
+    .select("user_id")
+    .eq("account_id", brand.id);
   if (memErr) {
     return mkSkip(brand, "query_failed", `recipients: ${memErr.message}`);
   }
   const recipients: string[] = Array.from(
     new Set(
-      ((members as Array<{ email: string | null }> | null) ?? [])
-        .map((m) => (m.email ?? "").trim().toLowerCase())
+      ((members as Array<{ user_id: string }> | null) ?? [])
+        .map((m) => (emailByUserId.get(m.user_id) ?? "").trim().toLowerCase())
         .filter((e) => e.length > 0 && e.includes("@")),
     ),
   );
@@ -268,7 +281,7 @@ async function digestForBrand(
   };
 }
 
-function mkSkip(brand: { id: string; name: string }, reason: string, _details: string | null): BrandResult {
+function mkSkip(brand: { id: string; name: string }, reason: string, details: string | null): BrandResult {
   return {
     accountId: brand.id,
     brandName: brand.name,
@@ -278,6 +291,10 @@ function mkSkip(brand: { id: string; name: string }, reason: string, _details: s
     needsReview: 0,
     approved: 0,
     skipReason: reason,
+    // Surface the underlying error so the cron response is debuggable
+    // without digging through Vercel runtime logs. Trimmed to keep the
+    // JSON tidy but long enough to include the Postgres error message.
+    skipDetails: details ? details.slice(0, 240) : null,
   };
 }
 
@@ -327,10 +344,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
   const brandList = (brands ?? []) as Array<{ id: string; name: string; slug: string | null; type: string }>;
 
+  // Build a Map<user_id, email> once for this run by paginating through
+  // auth.admin.listUsers(). PostgREST doesn't expose the `auth` schema,
+  // so we can't cross-schema-join from `account_members` → `auth.users`;
+  // the admin API is the supported alternative. At our scale (~tens of
+  // users) one or two pages cover the entire universe; we cap at 10
+  // pages defensively.
+  const emailByUserId = new Map<string, string>();
+  try {
+    const PER_PAGE = 200;
+    for (let page = 1; page <= 10; page++) {
+      const { data, error } = await client.auth.admin.listUsers({ page, perPage: PER_PAGE });
+      if (error) {
+        console.warn("[daily-digest] auth.admin.listUsers failed", error.message);
+        break;
+      }
+      const users = data?.users ?? [];
+      for (const u of users) {
+        if (u.id && u.email) emailByUserId.set(u.id, u.email);
+      }
+      if (users.length < PER_PAGE) break;
+    }
+  } catch (e) {
+    console.warn("[daily-digest] failed to load auth users", (e as Error)?.message ?? e);
+  }
+
   const results: BrandResult[] = [];
   for (const brand of brandList) {
     try {
-      const r = await digestForBrand(client, brand, startUtc, endUtc, istDateLabel);
+      const r = await digestForBrand(client, brand, startUtc, endUtc, istDateLabel, emailByUserId);
       results.push(r);
     } catch (e) {
       // Don't let one brand's failure abort the rest. Log + continue.
