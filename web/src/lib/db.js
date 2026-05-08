@@ -1464,6 +1464,29 @@ export async function updateAccountName(accountId, name) {
   if (error) throw error;
 }
 
+// Per-brand toggle for the 6pm-IST daily-digest email. Defaults to true
+// at the DB level (migration 0037). Settings page flips it via this helper;
+// the Vercel cron route at /api/daily-digest reads it on every run.
+export async function loadDailyReminderEnabled(accountId) {
+  if (!accountId) return true; // Sensible default — same as the column default.
+  const { data, error } = await supabase
+    .from('accounts')
+    .select('daily_reminder_enabled')
+    .eq('id', accountId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.daily_reminder_enabled !== false;
+}
+
+export async function updateDailyReminderEnabled(accountId, enabled) {
+  if (!accountId) throw new Error('updateDailyReminderEnabled: accountId is required');
+  const { error } = await supabase
+    .from('accounts')
+    .update({ daily_reminder_enabled: !!enabled })
+    .eq('id', accountId);
+  if (error) throw error;
+}
+
 export function subscribeToTasks(onChange) {
   const channel = supabase
     .channel('lr_tasks_stream')

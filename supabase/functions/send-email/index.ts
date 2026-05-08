@@ -12,12 +12,21 @@
 //   updates" kind of messages so the agency can avoid spamming brands
 //   with one email per change.
 //
+//   daily-digest — automated 6pm-IST email to brand members listing
+//   tomorrow's scheduled posts split into "needs your approval" and
+//   "ready to ship" buckets. Triggered by the Vercel Cron route at
+//   /api/daily-digest, which prepares the payload (queries, joins,
+//   thumbnails) and calls this function with a service-role token —
+//   so the user-JWT auth path is bypassed for this template only.
+//
 // Auth model:
 //   - Caller's JWT is verified by the platform (verify_jwt = true).
 //   - We use a JWT-scoped client to read protected data through RLS so
 //     the caller can only trigger emails for things they have access to.
 //   - team-invite: caller must be a member of the inviting account.
 //   - agency-update: caller must be agency staff (is_agency_user()).
+//   - daily-digest: caller must present the service-role bearer token.
+//     (The cron route, running on Vercel, holds it. No user JWT.)
 //   - The Resend API call itself happens server-side only.
 //
 // Env vars (set with `supabase secrets set ...`):
@@ -54,7 +63,32 @@ type AgencyUpdateRequest = {
   subject?: string;
 };
 
-type SendEmailRequest = TeamInviteRequest | AgencyUpdateRequest;
+// Daily-digest payload: every field is pre-prepared by the cron route.
+// The edge function does NO database lookups for this template — it just
+// renders + sends. This keeps the function single-purpose and testable
+// (the cron route can be exercised end-to-end with a dry_run flag, the
+// renderer can be unit-tested with a static payload).
+type DailyDigestPlan = {
+  id: string;
+  shortId: string;        // first-8 hex chars of the UUID for short URL
+  concept: string;
+  scheduledAtIst: string; // pre-formatted "9:00 AM" / "6:30 PM" string
+  platforms: string[];    // ['instagram', 'linkedin', 'x']
+  thumbnailUrl: string | null; // public URL of the first final asset, or null
+};
+
+type DailyDigestRequest = {
+  template: "daily-digest";
+  accountId: string;
+  brandName: string;
+  brandSlug: string;
+  tomorrowDateLabel: string;  // "Saturday, May 9" formatted in IST
+  recipients: string[];        // already deduped + lowercased + email-validated
+  needsReview: DailyDigestPlan[];
+  approved: DailyDigestPlan[];
+};
+
+type SendEmailRequest = TeamInviteRequest | AgencyUpdateRequest | DailyDigestRequest;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -425,6 +459,300 @@ async function handleAgencyUpdate(
   });
 }
 
+// =====================================================================
+// daily-digest template
+// =====================================================================
+//
+// Visual approach:
+//   - Two stacked sections — "Needs your approval" (mustard yellow accent
+//     to match the dashboard's needs_review pill) and "Ready to ship"
+//     (green accent for approved). The sections render in that order
+//     because action-required goes first.
+//   - Each row: 80×80 thumbnail on the left (final asset if uploaded;
+//     gradient fallback otherwise), concept + time + platform chips on
+//     the right. The whole row is a clickable card linking to the plan
+//     detail at /c/<slug>/calendar/<shortId>.
+//   - Status pill colours hardcoded to match postPlanShared.jsx
+//     (needs_review: #A16207 mustard, approved: --good ~= #16a34a). We
+//     don't import them; the email is a separate render path.
+//   - Mobile-responsive via max-width:600px + table-based layout. Email
+//     clients hate flexbox; tables it is.
+
+const STATUS_COLOURS = {
+  needs_review: { tint: "#A16207", bg: "#FEF3C7", label: "Needs review" },
+  approved:     { tint: "#15803D", bg: "#DCFCE7", label: "Approved" },
+} as const;
+
+const PLATFORM_COLOURS: Record<string, { bg: string; label: string }> = {
+  instagram: { bg: "linear-gradient(135deg,#F58529,#DD2A7B,#515BD4)", label: "IG" },
+  linkedin:  { bg: "#0A66C2", label: "in" },
+  x:         { bg: "#000000", label: "X" },
+};
+
+function platformChipsHtml(platforms: string[]): string {
+  return platforms
+    .map((p) => {
+      const cfg = PLATFORM_COLOURS[p];
+      if (!cfg) return "";
+      // Inline-block 16x16 chip — gradients work in most modern email
+      // clients including Gmail web, Apple Mail, iOS Mail. Outlook desktop
+      // falls back to the first colour in the gradient (acceptable).
+      return `<span style="display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;border-radius:4px;background:${cfg.bg};color:#ffffff;font-size:9px;font-weight:700;letter-spacing:-0.01em;vertical-align:middle;margin-right:4px">${cfg.label}</span>`;
+    })
+    .join("");
+}
+
+function statusPillHtml(kind: "needs_review" | "approved"): string {
+  const c = STATUS_COLOURS[kind];
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:99px;background:${c.bg};color:${c.tint};font-size:11px;font-weight:500;line-height:1.4">${c.label}</span>`;
+}
+
+// Fallback thumbnail composition when a plan has no final asset.
+// Renders a small platform-icon stack on a neutral background — readable
+// at 80×80 and works without external image hosting.
+function fallbackThumbHtml(platforms: string[]): string {
+  // Keep the first platform's brand colour as the bg; if multiple, we'll
+  // just stack the chips in the centre. Gmail's CSS sandbox is tight, so
+  // we lean on inline styles + table layout rather than positioning.
+  const primary = PLATFORM_COLOURS[platforms[0] || "instagram"];
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="80" height="80" style="width:80px;height:80px;background:#f5efe8;border-radius:8px">
+      <tr>
+        <td align="center" valign="middle" style="vertical-align:middle">
+          <span style="display:inline-block;padding:8px 12px;border-radius:6px;background:${primary?.bg ?? "#f5efe8"};color:#ffffff;font-size:14px;font-weight:700;letter-spacing:-0.01em">${primary?.label ?? "·"}</span>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+function thumbnailHtml(plan: DailyDigestPlan): string {
+  if (plan.thumbnailUrl) {
+    // 80×80 cropped thumbnail. `object-fit:cover` is well-supported in
+    // modern email clients; the wrapping table ensures Outlook (which
+    // ignores object-fit) at least centres + clips the image cleanly.
+    const safeUrl = escapeHtml(plan.thumbnailUrl);
+    return `<img src="${safeUrl}" alt="" width="80" height="80" style="display:block;width:80px;height:80px;object-fit:cover;border-radius:8px;border:0;outline:none;text-decoration:none" />`;
+  }
+  return fallbackThumbHtml(plan.platforms);
+}
+
+function planRowHtml(plan: DailyDigestPlan, planUrl: string, kind: "needs_review" | "approved"): string {
+  const safeConcept = escapeHtml(plan.concept || "Untitled post");
+  const safeTime = escapeHtml(plan.scheduledAtIst);
+  const safeUrl = escapeHtml(planUrl);
+  const chips = platformChipsHtml(plan.platforms);
+  const pill = statusPillHtml(kind);
+  const thumb = thumbnailHtml(plan);
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 12px;border:1px solid #ece8e4;border-radius:10px;background:#ffffff">
+      <tr>
+        <td style="padding:12px">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <td valign="top" width="80" style="width:80px;padding-right:14px">
+                <a href="${safeUrl}" style="text-decoration:none;display:block">${thumb}</a>
+              </td>
+              <td valign="top">
+                <a href="${safeUrl}" style="text-decoration:none;color:#1a1a1a">
+                  <div style="font-size:15px;font-weight:600;line-height:1.35;color:#1a1a1a;margin-bottom:6px">${safeConcept}</div>
+                </a>
+                <div style="font-size:12px;color:#7a7370;margin-bottom:8px;line-height:1.5">
+                  <span style="font-weight:500;color:#454040">${safeTime} IST</span>
+                  ${plan.platforms.length ? `<span style="margin:0 6px;color:#cfc8c2">·</span>${chips}` : ""}
+                </div>
+                ${pill}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+function renderDailyDigest(args: {
+  brandName: string;
+  brandSlug: string;
+  tomorrowDateLabel: string;
+  needsReview: DailyDigestPlan[];
+  approved: DailyDigestPlan[];
+  appUrl: string;
+}): { subject: string; html: string; text: string } {
+  const { brandName, brandSlug, tomorrowDateLabel, needsReview, approved, appUrl } = args;
+  const totalPlans = needsReview.length + approved.length;
+  const reviewCount = needsReview.length;
+
+  // Subject-line variants per the spec.
+  const subject = (() => {
+    if (totalPlans === 1 && reviewCount === 1) {
+      return "Tomorrow's post needs your approval";
+    }
+    if (totalPlans === 1 && approved.length === 1) {
+      const plat = approved[0].platforms[0];
+      const platLabel = plat === "instagram" ? "Instagram" : plat === "linkedin" ? "LinkedIn" : plat === "x" ? "X" : "social";
+      return `Tomorrow you're posting on ${platLabel}`;
+    }
+    if (reviewCount > 0) {
+      return `Tomorrow's posts · ${reviewCount} need${reviewCount === 1 ? "s" : ""} your approval`;
+    }
+    return `Tomorrow's ${totalPlans} posts · all approved`;
+  })();
+
+  const calendarUrl = `${appUrl.replace(/\/+$/, "")}/c/${brandSlug}/calendar`;
+  const settingsUrl = `${appUrl.replace(/\/+$/, "")}/c/${brandSlug}/settings`;
+  const planUrl = (p: DailyDigestPlan) =>
+    `${appUrl.replace(/\/+$/, "")}/c/${brandSlug}/calendar/${p.shortId}`;
+
+  // Plain-text fallback — every email client has one as a fallback for
+  // image-blocking and accessibility. Keep it scannable.
+  const textLines: string[] = [];
+  textLines.push(`Tomorrow's posts for ${brandName} · ${tomorrowDateLabel}`);
+  textLines.push("");
+  if (reviewCount > 0) {
+    textLines.push(`NEEDS YOUR APPROVAL (${reviewCount}):`);
+    for (const p of needsReview) {
+      textLines.push(`  • ${p.concept || "Untitled post"} — ${p.scheduledAtIst} IST · ${p.platforms.join(", ")}`);
+      textLines.push(`    ${planUrl(p)}`);
+    }
+    textLines.push("");
+  }
+  if (approved.length > 0) {
+    textLines.push(`READY TO SHIP (${approved.length}):`);
+    for (const p of approved) {
+      textLines.push(`  • ${p.concept || "Untitled post"} — ${p.scheduledAtIst} IST · ${p.platforms.join(", ")}`);
+      textLines.push(`    ${planUrl(p)}`);
+    }
+    textLines.push("");
+  }
+  textLines.push(`View full calendar: ${calendarUrl}`);
+  textLines.push(`Manage email preferences: ${settingsUrl}`);
+  const text = textLines.join("\n");
+
+  const safeBrand = escapeHtml(brandName);
+  const safeDate = escapeHtml(tomorrowDateLabel);
+  const safeCalendarUrl = escapeHtml(calendarUrl);
+  const safeSettingsUrl = escapeHtml(settingsUrl);
+
+  // Section blocks — only render the section if it has rows.
+  const reviewSection = reviewCount > 0
+    ? `
+      <h2 style="margin:0 0 12px;font-size:13px;font-weight:600;color:${STATUS_COLOURS.needs_review.tint};text-transform:uppercase;letter-spacing:0.06em">
+        Needs your approval · ${reviewCount}
+      </h2>
+      <p style="margin:0 0 16px;font-size:13px;line-height:1.55;color:#7a7370">
+        Open each plan to read the copy and click Approve when you're happy with it.
+      </p>
+      ${needsReview.map((p) => planRowHtml(p, planUrl(p), "needs_review")).join("")}
+    `
+    : "";
+
+  const approvedSection = approved.length > 0
+    ? `
+      <h2 style="margin:${reviewCount > 0 ? "32px" : "0"} 0 12px;font-size:13px;font-weight:600;color:${STATUS_COLOURS.approved.tint};text-transform:uppercase;letter-spacing:0.06em">
+        Ready to ship · ${approved.length}
+      </h2>
+      <p style="margin:0 0 16px;font-size:13px;line-height:1.55;color:#7a7370">
+        These are good to go — sharing the heads-up so you know what's hitting your feed.
+      </p>
+      ${approved.map((p) => planRowHtml(p, planUrl(p), "approved")).join("")}
+    `
+    : "";
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f7f5f2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1a1a">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f7f5f2;padding:32px 16px">
+      <tr>
+        <td align="center">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;background:#f7f5f2">
+            <tr>
+              <td>
+                <p style="margin:0 0 12px;font-size:13px;letter-spacing:0.10em;text-transform:uppercase;color:#7a7370">
+                  L+R Agency · ${safeBrand}
+                </p>
+                <h1 style="margin:0 0 6px;font-size:26px;line-height:1.25;font-weight:600;color:#1a1a1a">
+                  Tomorrow's posts
+                </h1>
+                <p style="margin:0 0 28px;font-size:15px;line-height:1.55;color:#454040">
+                  ${safeDate} · ${totalPlans} post${totalPlans === 1 ? "" : "s"} going live${reviewCount > 0 ? `, <strong>${reviewCount}</strong> still need${reviewCount === 1 ? "s" : ""} your approval` : ""}.
+                </p>
+
+                ${reviewSection}
+                ${approvedSection}
+
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:24px 0 0">
+                  <tr>
+                    <td>
+                      <a href="${safeCalendarUrl}" style="display:inline-block;background:#1a1a1a;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:500">View full calendar</a>
+                    </td>
+                  </tr>
+                </table>
+
+                <hr style="border:none;border-top:1px solid #ece8e4;margin:32px 0 16px">
+                <p style="margin:0;font-size:12px;line-height:1.55;color:#9a9290">
+                  You're getting this because you're a member of ${safeBrand} on L+R Agency. We send a quick rundown each evening at 6pm IST when posts are scheduled for the next day.
+                  <a href="${safeSettingsUrl}" style="color:#7a7370;text-decoration:underline">Manage email preferences</a>.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  return { subject, html, text };
+}
+
+async function handleDailyDigest(body: DailyDigestRequest): Promise<Response> {
+  if (!body.accountId)   return jsonResponse({ error: "accountId is required" }, 400);
+  if (!body.brandName)   return jsonResponse({ error: "brandName is required" }, 400);
+  if (!body.brandSlug)   return jsonResponse({ error: "brandSlug is required" }, 400);
+  if (!Array.isArray(body.recipients) || body.recipients.length === 0) {
+    return jsonResponse({ error: "recipients[] required" }, 400);
+  }
+  const totalPlans =
+    (Array.isArray(body.needsReview) ? body.needsReview.length : 0) +
+    (Array.isArray(body.approved) ? body.approved.length : 0);
+  if (totalPlans === 0) {
+    // The cron route should already gate this, but second line of defence:
+    // never send an empty digest. The promise to the user is "you'll only
+    // get this if there's something to know about tomorrow".
+    return jsonResponse({ error: "No plans to digest — refusing to send an empty email" }, 400);
+  }
+
+  const rendered = renderDailyDigest({
+    brandName: body.brandName,
+    brandSlug: body.brandSlug,
+    tomorrowDateLabel: body.tomorrowDateLabel,
+    needsReview: body.needsReview ?? [],
+    approved: body.approved ?? [],
+    appUrl: APP_URL,
+  });
+
+  const { ids, failures } = await callResendBatch({
+    recipients: body.recipients,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+  });
+
+  const totalRecipients = body.recipients.length;
+  if (ids.length === 0) {
+    return jsonResponse({ ok: false, sent: 0, total: totalRecipients, failed: failures }, 502);
+  }
+  return jsonResponse({
+    ok: true,
+    sent: ids.length,
+    total: totalRecipients,
+    ids,
+    failed: failures,
+    subject: rendered.subject,
+  });
+}
+
 Deno.serve(async (req) => {
   const opt = handleOptions(req);
   if (opt) return opt;
@@ -455,6 +783,19 @@ Deno.serve(async (req) => {
   const authHeader = req.headers.get("Authorization") ?? "";
   if (!authHeader) {
     return jsonResponse({ error: "Missing Authorization header" }, 401);
+  }
+
+  // daily-digest is the only template that runs without a user JWT —
+  // it's invoked by the Vercel Cron route, which holds the service-role
+  // key. Match the bearer against SERVICE_ROLE; if it matches, route to
+  // the handler. Other templates always require user auth, even if
+  // someone tries to call them with the service role.
+  if (body?.template === "daily-digest") {
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (!SERVICE_ROLE || token !== SERVICE_ROLE) {
+      return jsonResponse({ error: "daily-digest requires the service-role token" }, 403);
+    }
+    return handleDailyDigest(body);
   }
 
   const userClient = createClient(SUPABASE_URL, ANON_KEY, {
