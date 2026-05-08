@@ -106,6 +106,30 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Decode a JWT's payload (the middle base64url segment) without verifying
+// the signature. We use this for the daily-digest service-role check —
+// the platform's verify_jwt=true has already validated the signature
+// before our function code runs, so we can trust the payload contents.
+//
+// We avoid a literal-string compare against SUPABASE_SERVICE_ROLE_KEY
+// because the same Supabase project may surface the service role under
+// two different key formats (legacy JWT `eyJ...` auto-injected into
+// edge functions vs. the new `sb_secret_...` style stored on Vercel).
+// A role-claim check works regardless of which format the caller used.
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const pad = (4 - (b64.length % 4)) % 4;
+    if (pad) b64 += "=".repeat(pad);
+    const json = atob(b64);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
 // Send N emails in one API call via Resend's /emails/batch endpoint.
 // Avoids the 2-req/sec rate limit on the single-send endpoint that was
 // silently failing fan-outs of 3+ recipients on the agency-update flow.
@@ -787,13 +811,33 @@ Deno.serve(async (req) => {
 
   // daily-digest is the only template that runs without a user JWT —
   // it's invoked by the Vercel Cron route, which holds the service-role
-  // key. Match the bearer against SERVICE_ROLE; if it matches, route to
-  // the handler. Other templates always require user auth, even if
-  // someone tries to call them with the service role.
+  // key. Decode the bearer and check `role: "service_role"` rather than
+  // doing a literal string compare against SUPABASE_SERVICE_ROLE_KEY:
+  // the same Supabase project may surface the service role under
+  // multiple key formats (legacy `eyJ...` auto-injected here vs. the
+  // newer `sb_secret_...` stored on Vercel) and a string compare would
+  // break across formats. The platform's verify_jwt=true has already
+  // validated the signature; we just need to introspect the role claim.
   if (body?.template === "daily-digest") {
     const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-    if (!SERVICE_ROLE || token !== SERVICE_ROLE) {
-      return jsonResponse({ error: "daily-digest requires the service-role token" }, 403);
+    const payload = decodeJwtPayload(token);
+    if (payload?.role !== "service_role") {
+      // Self-diagnosing error so we can tell the difference between the
+      // two failure modes from the cron's response JSON without log
+      // diving:
+      //   * bearer wasn't a JWT at all → likely Vercel has the new
+      //     `sb_secret_...` format which doesn't decode here. Caller
+      //     needs to switch Vercel's env to the legacy `eyJ...`
+      //     service-role JWT.
+      //   * bearer decoded but role wasn't service_role → caller used
+      //     a user / anon JWT.
+      const detail = payload
+        ? `got role=${String(payload.role ?? "missing")}`
+        : "bearer is not a decodable JWT — likely the new sb_secret_ format. Use the legacy eyJ... service-role JWT for SUPABASE_SERVICE_ROLE_KEY on the cron caller.";
+      return jsonResponse(
+        { error: "daily-digest requires service-role auth", detail },
+        403,
+      );
     }
     return handleDailyDigest(body);
   }

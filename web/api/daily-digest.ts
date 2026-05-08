@@ -255,9 +255,14 @@ async function digestForBrand(
     }),
   });
   const responseText = await res.text();
-  let parsed: { ok?: boolean; sent?: number; total?: number; failed?: unknown[]; error?: string } | null = null;
+  let parsed: { ok?: boolean; sent?: number; total?: number; failed?: unknown[]; error?: string; detail?: string } | null = null;
   try { parsed = responseText ? JSON.parse(responseText) : null; } catch { /* leave raw */ }
   if (!res.ok) {
+    // Combine error + detail when the edge function returned both — the
+    // detail field is what tells us *why* the auth failed (key format
+    // mismatch vs role mismatch) without a log dive.
+    const err = parsed?.error ?? responseText.slice(0, 200);
+    const det = parsed?.detail ? ` — ${parsed.detail}` : "";
     return {
       accountId: brand.id,
       brandName: brand.name,
@@ -266,7 +271,7 @@ async function digestForBrand(
       recipients: recipients.length,
       needsReview: needsReview.length,
       approved: approved.length,
-      skipReason: `send_failed: ${parsed?.error ?? responseText.slice(0, 200)}`,
+      skipReason: `send_failed: ${err}${det}`,
     };
   }
   return {
