@@ -39,6 +39,7 @@ import {
 } from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { MarkAsPostedModal } from './MarkAsPostedModal.jsx';
+import { SafeImage } from './SafeImage.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 import { useLightbox } from './Lightbox.jsx';
 
@@ -170,9 +171,11 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
         }}
       >
         {showImage ? (
-          <img
+          <SafeImage
             src={att.url}
             alt={att.filename}
+            filename={att.filename}
+            caption="Preview unavailable"
             loading="lazy"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
           />

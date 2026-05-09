@@ -16,6 +16,7 @@ import {
 } from '../lib/db.js';
 import { ConvertIdeaModal } from './ConvertIdeaModal.jsx';
 import { linkifyText } from './IdeateView.jsx';
+import { SafeImage } from './SafeImage.jsx';
 
 const PLATFORMS = [
   { key: 'instagram', label: 'Instagram' },
@@ -445,7 +446,7 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
               <div key={att.id} className="inbox-attachment-tile">
                 {(att.mimeType || '').startsWith('image/') && att.url ? (
                   <a href={att.url} target="_blank" rel="noopener noreferrer">
-                    <img src={att.url} alt={att.filename} />
+                    <SafeImage src={att.url} alt={att.filename} filename={att.filename} caption="Preview unavailable" />
                   </a>
                 ) : (
                   <a href={att.url} target="_blank" rel="noopener noreferrer" className="inbox-attachment-file">

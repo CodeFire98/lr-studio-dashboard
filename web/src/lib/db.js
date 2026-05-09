@@ -5,6 +5,7 @@
 
 import { supabase } from './supabase';
 import MOCK from './mockData.js';
+import { validateImageDimensions } from './imageValidation.js';
 
 const palettes = MOCK.palettes;
 
@@ -636,6 +637,12 @@ export async function loadAssetsForTask(taskId) {
 
 // Upload a File to Storage + insert a row into `assets`. Returns the mapped asset.
 export async function uploadAsset({ taskId, file, kind, uploaderId, onProgress }) {
+  // Reject browser-unrenderable images. See imageValidation.js. Even
+  // though the legacy task UI is sunset, the function is still wired
+  // through admin upload paths and any oversize image here would render
+  // broken everywhere it surfaces (Library, etc.).
+  await validateImageDimensions(file);
+
   const safeName = file.name.replace(/[^\w.\-]+/g, '_');
   const storagePath = `${taskId}/${Date.now()}_${safeName}`;
 
@@ -1073,6 +1080,8 @@ export async function updateBrandKit(accountId, patch) {
 export async function uploadBrandLogo({ accountId, file }) {
   if (!accountId) throw new Error('uploadBrandLogo: accountId is required');
   if (!file)      throw new Error('uploadBrandLogo: file is required');
+  // Reject browser-unrenderable images — see imageValidation.js.
+  await validateImageDimensions(file);
   const safeName = (file.name || 'logo').replace(/[^\w.\-]+/g, '_');
   const path = `${accountId}/${Date.now()}_${safeName}`;
   const { error: uploadError } = await supabase.storage
@@ -1239,6 +1248,8 @@ export async function findCompetitorsForBrand({ accountId, websiteUrl } = {}) {
 export async function uploadBrandAsset({ accountId, file }) {
   if (!accountId) throw new Error('uploadBrandAsset: accountId is required');
   if (!file)      throw new Error('uploadBrandAsset: file is required');
+  // Reject browser-unrenderable images — see imageValidation.js.
+  await validateImageDimensions(file);
   const safeName = (file.name || 'asset').replace(/[^\w.\-]+/g, '_');
   const path = `${accountId}/${Date.now()}_${safeName}`;
   const { error } = await supabase.storage
@@ -1933,6 +1944,12 @@ export async function addPostPlanAttachment({
   if (!file)       throw new Error('addPostPlanAttachment: file is required');
   if (!uploadedBy) throw new Error('addPostPlanAttachment: uploadedBy is required');
 
+  // Reject images the browser can't render before we ship them to
+  // storage — see imageValidation.js. Non-image files (PDFs, etc.) skip
+  // the check. Throws a friendly Error with the filename + dimensions
+  // if the image is too big; the caller surfaces it to the user.
+  await validateImageDimensions(file);
+
   const safeName = (file.name || 'asset').replace(/[^\w.\-]+/g, '_');
   const path = `${accountId}/${postPlanId}/${Date.now()}_${safeName}`;
   const { error: upErr } = await supabase.storage
@@ -2564,6 +2581,10 @@ export async function addPostPlanIdeaAttachment({
   if (!accountId)  throw new Error('addPostPlanIdeaAttachment: accountId is required');
   if (!file)       throw new Error('addPostPlanIdeaAttachment: file is required');
   if (!uploadedBy) throw new Error('addPostPlanIdeaAttachment: uploadedBy is required');
+
+  // Reject browser-unrenderable images. See addPostPlanAttachment +
+  // imageValidation.js for the rationale.
+  await validateImageDimensions(file);
 
   const safeName = (file.name || 'asset').replace(/[^\w.\-]+/g, '_');
   const path = `${accountId}/ideas/${ideaId}/${Date.now()}_${safeName}`;

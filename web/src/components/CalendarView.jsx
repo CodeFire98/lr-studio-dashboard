@@ -9,6 +9,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import { PlatformChip, STATUS_CONFIG, StatusPill, getDisplayStatus } from './postPlanShared.jsx';
+import { SafeImage } from './SafeImage.jsx';
 import {
   createPostPlan,
   duplicatePostPlan,
@@ -534,7 +535,7 @@ const AttachmentPopover = ({ items }) => {
             title={isFinal ? `${a.filename} (deliverable)` : a.filename}
           >
             {isImage ? (
-              <img src={a.url} alt={a.filename} loading="lazy" />
+              <SafeImage src={a.url} alt={a.filename} filename={a.filename} caption="Preview unavailable" loading="lazy" />
             ) : (
               <div className="cal-list-ref-thumb-fallback">
                 <Icon name="paperclip" size={14} />
