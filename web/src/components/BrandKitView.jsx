@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art } from './primitives.jsx';
 import { useLightbox } from './Lightbox.jsx';
+import { SafeImage } from './SafeImage.jsx';
 import { readAuth } from '../lib/auth.js';
 import {
   loadBrandKit,
@@ -744,7 +745,7 @@ const ReferencesCard = ({ accountId, isAgency = false }) => {
                     onClick={() => openItem(item)}
                     style={{ display: 'block', height: '100%', width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'zoom-in' }}
                   >
-                    <img src={item.url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
+                    <SafeImage src={item.url} alt={item.name} filename={item.name} caption="Preview unavailable" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
                   </button>
                 ) : (
                   <button
@@ -1138,7 +1139,7 @@ const MarketingSnapshotCard = ({ kit }) => {
             <div className="tiny" style={{ marginBottom: 6 }}>OpenGraph (Facebook, LinkedIn)</div>
             {kit.ogImageUrl && (
               <div style={{ marginBottom: 6, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line-2)', maxHeight: 90 }}>
-                <img src={kit.ogImageUrl} alt="OG preview" style={{ width: '100%', height: 90, objectFit: 'cover' }}/>
+                <SafeImage src={kit.ogImageUrl} alt="OG preview" caption="OG preview unavailable" style={{ width: '100%', height: 90, objectFit: 'cover' }}/>
               </div>
             )}
             {kit.ogTitle && <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)', marginBottom: 2 }}>{kit.ogTitle}</div>}

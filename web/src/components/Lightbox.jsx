@@ -20,6 +20,7 @@
    once near the app root and everything below it gets `useLightbox()`. */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
+import { SafeImage } from './SafeImage.jsx';
 
 const LightboxContext = createContext({ open: () => {}, close: () => {} });
 
@@ -186,9 +187,11 @@ const MediaLightbox = ({ media, onClose }) => {
         }}
       >
         {kind === 'image' && (
-          <img
+          <SafeImage
             src={src}
             alt={alt || name || ''}
+            filename={name}
+            caption="This image is too large for browsers to render. Use the Download button above."
             style={{ maxWidth: '100%', maxHeight: '88vh', objectFit: 'contain', borderRadius: 4, boxShadow: '0 8px 30px rgba(0,0,0,0.5)' }}
           />
         )}

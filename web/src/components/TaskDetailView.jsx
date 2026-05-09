@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art, Avatar, StatusBadge } from './primitives.jsx';
 import { useLightbox } from './Lightbox.jsx';
+import { SafeImage } from './SafeImage.jsx';
 import MOCK from '../lib/mockData.js';
 import { readAuth } from '../lib/auth.js';
 import {
@@ -833,7 +834,7 @@ const AssetTile = ({ asset, thumb, onClick, onDelete }) => {
         background: "var(--surface-2)", overflow: "hidden",
       }}>
         {asset.isImage && thumb ? (
-          <img src={thumb} alt={asset.filename} style={{width: "100%", height: "100%", objectFit: "cover"}}/>
+          <SafeImage src={thumb} alt={asset.filename} filename={asset.filename} caption="Preview unavailable" style={{width: "100%", height: "100%", objectFit: "cover"}}/>
         ) : (
           <div style={{textAlign: "center", padding: 12}}>
             <Icon name="upload" size={28}/>
