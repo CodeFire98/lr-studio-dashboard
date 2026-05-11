@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-09 (Image-render guard: client-side dimension validator on every upload path + `<SafeImage>` fallback on every thumbnail. Diagnosed broken-thumbnail reports — root cause was uploaded PNGs at 32768×21846 (~716 megapixels) that browsers refuse to decode; tile rendered as the browser's broken-image alt fallback. Now upload is rejected with a friendly message and existing oversize files render as a "Preview unavailable" placeholder.)
+**Last updated:** 2026-05-11 (`daily_digest_log` audit table — every per-brand cron decision now writes one SQL-queryable row. Yesterday's "did Bamboo Bear get the digest?" question took three consoles to answer; now it's one SELECT. Migration 0038.)
 
 ---
 
@@ -11,6 +11,13 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-11 — `daily_digest_log` audit trail for the cron route
+Investigating a missed daily-digest email for Bamboo Bear (2 plans qualified, no email arrived) hit a visibility wall: Vercel runtime logs retain ~24h on Hobby, the Observability invocations page filters to 12h, and the cron's only output was Vercel's logs. No DB trail. Fixing that gap so the next "did email X go out on day Y?" is one SQL query.
+
+- **Migration `0038_daily_digest_log`** — new table `daily_digest_log` (id, run_at, account_id FK accounts ON DELETE SET NULL, brand_name, sent, failed, recipients, plans_needs_review, plans_approved, skip_reason, skip_details, window_start_utc, window_end_utc, tomorrow_ist_label). Two indexes — `(run_at desc)` and `(account_id, run_at desc)`. RLS: agency staff read; no INSERT/UPDATE/DELETE policy (service-role bypass is the only write path, matching `post_plan_status_log`'s shape).
+- **`web/api/daily-digest.ts`** — after the per-brand loop finishes, bulk-insert one row per BrandResult into `daily_digest_log`. Failure to write the audit log is logged but doesn't fail the run (email send is the primary goal; the trail is a nice-to-have).
+- **Sections touched:** Recent changes; Last updated; §6 Data model (new table row); §6 Migrations list (0038); §13 Known decisions (audit-as-table rather than read-from-logs).
 
 ### 2026-05-09 — Image render guard: validate uploads + graceful fallback for oversize files
 Real bug surfaced after the daily-digest shipped: a Bamboo Bear plan's three reference PNGs rendered as broken-image icons in the dashboard. `curl` returned the bytes fine — turned out the PNGs were **32768×21846 pixels each (~716 megapixels)**. The on-disk file is only ~3.7 MB (PNGs compress well) but decoded it's ~3 GB of RGBA pixel data, which no browser will allocate. The browser's response was to fall back to its default broken-image-with-alt-text placeholder, which looked broken instead of informative.
@@ -557,6 +564,14 @@ Unique dedupe index on `(platform, kind, region, title, trend_window, account_id
 
 All four post-plan tables are in the `supabase_realtime` publication. Realtime drives cross-tab unread refresh and same-tab cross-user updates; same-tab same-user updates use optimistic mutators (`upsertPostPlan`, `removePostPlanLocal`, `clearUnreadForPlan` in `App.jsx`).
 
+### Daily-digest audit log (added 2026-05-11)
+
+| Table | Purpose | Key columns | Who can SELECT | Who can write |
+|---|---|---|---|---|
+| `daily_digest_log` | Per-(run, brand) audit trail of every cron decision the daily-digest route makes — so "did email X go out on day Y?" is a one-line SQL query instead of Vercel-log archaeology | `run_at`, `account_id` (FK accounts ON DELETE SET NULL), `brand_name`, `sent`, `failed`, `recipients`, `plans_needs_review`, `plans_approved`, `skip_reason`, `skip_details`, `window_start_utc`, `window_end_utc`, `tomorrow_ist_label` | Agency staff (`is_agency_user()`) | **Service role only** (the Vercel `/api/daily-digest` route). No INSERT/UPDATE/DELETE policy — matches `post_plan_status_log`'s shape (trigger/route-only writes). |
+
+Two indexes — `(run_at desc)` for recency queries and `(account_id, run_at desc)` for brand-history. No realtime; this is an audit surface, no client subscribes.
+
 ### Storage buckets
 
 | Bucket | Contents | Public? | Access policy |
@@ -600,7 +615,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0037_daily_reminder_settings.sql`.
+Most recent: `0038_daily_digest_log.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -618,6 +633,7 @@ Recent batch:
 - `0035_post_plan_status_simplification` — collapses `post_plans.status` from 8 values to 3 (`drafting`/`needs_review`/`approved`), remaps existing rows (legacy → new mapping in the migration body), updates the column default and CHECK constraint, and trims the auto-stamp trigger to drop the now-impossible `posted` branch. Historical `post_plan_status_log` rows are deliberately untouched. See §13 entry.
 - `0036_post_plan_publications` — new table `post_plan_publications` recording when a plan went live on a given platform with optional URL. Composite UNIQUE on (post_plan_id, platform) so re-marking edits the existing row. RLS mirrors `post_plan_attachments`. Powers the derived "Posted" pill (status enum is unchanged) and the new `/c/:slug/posts` Live Posts repository. See §13 entry on publication-as-record vs 4th-status-enum-value.
 - `0037_daily_reminder_settings` — adds `accounts.daily_reminder_enabled boolean not null default true`. Drives the 6pm-IST daily-digest email cron to brand members. No timezone column for v1 (every customer is in India today); add `accounts.timezone` when expansion happens. See §13 entry on cron-as-orchestrator-edge-function-as-renderer split.
+- `0038_daily_digest_log` — new table `daily_digest_log` capturing every per-brand decision the cron makes (sent / failed / skipped, with counts and timestamps). One row per (run_at, account_id). RLS: agency reads, service-role-only writes. Indexes on `run_at desc` and `(account_id, run_at desc)`. See §13 entry on audit-as-table over read-from-logs.
 
 ---
 
@@ -1108,6 +1124,7 @@ No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Daily-digest observability: audit table in Postgres, not read-from-logs.** First production miss (Bamboo Bear's May 10 cron didn't deliver) took three consoles to diagnose — Vercel cron registration page, Vercel runtime logs (which Hobby evicts after ~24h), Resend dashboard. None of them is a queryable artifact, and you can only see ~12h of cron history. Considered (a) bump Vercel to Pro for longer log retention, (b) ship logs to a dedicated observability tool (Logflare / Axiom), (c) write a small audit table. Chose (c) — Postgres is already our system of record, the row volume is tiny (~8 brands × 1 row/day = ~240/month), the access pattern is "SELECT WHERE brand AND date", and the data we care about is structured (sent counts, skip reasons) not freeform log text. Now "did email X go out on day Y?" is `select * from daily_digest_log where brand_name = '…' order by run_at desc limit 10;`. The Vercel logs still exist for debugging the route itself (exceptions, env-var issues), but the per-brand audit is now permanent.
 - **Image dimension limits: 8,192px / 33MP, hard reject on upload, friendly fallback on render.** Hit a real bug 2026-05-09 — three reference PNGs at 32768×21846 (~716 megapixels) on disk as 3.7MB files (PNG compresses well) but ~3GB RGBA decoded. No browser will allocate that, so the `<img>` rendered as the default broken-image-with-alt-text placeholder. Considered (a) auto-downscale on upload via canvas, (b) hard-reject with a clear error, (c) only do the render-side fallback. Chose (b) + a render-side `<SafeImage>` fallback for files already in storage from before the validator existed. Auto-downscale would be friendlier UX-wise but: it'd lose the user's original (or force us to keep both versions), browser canvas re-encoding silently changes colour profiles, and our actual use case is "this was uploaded by accident" rather than "user intentionally wants their 700MP image displayed at thumbnail size." Reject + clear message lets the user resize in their preferred tool. Limits 8192px-per-side / 33MP-total are both well under the practical browser caps (~16k px / 64-256MP depending on browser+OS+RAM) and cover every realistic content-creator workflow. Auto-downscale tracked as future work in §14.
 - **Invite redemption: pre-flight email check + token preservation, not catch-and-clear.** Original flow blindly called `accept_invitation(token)` whenever an authed session showed up with a pending token in localStorage; the catch handler then nuked the token on any error. This worked for the common case but failed silently when the invitee was signed in as the wrong account (typical: multi-Google-account browser, picks the wrong identity at the OAuth chooser) — `accept_invitation` threw the email-mismatch exception, the banner flashed, the token was destroyed, and the user had no recovery path beyond clicking the email link again (which they often didn't, because they thought the redemption had succeeded). Considered (a) auto-sign-out on email mismatch, (b) make `accept_invitation` return success even on mismatch (terrible — would let any signed-in user redeem any token), (c) pre-flight the email server-side before the redemption call, (d) just stop clearing the token on errors. Chose (c) + (d) + a one-click "Sign out & switch account" CTA: `previewInvitation(token)` is anon-safe, returns the invite's `email`, we compare to `auth.email` case-insensitively, and only call `accept_invitation` when they match. On mismatch we keep the token alive and surface the action button. The catch handler now distinguishes truly-dead invites (`invalid or expired` — clear the token) from recoverable errors (network blip, racy state — keep the token; the user can reload or sign in again). The pre-flight adds one extra RPC per redemption attempt, which is cheap and worth it. (Concrete repro that surfaced this: lakshithd98@gmail.com / Linkrunner, 2026-05-08 — see Recent changes log.)
 - **Library is a per-brand asset repo with a kind toggle, not a free-form file lake.** Considered going wider with the Library — third toggle for brand-kit assets (logos/fonts), surfacing idea-attachment thumbnails, CSV export, tags, folders, bulk download. Decided to keep the surface tight: a Deliverables/References toggle that mirrors the two `post_plan_attachments` kinds, with the existing platform/date filters. Counts at the top, clickable section headings to jump back to the source post plan, no other new affordances. Brand-kit and idea-attachment integration are clean follow-ups; tags/folders/bulk-download are heavier features that need their own design rounds. The principle: Library should always read from existing data shapes (no new schema) until a real workflow gap demands more.
