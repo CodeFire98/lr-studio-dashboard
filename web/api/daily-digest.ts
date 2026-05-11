@@ -235,12 +235,21 @@ async function digestForBrand(
   const needsReview = unposted.filter((p) => p.status === "needs_review").sort(sortByTime).map(toCard);
   const approved    = unposted.filter((p) => p.status === "approved").sort(sortByTime).map(toCard);
 
-  // 6. POST to the send-email edge function with service-role auth.
+  // 6. POST to the send-email edge function with the shared cron
+  // secret. We deliberately do NOT use SUPABASE_SERVICE_ROLE_KEY here
+  // anymore: that key surfaces in two formats (legacy `eyJ...` JWT vs
+  // the newer `sb_secret_...`) and the platform's `verify_jwt` gate
+  // only accepts the JWT form. With the new keys becoming the default,
+  // calls were getting rejected at the platform layer before our code
+  // could run (UNAUTHORIZED_INVALID_JWT_FORMAT). CRON_SECRET is a
+  // random opaque string we control on both sides — no JWT format
+  // coupling. The edge function runs with verify_jwt=false now and
+  // does the bearer-vs-CRON_SECRET compare in its own dispatcher.
   const fnUrl = `${SUPABASE_URL.replace(/\/+$/, "")}/functions/v1/send-email`;
   const res = await fetch(fnUrl, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${SERVICE_ROLE}`,
+      Authorization: `Bearer ${CRON_SECRET}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
