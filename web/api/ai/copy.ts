@@ -62,17 +62,32 @@ const PLATFORM_GUIDANCE: Record<string, string> = {
     "X (Twitter) post. Punchy, single thought. Hard limit ~280 characters. No hashtags unless directly relevant. No emoji unless brand voice permits.",
 };
 
-const SYSTEM_INSTRUCTIONS = `You are writing a single social-media caption for a specific brand on a specific platform. Match the brand voice exactly — match the words, the rhythm, and the relationship to the audience.
+const SYSTEM_INSTRUCTIONS_DRAFT = `You are writing a single social-media caption for a specific brand on a specific platform. Match the brand voice exactly — match the words, the rhythm, and the relationship to the audience.
+
+The agency admin will give you an explicit instruction describing what this post should be about (a topic, an angle, a campaign, a hook). Follow that instruction tightly — it's the primary signal for what to write. Use the brand context for VOICE; use the admin's instruction for WHAT.
 
 Output the caption text ONLY. No preamble like "Here's a draft:". No explanation. No quotes around the caption. No headers. Just the caption text, ready to paste.
 
-If the concept is too thin to write good copy from, write the best plausible caption you can rather than asking for clarification — the user is reviewing in a preview and will edit before accepting.`;
+If the admin's instruction is empty, fall back to the post's stored concept; if that's also thin, write the best plausible caption you can rather than asking for clarification — the admin is reviewing in a preview and will edit before accepting.`;
+
+const SYSTEM_INSTRUCTIONS_IMPROVE = `You are revising an EXISTING social-media caption for a specific brand on a specific platform. You'll be given the current caption and the admin's instruction for what to change.
+
+Critical rules:
+- The current caption is the starting point. Preserve what works. Change ONLY what the admin asks you to change. Don't rewrite from scratch unless they explicitly ask.
+- The admin's instruction is the ONLY change directive. Don't add changes they didn't ask for ("while I'm here, let me also fix..."). Match what they asked, no more, no less.
+- Match the brand voice as established by the existing caption AND the brand context — don't drift toward a more generic tone.
+
+Output the revised caption text ONLY. No preamble. No explanation. No quotes. No "Here's the revised version:". Just the revised caption, ready to paste.
+
+If the admin's instruction is empty or vague, make a conservative single-pass improvement: tighten weak phrasing, fix awkward rhythm, lean further into the brand voice. Don't restructure or change the core message.`;
 
 type RequestBody = {
   accountId?: string;
   plan_id?: string;
   platform?: string;
-  mode?: "draft";
+  mode?: "draft" | "improve";
+  instruction?: string;
+  current_copy?: string;
 };
 
 function writeSseEvent(res: VercelResponse, type: string, data: unknown) {
@@ -107,9 +122,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!body?.platform || !PLATFORM_LABEL[body.platform]) {
     return res.status(400).json({ error: "platform must be one of: instagram, linkedin, x" });
   }
-  const mode = body.mode || "draft";
-  if (mode !== "draft") {
-    return res.status(400).json({ error: `Unsupported mode: ${mode}. PR 4 ships 'draft' only.` });
+  const mode: "draft" | "improve" = body.mode === "improve" ? "improve" : "draft";
+  const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
+  const currentCopy = typeof body.current_copy === "string" ? body.current_copy : "";
+  if (mode === "improve" && !currentCopy.trim()) {
+    return res.status(400).json({ error: "current_copy is required for improve mode" });
   }
 
   const authHeader =
@@ -182,10 +199,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
+  // Pick the right system prompt for the mode. The brand-context block is
+  // identical across both, so it caches across draft + improve calls for
+  // the same brand within the 5-min TTL.
+  const systemInstructions = mode === "improve" ? SYSTEM_INSTRUCTIONS_IMPROVE : SYSTEM_INSTRUCTIONS_DRAFT;
   const systemBlocks: Anthropic.TextBlockParam[] = [
     {
       type: "text",
-      text: SYSTEM_INSTRUCTIONS,
+      text: systemInstructions,
       cache_control: { type: "ephemeral" },
     },
     {
@@ -202,15 +223,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     : "unscheduled";
   const conceptLine = plan.concept?.trim() || "(no concept provided yet — infer from the brand voice)";
 
-  const userMessage = `Write the ${platformLabel} caption for this post.
+  let userMessage: string;
+  if (mode === "improve") {
+    const instructionLine = instruction
+      ? instruction
+      : "(no specific instruction — do a conservative single-pass improvement: tighten weak phrasing, fix awkward rhythm, lean further into the brand voice. Don't restructure or change the core message.)";
+    userMessage = `Revise the ${platformLabel} caption for this post based on the admin's instruction below.
 
 Post concept: ${conceptLine}
 Scheduled: ${scheduledLabel}
 
+CURRENT CAPTION (the starting point — preserve what works, change only what the admin asks):
+"""
+${currentCopy}
+"""
+
+ADMIN'S INSTRUCTION:
+${instructionLine}
+
+Platform guidance:
+${platformGuide}
+
+Output the revised caption text only — no preamble, no quotes, no "Here's the revised version:".`;
+  } else {
+    const instructionLine = instruction
+      ? `\nADMIN'S DIRECTION (the primary signal for what this post should be about):\n${instruction}\n`
+      : "";
+    userMessage = `Write the ${platformLabel} caption for this post.
+
+Post concept: ${conceptLine}
+Scheduled: ${scheduledLabel}
+${instructionLine}
 Platform guidance:
 ${platformGuide}
 
 Output the caption text only — no preamble, no quotes.`;
+  }
 
   try {
     const stream = anthropic.messages.stream({
