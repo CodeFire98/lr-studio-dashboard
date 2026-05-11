@@ -42,6 +42,7 @@ import { MarkAsPostedModal } from './MarkAsPostedModal.jsx';
 import { SafeImage } from './SafeImage.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 import { useLightbox } from './Lightbox.jsx';
+import { AICopyPreview } from './AICopyPreview.jsx';
 
 // =====================================================================
 // Linkify helpers — turn http(s) URLs in copy text into clickable
@@ -338,6 +339,7 @@ const PostPlanDetailView = ({
   onPlanChanged,  // (plan) => void — optimistic upsert into App's postPlans
   onPlanDeleted,  // (planId) => void
   onPlanSeen,     // (planId) => void — clear unread badge in App-level map
+  copilotEligible = false,  // AI Co-pilot available for this plan's brand
 }) => {
   const isAdmin = role === 'admin';
 
@@ -429,6 +431,9 @@ const PostPlanDetailView = ({
   // forced into 'read' mode regardless of what's in this map.
   const [copyMode, setCopyMode] = useState({});
   const [activeCopyTab, setActiveCopyTab] = useState((plan?.platforms || [])[0] || null);
+  // AI draft preview — which platform's preview is currently open, if any.
+  // Only one preview at a time; opening on platform B closes any preview on A.
+  const [aiPreviewPlatform, setAiPreviewPlatform] = useState(null);
   const [status, setStatus] = useState(plan?.status || 'drafting');
   const [saving, setSaving] = useState(false);
   // Title editing — read mode by default with a pencil affordance; flips
@@ -1267,6 +1272,18 @@ const PostPlanDetailView = ({
                                       : (<><Icon name="check" size={11}/>Saved</>)}
                                 </span>
                                 <span style={{ flex: 1 }}/>
+                                {copilotEligible && aiPreviewPlatform !== activeCopyTab && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm ai-draft-btn"
+                                    onClick={() => setAiPreviewPlatform(activeCopyTab)}
+                                    disabled={saving}
+                                    title={draft.trim() ? 'Generate a fresh draft (you can replace or discard)' : 'Generate a draft from the brand voice'}
+                                  >
+                                    <span aria-hidden style={{ marginRight: 4 }}>✨</span>
+                                    {draft.trim() ? 'AI redraft' : 'AI draft'}
+                                  </button>
+                                )}
                                 {isDirty && saved && (
                                   <button
                                     type="button"
@@ -1286,6 +1303,19 @@ const PostPlanDetailView = ({
                                   Done
                                 </button>
                               </div>
+                            )}
+                            {copilotEligible && aiPreviewPlatform === activeCopyTab && plan?.id && (
+                              <AICopyPreview
+                                accountId={plan.accountId}
+                                planId={plan.id}
+                                platform={activeCopyTab}
+                                hasExistingCopy={!!draft.trim()}
+                                onAccept={(generated) => {
+                                  handleCopyChange(activeCopyTab, generated);
+                                  setAiPreviewPlatform(null);
+                                }}
+                                onDismiss={() => setAiPreviewPlatform(null)}
+                              />
                             )}
                           </>
                         );

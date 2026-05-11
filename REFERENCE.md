@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-11 (AI Co-pilot PR 3 — Conversation persistence + "Start new" button. Co-pilot chat history now survives panel close, page refresh, and brand-switch via per-(user, brand) localStorage. Header gains a "Start new" button to explicitly clear and start fresh.)
+**Last updated:** 2026-05-11 (AI Co-pilot PR 4 — Inline "✨ AI draft" button on each platform's copy editor in `PostPlanDetailView`. Click streams a brand-voice caption into an inline preview block via the new `/api/ai/copy` endpoint; admin clicks "Use this" / "Regenerate" / "Discard". No DB writes from the server — the existing client-side persist flow owns saving.)
 
 ---
 
@@ -11,6 +11,24 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-11 — AI Co-pilot PR 4: inline "AI draft" on the copy editor
+First inline-AI surface inside `PostPlanDetailView`. Each platform's copy textarea now gets an "✨ AI draft" button in the EDIT-mode footer (only for agency users, only on Co-pilot-allowlisted brands). Clicking it streams a brand-voice caption suggestion into an inline preview below the textarea; admin reviews and applies / regenerates / discards. The chat panel from PR 2 is still the right tool for "plan a week" or brainstorming — the inline button is for the 50-times-a-day "draft the IG caption" workflow that's too small to context-switch into chat for.
+
+- **`web/api/ai/copy.ts` — new Vercel serverless route**. Single-shot text generator. Body: `{accountId, plan_id, platform, mode: 'draft'}`. Same auth pipeline as `/api/ai/chat` (JWT → is_agency → `AI_COPILOT_BRAND_IDS` allowlist). Loads the target plan + brand context via service-role, sends Claude a tight system message ("output the caption text ONLY — no preamble, no quotes, no explanation") with the brand-context blob cached via `cache_control: ephemeral`, plus per-platform copy guidance (IG: hooks + line breaks + 150-300w; LinkedIn: authority + warmth + mobile breaks; X: 280 chars hard cap). Streams `text` / `usage` / `done` / `error` SSE events. **Deliberately no tool use** — this isn't an agentic loop, it's a "give me text" call. `max_tokens: 700`. Caches the system + brand-context blocks so back-to-back drafts (e.g. draft IG, then draft LinkedIn for the same plan) hit Anthropic's 5-min cache and cost ~$0.001-0.003 per call after the first.
+- **`web/src/components/AICopyPreview.jsx` — new** inline preview component. Self-contained: owns its own SSE parser, abort controller, and stream lifecycle. Auto-starts on mount; aborts on unmount (closing the preview mid-stream stops token billing immediately). Renders a card with a header ("AI draft for {Platform}" + streaming indicator + token-usage meter), the streamed text in a `<pre>`-wrapped block (preserves whitespace, allows line breaks to render naturally), and three action buttons: **Use this / Replace with this** (calls `onAccept(text)` — parent updates the textarea via the existing `handleCopyChange` path so the user's normal Save/Done flow persists), **Regenerate** (aborts current stream, re-fires the request — useful when the first take isn't quite right), **Discard** (aborts + closes the preview).
+- **`PostPlanDetailView.jsx`** — new state `aiPreviewPlatform` (which platform's preview is currently open, or null). Single-open-at-a-time semantics — opening on LinkedIn closes IG's preview. New button in the EDIT-mode footer:
+  - Renders only when `copilotEligible` (prop from App.jsx) AND no preview is currently open for this platform AND admin role.
+  - Label adapts: **"✨ AI draft"** when the textarea is empty; **"✨ AI redraft"** when there's existing copy (signals that accepting will replace what's there).
+  - Preview renders inline below the textarea + footer. `onAccept` writes the generated text to the draft state via `handleCopyChange(activeCopyTab, generated)` — the existing draft → blur-save flow takes over from there, so the AI's output is treated identically to anything the user typed (editable, unsaved-changes indicator, can Cancel back to the saved version).
+- **App.jsx** — passes `copilotEligible={copilotEligible}` to `<PostPlanDetailView/>`. The same flag that gates the topbar Co-pilot trigger gates the inline button: agency + brand-in-allowlist + not all-clients mode.
+- **CSS** — `.ai-draft-btn` (accent-tinted gradient pill matching the topbar trigger), `.ai-copy-preview` + sub-classes for the inline preview card (head/body/actions sections, accent-tinted top border, fade-in animation, token-usage meta). The accent-tint colour family stays consistent across all AI-related surfaces — topbar trigger, sidebar panel, AI draft pill, inline preview — so the agency learns the visual language once.
+- **Trade-offs deliberately not addressed**:
+  - **No "Improve" mode yet** — only fresh drafts. Adding `mode: 'improve'` to `/api/ai/copy` + an "Improve" dropdown to the button is the next logical PR. Wanted to ship `draft` alone first to validate the basic pattern (preview UX, accept flow, stream stability) before layering on the conversation-style "tell me what to change" surface.
+  - **No A/B variants** — generating 3 angles and showing them side-by-side is its own design surface (comparison UI, per-variant accept button). Separate PR.
+  - **No "Suggest concept" yet** — that surface (calendar empty-day right-click, `ConvertIdeaModal` pre-fill) is a different shape from per-platform copy generation. Will land alongside the calendar / ideas integration.
+- **Cost shape**: a single "AI draft" call costs ~$0.005-0.015 first-time (brand-context cache write), ~$0.001-0.003 on subsequent drafts within the same 5-min window. Drafting copy for IG + LinkedIn + X on the same plan = roughly one full-price call + two cached calls = ~$0.01-0.02 total. Agency drafting 30 plans/week ≈ $0.30-0.60/week per brand for inline drafts.
+- **Sections touched**: Recent changes log; `Last updated`; §10 Edge functions / API routes (new `/api/ai/copy` row + full subsection); §13 Known decisions (new entry: separate `/api/ai/copy` endpoint over adding a tool to `/api/ai/chat`); §14 Pending work (PR 4 retired; PR 5 inline-improve queued).
 
 ### 2026-05-11 — AI Co-pilot PR 3: conversation persistence + Start new button
 Lakshith's first real-use feedback after PR 2 went live: closing the Co-pilot panel destroyed the conversation. Fixed by persisting messages to localStorage on every change, keyed by `(userId, accountId)` so multi-staff browsers + multi-brand workflows each get their own thread. Closing the panel, refreshing the page, or switching brands no longer loses history.
@@ -1214,6 +1232,60 @@ Accept: text/event-stream
 
 Same as the other Vercel routes: push to branch → preview deploy auto-builds; merge to main → prod deploys. No `supabase secrets set` step. New env vars must be added in Vercel Project Settings before the route works.
 
+### `/api/ai/copy` (Vercel serverless route — inline copy generation)
+
+Single-shot text generator for the per-platform "✨ AI draft" button in [PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx). Streams a brand-voice caption suggestion via SSE; the client renders it in an inline preview block ([AICopyPreview.jsx](web/src/components/AICopyPreview.jsx)) and the user accepts / regenerates / discards. The server never writes to `post_plans.copy_variants` — the existing client-side persist flow owns DB writes.
+
+#### Auth & gating
+
+Identical to `/api/ai/chat`: JWT verification → `profiles.is_agency` check → `AI_COPILOT_BRAND_IDS` allowlist check on the request's `accountId`. Same env vars; no new secrets needed (reuses `ANTHROPIC_API_KEY` + `AI_COPILOT_BRAND_IDS` from PR 2).
+
+#### Request shape
+
+```js
+POST /api/ai/copy
+Authorization: Bearer <user JWT>
+Content-Type: application/json
+Accept: text/event-stream
+{
+  "accountId": "<brand uuid>",
+  "plan_id": "<post_plans.id>",
+  "platform": "instagram" | "linkedin" | "x",
+  "mode": "draft"
+}
+// → 200 text/event-stream — same SSE events as /api/ai/chat (text / usage / done / error), no tool_call events since this route doesn't use tools
+// → 4xx/5xx { error }
+```
+
+#### Mode
+
+- **`draft` (PR 4)**: generates a fresh caption from the plan's concept + brand voice. Used both when the textarea is empty and when the user wants a different take. The client's "Replace with this" button confirms before overwriting existing copy.
+
+Future modes (PR 5+): `improve` (revise current_copy based on an instruction), `variants` (generate 3 A/B angles).
+
+#### Why a separate endpoint from `/api/ai/chat` and not just another tool
+
+`/api/ai/chat` runs an agentic tool-use loop — the model can call multiple tools, receive results, and iterate. That's the right shape for "plan a week" but overkill for "write me one caption." Three concrete reasons we split:
+
+1. **Latency**: no tool-use loop overhead. The user clicks "AI draft" and tokens start streaming directly. No first-turn "I'll call a tool" preamble.
+2. **System prompt shape**: this route says "output the caption text ONLY — no preamble, no quotes, no explanation." The chat route says "you're a conversational co-pilot." Different shape — Claude's behaviour follows the system prompt closely, so we get cleaner caption output by giving it a clean instruction.
+3. **Client simplicity**: the consumer parses ONE event type (`text`) into a single growing string. No tool_call / tool_result cards to render. The `AICopyPreview` component is half the size of `CopilotPanel`.
+
+Trade-off: two endpoints to maintain instead of one. Acceptable — they share the auth pipeline and `brandContext.js` compiler.
+
+#### Cost
+
+Brand context blob (~4-5k tokens) is sent cached. After the first call, subsequent drafts within 5 minutes hit Anthropic's cache. Per-call cost:
+
+- First-time (cache miss): ~$0.005-0.015
+- Cached (within 5 min of any other AI Co-pilot call for the same brand): ~$0.001-0.003
+
+Drafting copy for IG + LinkedIn + X on the same plan = ~$0.01-0.02 total. Agency drafting 30 plans/week ≈ $0.30-0.60/week per brand for inline drafts (in addition to chat-panel costs).
+
+#### Deploying
+
+Same as the other Vercel routes: push to branch → preview deploy auto-builds; merge to main → prod deploys. No new env vars to set — reuses PR 2's allowlist + Anthropic key.
+
 ---
 
 ## 11. Deployment & environments
@@ -1283,6 +1355,7 @@ Same as the other Vercel routes: push to branch → preview deploy auto-builds; 
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **Inline copy generation is a separate `/api/ai/copy` endpoint, not another tool on `/api/ai/chat`.** The chat panel does agentic multi-turn work (call a tool → see the result → call another tool). Inline "AI draft" is single-shot — user clicks a button, the model writes one caption, that's it. Considered (a) add a `draft_post_copy(plan_id, platform)` tool to `/api/ai/chat`, (b) build a separate endpoint. Chose (b). Reasons: (i) latency — no tool-use loop overhead so tokens stream immediately on click instead of after the model "decides" to call the tool; (ii) the system prompt shape is different — chat is conversational, copy generation is "output ONE caption, no preamble, no quotes, no explanation," which Claude follows much better with a clean system message vs sharing context with chat instructions; (iii) the client consumer is half the size — only `text` events to parse, no `tool_call` / `tool_result` rendering. Trade-off: two endpoints to maintain, but they share the auth pipeline and `brandContext.js` compiler. Will keep this split if we add `improve` / `variants` modes (same endpoint, new mode flag) and only revisit if a use case wants AI orchestration across copy generation + plan creation in a single agentic flow.
 - **AI Co-pilot chat history persists to localStorage, not a DB table (for v1).** When the panel closes or the page refreshes today, the in-memory React state would be lost. Considered (a) DB table `copilot_conversations(account_id, user_id, messages jsonb)` with realtime + cross-device sync, (b) localStorage keyed by `(userId, accountId)`. Chose (b). Reasons: realtime cross-device sync isn't a real need yet (agency staff work from one machine 90%+ of the time); a DB table adds a migration, RLS, db.js helpers, optimistic-update plumbing, and realtime subscriptions for what users haven't asked for. localStorage gives us close→reopen continuity and refresh-survives — the two cases that actually came up in first-use testing — with one file and 30 LOC. We cap at last 60 messages per (user, brand) to keep growth bounded (~50KB per conversation, well under the 5MB browser cap even at 100 brands). When cross-device sync becomes a real ask, this migrates cleanly to a DB table — the message shape doesn't change, just the storage backend. The "Start new" header button explicitly clears (with confirm if non-empty) so the user has a manual reset they can trust.
 - **AI Co-pilot streams via SSE, not WebSocket and not a polling endpoint.** Three options for getting token-by-token Claude output to the panel: (a) WebSocket, (b) Server-Sent Events over a long-lived `text/event-stream` response, (c) chunked JSON polling. Chose (b) for several reasons: Vercel serverless functions support streaming responses out of the box (with `X-Accel-Buffering: no` to disable the default response buffering), Anthropic's TypeScript SDK has a first-class `stream()` API that exposes per-token deltas via `.on('text', ...)`, and SSE is one-way (server→client) which exactly matches our needs — we only send the user message at the start, then watch tokens come back. WebSocket would add bidirectional plumbing we don't use; polling would lose the token-level interactivity that makes the Co-pilot feel fast. The client uses a manual SSE parser (`parseSse` async generator) rather than `EventSource` because EventSource doesn't support POST bodies or `Authorization` headers — both of which we need (the user's JWT goes in the Authorization header, and the chat history goes in the POST body).
 - **AI Co-pilot rollout uses a UUID allowlist env var, not a per-account boolean column.** Considered (a) `accounts.ai_copilot_enabled boolean default false` — clean, queryable, surfaced in the Settings UI later, (b) a server-side `AI_COPILOT_BRAND_IDS` env-var allowlist + matching `VITE_` mirror for the client conditional render. Chose (b) for the rollout phase because flipping the allowlist in Vercel env vars takes one click and zero schema changes — perfect for "let's test with Bamboo Bear today and add Acme tomorrow." A DB-column approach would force a migration + a CRUD UI for the agency to toggle it, neither of which earn their weight while we're still validating the loop end-to-end. Once we're widening past a handful of brands, we'll move to the column approach (or a `feature_flags` table) and let the env-var allowlist deprecate naturally. The double-gate (server allowlist + client `VITE_` mirror) is intentional — the client mirror is just for the conditional render; if someone bypasses the UI and calls `/api/ai/chat` directly, the server still enforces the allowlist.
@@ -1349,7 +1422,12 @@ Running log of "we considered X and chose Y because Z" — newest first.
 
 ## 14. Pending work / known issues
 
-- **AI Co-pilot PR 3 — inline AI affordances in PostPlanDetailView**: PR 2 (2026-05-11) shipped the chat panel + `create_post_plan_draft` tool. Next slice adds narrow, in-place AI actions on the post-plan detail view: "Draft copy" / "Improve this" / "A/B 3 variants" buttons on each `copy_variants` field, "Suggest concept" on `ConvertIdeaModal` and the calendar empty-day right-click, "Generate image prompt" on the Deliverables card. Same `/api/ai/chat` backend; new tool whitelist scoped per surface (e.g. "Draft copy" only exposes `update_post_plan_field`, not `create_post_plan_draft`). After PR 3: `write_brand_note` (Co-pilot writes to `brand_kit_notes` when admin says "remember that…") + BrandKit UI to hand-edit notes. Then trend → plan auto-suggest (pre-fill `TurnIntoPostPlanModal` from a trend signal). Then Idea Inbox triage. Performance feedback loop is the long-tail item — needs `post_plan_publications` analytics piped in first.
+- **AI Co-pilot PR 5 — inline `improve` mode + dropdown of copy actions**: PR 4 (2026-05-11) shipped inline `draft` mode. Next: extend `/api/ai/copy` with `mode: 'improve'` (takes `current_copy` + `instruction`, returns a revised version), plus an "Improve" dropdown next to "AI draft" with preset instructions ("Shorter", "More playful", "Remove emojis", "Punchier hook") and a "Custom…" option that opens an inline prompt input. Same preview UX as PR 4 — streams into the preview block, accept replaces the textarea content.
+- **AI Co-pilot PR 6 — A/B 3 variants**: extend `/api/ai/copy` with `mode: 'variants'`. Generates 3 captions in parallel (different angles — hook-led, story-led, question-led). Side-by-side comparison UI in `AICopyPreview`. Per-variant "Use this" button.
+- **AI Co-pilot PR 7 — brand memory + BrandKit notes UI**: adds `write_brand_note` tool to `/api/ai/chat` so the Co-pilot persists "remember that…" facts to `brand_kit_notes`. Plus a new "Notes" section in BrandKit view for hand-edit (add / pin / delete). Realtime sync so chat-side writes show up in BrandKit UI without refresh. This is when the AI starts building a real per-brand memory over time.
+- **AI Co-pilot PR 8 — Suggest concept** on `ConvertIdeaModal` and the calendar empty-day right-click. Pre-fills a new plan from a vague idea or a blank Tuesday slot.
+- **AI Co-pilot PR 9 — Generate image prompt** button on the Deliverables card. Produces a ready-to-paste prompt for whatever image tool you use elsewhere.
+- **AI Co-pilot long-tail**: trend → plan auto-suggest (pre-fill `TurnIntoPostPlanModal` from a trend signal). Idea Inbox triage. Recurring series autopilot. Weekly Friday strategy memo. Performance feedback loop (needs `post_plan_publications` analytics piped in first).
 - **AI Co-pilot chat persistence**: PR 2 (2026-05-11) keeps chat history in-memory only — resets when the active brand changes or the panel unmounts. Not addressing yet. If users start losing context they care about, add a `copilot_conversations` table keyed by `(account_id, user_id)` with a jsonb `messages` column + an "Open recent chats" affordance in the panel header. Trivial migration, ~50 LOC on the panel side. Defer until someone asks.
 - **AI Co-pilot per-account toggle (vs env-var allowlist)**: PR 2 gates rollout via `AI_COPILOT_BRAND_IDS` env var. Once we're past the initial validation phase (multiple brands using it weekly), migrate to either `accounts.ai_copilot_enabled boolean` or a `feature_flags` table so the agency can self-serve toggle without a Vercel env-var deploy. Defer.
 - **Auto-downscale oversize images on upload**: today the dimension validator (`web/src/lib/imageValidation.js`) rejects images larger than 8192×8192 / 33MP. A friendlier alternative is auto-resizing via canvas: detect oversize, downscale to fit within the limits, replace the `File` reference, then proceed with upload. Trade-offs: canvas re-encoding silently shifts colour profiles (sRGB assumed), the original is lost unless we keep both, and EXIF/metadata is stripped. Worth doing if support requests pile up but not before. Track when we hear repeat complaints from non-technical users.
