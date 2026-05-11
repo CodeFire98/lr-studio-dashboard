@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-11 (AI Co-pilot PR 6 — Brand memory. New `write_brand_note` tool on `/api/ai/chat` lets the Co-pilot persist "remember that…" facts to `brand_kit_notes` mid-conversation. New BrandNotesSection card in BrandKit view for hand-add / pin / edit / delete. Realtime-subscribed so chat-side writes show up in the BrandKit UI without refresh, and vice-versa. This is the inflection point — every brand now accumulates real institutional memory over time, and that memory flows into every future AI call via the existing brand-context compiler.)
+**Last updated:** 2026-05-11 (AI Co-pilot PR 7 — Image prompt ideation. Two-step flow above the Deliverables card on `PostPlanDetailView`: AI generates 3-5 image-direction ideas → admin picks one → AI streams a detailed image-gen prompt. Reuses the cached brand context so style/palette/photography guidance from the brand kit + notes flows in automatically. Copy-to-clipboard ready for Midjourney/DALL-E/Imagen/whatever tool the admin uses.)
 
 ---
 
@@ -11,6 +11,33 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-11 — AI Co-pilot PR 7: image-prompt ideation (directions → detailed prompt)
+The image-prompt surface the user asked for. Rather than a single random shot, the admin gets **3-5 image-direction ideas** to choose between first, then expands the chosen direction into a paste-ready prompt with any extra details. Sits above the Deliverables card on `PostPlanDetailView`. Agency-only, whitelisted-brands-only — same gate as the other AI surfaces.
+
+**The two-step flow** (vs. one-shot generation):
+1. Admin clicks "✨ Start image ideas" → optional brief textarea ("e.g. something playful for the holiday line") → Generate
+2. AI returns 3-5 distinct directions as cards — different angles (studio product shot vs. in-context lifestyle vs. abstract vs. detail crop vs. behind-the-scenes), each with title + 1-2 sentence description + 3-6 style keywords
+3. Admin clicks a card → optional "Additional details" textarea ("e.g. include hands holding the product, overcast morning light, shot on film") → Generate prompt
+4. Detailed image-gen prompt streams in (100-250 words, covers subject / setting / composition / lighting / style / brand palette / texture)
+5. Copy button → paste into Midjourney / DALL-E / Imagen / whatever
+6. Navigate freely: "← Try another direction" goes back to the picker; "Regenerate" runs the same step again; "← Different brief" goes all the way back
+
+- **`web/api/ai/image.ts` — new Vercel route**. Two modes:
+  - **`mode: 'ideas'`** — system prompt instructs the model to output a JSON object matching `{ideas: [{title, description, style_keywords: []}]}`. Streams the JSON output as text; client accumulates and parses on stream-complete (lenient parser — strips stray ```json fences if the model ignores the "no markdown" instruction). Brand voice constraints from the cached context MUST inform every direction; if the brief is thin the model returns 3-4 distinct angles rather than padding with repeats.
+  - **`mode: 'prompt'`** — given the chosen idea (title + description + keywords) + optional admin details, system prompt instructs the model to output a single detailed image-gen prompt covering subject + setting + composition + lighting + style + brand palette + texture, in 100-250 words. NO Midjourney `--ar` flags (admin adds tool-specific syntax themselves). Streams text deltas.
+  - Same auth pipeline as `/api/ai/chat` (JWT → is_agency → `AI_COPILOT_BRAND_IDS`). Same prompt-cached system blocks (instructions + brand context blob) so cache reads across chat / copy / image surfaces within the 5-minute TTL — drafting copy and then generating image ideas for the same plan = cache hits on the brand context.
+  - Pulls platform-specific copy from the plan as tonal context for both modes (caption tone informs visual direction); included in user message, capped at 800 chars per platform.
+- **`web/src/components/AIImagePromptPanel.jsx` — new** state-machine component with 7 phases: `idle` → `ideas_compose` → `ideas_streaming` → `ideas_picking` → `prompt_compose` → `prompt_streaming` → `prompt_done`, plus `error`. Each phase renders only the relevant UI; back/forward navigation is explicit. Optional autofocus on the active textarea per phase. Abort-on-unmount cancels in-flight streams so closing the post plan mid-generation stops token billing immediately. Copy button uses `navigator.clipboard.writeText` with a `document.execCommand` fallback for old browsers; flips to a green "Copied" pill for 2 seconds.
+- **`web/src/components/PostPlanDetailView.jsx`** — mounts `<AIImagePromptPanel/>` directly above the Deliverables card when `copilotEligible && isAdmin && plan?.id`. Passes the active copy-tab platform as the panel's `platform` prop (with fallback to first platform in the plan) so direction generation is tuned to the platform-specific aspect ratio / vocabulary.
+- **`web/src/styles/app.css`** — new `.ai-image-*` block (~170 lines): card chrome with accent-tinted gradient, ideas grid (auto-fill columns, idea-card hover lift), chosen-direction summary block, prompt-output box with monospace-ish line spacing, "Copied" success state. Reuses `.copilot-dot` from the chat panel for the streaming indicators.
+- **No new env vars, no migration** — reuses `ANTHROPIC_API_KEY` + `AI_COPILOT_BRAND_IDS` + `VITE_AI_COPILOT_BRAND_IDS` from PR 2. Vercel auto-deploys on merge.
+- **What this changes about Bamboo Bear's image workflow today**: admin no longer types image prompts from scratch. They click "Start image ideas," skim 5 directions tuned to the brand voice, pick one, add any specifics, and paste a detailed prompt into their image-gen tool of choice. The brand-kit palette + photography style + voice tags + pinned brand notes all flow in via the cached context — so the directions match THIS brand, not generic stock advice.
+- **Trade-offs deliberately not addressed**:
+  - **No actual image generation**: this PR generates PROMPTS. Hooking up Midjourney / DALL-E / Imagen directly would lock us into one tool and burn meaningful compute for marginal value when the admin's image-gen workflow already exists elsewhere. The clipboard-paste flow keeps the admin's tool choice unconstrained.
+  - **No multi-image generation in parallel**: the admin picks ONE direction → generates ONE prompt. If they want prompts for multiple directions, they Try Another Direction after copying the first. Cleaner than a side-by-side multi-prompt UI for v1.
+  - **No history / saved prompts**: the prompt isn't persisted anywhere — copy and paste, done. If we hit a use case wanting prompt history (e.g. for re-shooting with the same direction later), we'd add a small `post_plan_image_prompts` table; defer until asked.
+- **Sections touched**: Recent changes log; `Last updated`; Glossary (new entry: AI image direction); §10 Edge functions / API routes (new `/api/ai/image` subsection); §13 Known decisions (new entries: ideas-before-prompt UX over one-shot, prompt-generation-not-image-generation); §14 Pending work (PR 7 retired, queue continues with the Suggest concept slice and long-tail items).
 
 ### 2026-05-11 — AI Co-pilot PR 6: brand memory (write_brand_note + BrandKit notes UI)
 The inflection point for the Co-pilot phase. Until today, every AI call started from the same baseline brand context — palette, voice tags, mission, the structured `brand_kits` columns. PR 6 turns on the **memory layer**: agency admin can tell the chat "remember that the founder hates the word authentic" and the AI persists it to the existing `brand_kit_notes` table (from PR 1). Every subsequent AI call — chat AND inline copy — automatically sees that fact as part of the brand context blob. Notes accumulate over time, so the month-3 Co-pilot for any brand knows things the month-1 Co-pilot didn't.
@@ -557,6 +584,7 @@ something looks confusingly named.
 | **brand_kit_notes** | Free-form admin annotations on a brand — "remember that the founder hates the word 'authentic'", "no holiday content until Oct 15", "always tag @cofounder on milestone posts". The "memory" layer for the AI Co-pilot. Written by hand from the BrandKitView's `BrandNotesSection` AND by the Co-pilot via the `write_brand_note` tool (PR 6). `is_pinned=true` rows are always-true facts that ride along on every AI call; non-pinned rows are recent context that decays out of the window once we hit the ~20-most-recent cap. | `brand_kit_notes` table (migration 0039); written via `BrandNotesSection` UI or the `write_brand_note` chat tool |
 | **`write_brand_note` tool** | Anthropic tool exposed to the chat Co-pilot via `/api/ai/chat`. Triggered when the admin tells the chat to remember something. Inserts a row into `brand_kit_notes` via service-role with `created_by = user.id`; supports `is_pinned` for always-true facts. | `web/api/ai/chat.ts` (tool definition + runToolCall handler) |
 | **Pinned note** | A `brand_kit_notes` row with `is_pinned=true`. Always included in the brand-context blob the AI Co-pilot sees, regardless of recency. Used for facts that are "always true" — founder name, voice constraints, perma-instructions. Toggleable from the `BrandNotesSection` UI (Pin / Unpin action). | `brand_kit_notes.is_pinned` |
+| **AI image direction** | One of 3-5 image-concept cards the Co-pilot proposes via `/api/ai/image` `mode=ideas`. Each direction is a different visual ANGLE (studio shot vs. lifestyle vs. detail crop vs. behind-the-scenes etc.) with title + 1-2 sentence description + 3-6 style keywords. The admin picks one direction, then the Co-pilot expands it into a paste-ready image-gen prompt via `mode=prompt`. | [AIImagePromptPanel.jsx](web/src/components/AIImagePromptPanel.jsx); `/api/ai/image` `mode=ideas` |
 | **AI draft** | A `post_plans` row created by the AI Co-pilot rather than a human. Marked with `ai_generated=true`; the original tool-call args are stored in `ai_draft_payload` (jsonb) so we can diff "AI proposed" vs "admin shipped" later. Renders with a small "✨ AI draft" pill in `PostPlanDetailView` (PR 2+). The admin owns the row — edits it in the existing detail view, submits for review through the standard workflow. | `post_plans.ai_generated`, `post_plans.ai_draft_payload` (migration 0038) |
 
 ---
@@ -1342,6 +1370,59 @@ Drafting copy for IG + LinkedIn + X on the same plan = ~$0.01-0.02 total. Agency
 
 Same as the other Vercel routes: push to branch → preview deploy auto-builds; merge to main → prod deploys. No new env vars to set — reuses PR 2's allowlist + Anthropic key.
 
+### `/api/ai/image` (Vercel serverless route — image-prompt ideation)
+
+Two-step image-prompt generation for the "AI image prompts" card on PostPlanDetailView ([AIImagePromptPanel.jsx](web/src/components/AIImagePromptPanel.jsx)). The admin gets 3-5 direction ideas first, picks one, then expands it into a detailed paste-ready image-gen prompt.
+
+#### Auth & gating
+
+Identical to `/api/ai/chat` and `/api/ai/copy`: JWT verification → `profiles.is_agency` check → `AI_COPILOT_BRAND_IDS` allowlist on `accountId`. Same env vars — no new secrets.
+
+#### Modes
+
+- **`ideas`**: returns 3-5 direction concepts as JSON streamed-as-text. Client parses on stream-complete and renders idea cards. System prompt instructs the model to output `{ideas: [{title, description, style_keywords: []}]}` with NO markdown fences and NO preamble. Lenient client-side parser strips stray fences if the model ignores. Brand voice + photography style + voice tags + pinned brand notes from the cached brand-context blob inform every direction.
+- **`prompt`**: given the chosen idea (title + description + keywords) + optional admin details, returns a single detailed image-gen prompt as text deltas. 100-250 words, covers subject / setting / composition / lighting / style / brand palette / texture. NO Midjourney `--ar` flags or other tool-specific syntax (admin adds those for their tool of choice).
+
+#### Request shape
+
+```js
+POST /api/ai/image
+Authorization: Bearer <user JWT>
+Content-Type: application/json
+Accept: text/event-stream
+{
+  "accountId": "<brand uuid>",
+  "plan_id": "<post_plans.id>",
+  "platform": "instagram" | "linkedin" | "x",
+  "mode": "ideas" | "prompt",
+
+  // ideas mode:
+  "brief": "<optional brief — extra context beyond the post concept>",
+
+  // prompt mode:
+  "idea_title": "<chosen direction title>",
+  "idea_description": "<chosen direction description>",
+  "idea_style_keywords": ["<keyword>", ...],
+  "details": "<optional admin details — specific elements, mood, etc.>"
+}
+// → 200 text/event-stream — same events as /api/ai/copy: text / usage / done / error
+// → 4xx/5xx { error }
+```
+
+#### Cost
+
+Both modes use the same cached brand-context blob, so cache reads across `chat` / `copy` / `image` surfaces within the 5-minute TTL. Per-call cost:
+- `ideas` first-time (cache miss): ~$0.008-0.015 (slightly larger output token count for the JSON structure)
+- `ideas` cached: ~$0.003-0.005
+- `prompt` first-time (cache miss): ~$0.008-0.015
+- `prompt` cached: ~$0.002-0.004
+
+Generating image prompts for one plan (ideas + 1 chosen prompt) = ~$0.01-0.02. Heavy workflow (5 ideas regens + 3 prompts) = ~$0.04-0.06.
+
+#### Deploying
+
+Same as the other Vercel routes: push to branch → preview deploy auto-builds; merge to main → prod deploys. No new env vars.
+
 ---
 
 ## 11. Deployment & environments
@@ -1411,6 +1492,8 @@ Same as the other Vercel routes: push to branch → preview deploy auto-builds; 
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **AI image surface generates PROMPTS, not images.** Considered (a) integrate Midjourney / DALL-E / Imagen directly so clicking "Generate image" produces actual PNGs in the Deliverables card, (b) generate a paste-ready prompt and let the admin run their own image-gen workflow. Chose (b). Reasons: (i) every image-gen tool has subtly different syntax, style biases, and pricing — picking ONE locks the agency in; (ii) the agency already has a workflow they like elsewhere (Midjourney, ChatGPT image, etc.) and the value-add is the brand-aware PROMPT, not the rendering; (iii) image-gen API costs are 50-100x the text-gen costs and meaningful compute spend deserves a deliberate decision per brand, not a click-and-it-runs default; (iv) prompts are clipboard-paste-portable forever even as the underlying tools change. We'll revisit if/when one tool's API becomes overwhelmingly the standard AND brand-aware fine-tuning closes the prompt-portability gap.
+- **Image prompts use a two-step "ideas → picked direction → detailed prompt" flow, not one-shot.** Considered (a) one-click → AI writes a detailed prompt directly from the post concept, (b) two-step with 3-5 directions in between. Chose (b). One-shot generation was the original PR 8 plan but the user pushed back: a single shot is too random — the AI picks ONE angle (studio shot? lifestyle? abstract?) and the admin has no signal that other directions exist. The two-step pattern shows the angle SPACE first (5 cards across different styles — studio product, in-context lifestyle, abstract/conceptual, hands/detail crop, behind-the-scenes), the admin picks the one that fits the post's intent, THEN expands to detail. Same UX pattern as the instruction-driven copy flow from PR 5 — give the admin directional choice before locking in. Trade-off: two round-trips instead of one (~2x the latency before the admin gets a usable prompt). Worth it for the choice. Mitigated by prompt caching — both round-trips hit the cached brand-context blob.
 - **AI Co-pilot brand memory is write-only from chat — destructive ops live in the BrandKit UI.** Considered (a) full CRUD via chat tools (`write_brand_note`, `update_brand_note`, `delete_brand_note`), (b) write-only from chat, hand-edit / delete in BrandKitView only. Chose (b). Phrase ambiguity in chat is real — "forget that we hate the word authentic" could mean "delete the existing note" OR "remember a new note that we don't hate it anymore." A misunderstood phrasing on a destructive op = silently lost institutional memory. Curation actions live in the UI where the action is explicit and confirmed. Chat is the **acquisition** path — the agency leans on the AI to capture facts they would otherwise have to remember to manually type into the kit. The friction shape matches the value: typing "remember that…" mid-chat is frictionless; explicitly deleting a note in a UI is the right amount of friction for something destructive.
 - **Brand notes are scoped per-brand, not global to the agency.** A "founder hates the word X" fact for Bamboo Bear shouldn't bleed into Acme's AI calls. The `brand_kit_notes.account_id` foreign key + the brand-context compiler reading only the active brand's notes enforces this. Considered (a) a global `agency_notes` table for cross-brand patterns ("we work in IST timezone", "our style guide is X"), (b) per-brand only for now, add agency-level later if patterns repeat. Chose (b) — start with the obvious scope, add globals only if the repetition pain becomes real. Most agency-level facts can be encoded in the chat system prompt directly.
 - **AI copy generation asks the admin for an instruction BEFORE generating, no presets.** PR 4 generated copy from brand voice + concept alone — output was too random and didn't react to the admin's intent for this specific post. Considered (a) a "Custom prompt" textarea + a dropdown of presets like "Shorter / More playful / Remove emojis", (b) free-form instruction textarea only, (c) leave as-is and ask the admin to refine via Regenerate. Chose (b). Presets sound friendly but in practice an agency drafting for a specific brand has specific things in mind — "a Mother's Day post celebrating moms who run small businesses" isn't a preset; "make the hook punchier and add a CTA about our sustainability page" isn't a preset. A textarea covers both the easy case ("shorter") AND the long tail, and an agency lead types fast enough that the friction is minimal. Presets would also have to be maintained, internationalized, A/B tested for which ones work, etc. — overhead for a feature that's strictly worse than letting users say what they actually want. The instruction stays editable after streaming so the admin can refine + Regenerate to iterate without closing the preview. For "redraft" mode specifically, the system prompt is critical — it instructs the model to **preserve what works in the current copy and change ONLY what the admin's instruction asks**. The first iteration of redraft just rewrote everything from scratch, which felt like "AI took my work away." The fix is in the prompt, not the API shape: explicit instructions to preserve + change-only-what's-asked.
@@ -1481,8 +1564,7 @@ Running log of "we considered X and chose Y because Z" — newest first.
 
 ## 14. Pending work / known issues
 
-- **AI Co-pilot PR 7 — Suggest concept** on `ConvertIdeaModal` and the calendar empty-day right-click. Pre-fills a new plan from a vague idea or a blank Tuesday slot. Will reuse the same instruction-driven preview pattern from PR 5.
-- **AI Co-pilot PR 8 — Generate image prompt** button on the Deliverables card. Produces a ready-to-paste prompt for whatever image tool you use elsewhere.
+- **AI Co-pilot PR 8 — Suggest concept** on `ConvertIdeaModal` and the calendar empty-day right-click *(promoted from PR 8 → next-in-queue after PR 7 image prompts shipped 2026-05-11)*. Pre-fills a new plan from a vague idea or a blank Tuesday slot. Will reuse the same instruction-driven preview pattern from PR 5.
 - **AI Co-pilot long-tail / backlog**:
   - **A/B 3 variants for copy generation** *(was PR 6, deferred 2026-05-11)*: side-by-side comparison UI generating 3 different angles. Less urgent now that instruction-driven `improve` covers iteration via the Regenerate-with-edited-instruction loop. Revisit if multiple users explicitly ask for side-by-side.
   - Trend → plan auto-suggest (pre-fill `TurnIntoPostPlanModal` from a trend signal). Idea Inbox triage. Recurring series autopilot. Weekly Friday strategy memo. Performance feedback loop (needs `post_plan_publications` analytics piped in first).

@@ -5215,6 +5215,192 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
 }
 
+/* AI Image Prompt panel (PostPlanDetailView, above Deliverables) */
+.ai-image-card-collapsed .card-head {
+  align-items: center;
+}
+.ai-image-launch {
+  background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 14%, var(--surface)), var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 28%, var(--line));
+  color: var(--accent);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.ai-image-launch:hover {
+  background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 22%, var(--surface)), color-mix(in oklab, var(--accent) 6%, var(--surface)));
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
+}
+.ai-image-card {
+  border-color: color-mix(in oklab, var(--accent) 24%, var(--line));
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 3%, var(--surface)), var(--surface));
+}
+.ai-image-meta {
+  font-size: 11px;
+  color: var(--ink-5);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-image-section { display: block; }
+.ai-image-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 8px 0 6px;
+}
+.ai-image-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  background: var(--surface);
+  color: var(--ink-1);
+  outline: none;
+  min-height: 48px;
+}
+.ai-image-input:focus { border-color: var(--accent); }
+.ai-image-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ai-image-error {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--accent-soft, #fdecea);
+  color: var(--accent-ink, #b1382c);
+  border-radius: 6px;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-image-streaming-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 0;
+}
+
+/* Ideas grid */
+.ai-image-ideas-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.ai-image-idea-card {
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 120ms, transform 120ms, box-shadow 120ms;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: inherit;
+  color: var(--ink-1);
+  width: 100%;
+}
+.ai-image-idea-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -6px color-mix(in oklab, var(--accent) 35%, transparent);
+}
+.ai-image-idea-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink-1);
+  line-height: 1.3;
+}
+.ai-image-idea-desc {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  line-height: 1.45;
+}
+.ai-image-idea-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.ai-image-idea-keyword {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+  color: var(--accent);
+  border: 1px solid color-mix(in oklab, var(--accent) 16%, var(--line));
+}
+.ai-image-idea-cta {
+  margin-top: 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+/* Chosen direction block (compose + streaming + done) */
+.ai-image-chosen {
+  background: color-mix(in oklab, var(--accent) 6%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 20%, var(--line));
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.ai-image-chosen-compact {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.ai-image-chosen-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ai-image-chosen-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  margin: 4px 0 2px;
+  color: var(--ink-1);
+}
+.ai-image-chosen-desc {
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+
+/* Generated prompt box */
+.ai-image-prompt-box {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 100px;
+}
+.ai-image-prompt-box pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-1);
+}
+.ai-image-copy.is-copied {
+  background: var(--good, #15803D);
+  border-color: var(--good, #15803D);
+}
+
 /* AI draft pill on PostPlanDetailView */
 .ai-draft-pill {
   display: inline-flex;

@@ -43,6 +43,7 @@ import { SafeImage } from './SafeImage.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 import { useLightbox } from './Lightbox.jsx';
 import { AICopyPreview } from './AICopyPreview.jsx';
+import { AIImagePromptPanel } from './AIImagePromptPanel.jsx';
 
 // =====================================================================
 // Linkify helpers — turn http(s) URLs in copy text into clickable
@@ -1426,6 +1427,18 @@ const PostPlanDetailView = ({
                 onUpload={(files, toDelete) => handleAttachmentChange('reference', files, toDelete)}
                 isAgency={isAdmin}
               />
+
+              {/* AI image prompts — generate 3-5 direction ideas, pick one,
+                  get a paste-ready prompt for image-gen tools. Agency-only,
+                  whitelisted brands only. Sits above Deliverables since it's
+                  the "plan the image" step that happens before the upload. */}
+              {copilotEligible && isAdmin && plan?.id && (
+                <AIImagePromptPanel
+                  accountId={plan.accountId}
+                  planId={plan.id}
+                  platform={activeCopyTab || (platforms[0] || 'instagram')}
+                />
+              )}
 
               {/* Deliverables — admin uploads final creatives, both sides view. */}
               <AttachmentsCard
