@@ -71,18 +71,19 @@ Mark a phase complete only when its PR is merged AND the Vercel preview has been
 
 | # | Phase | Status | PR |
 |---|---|---|---|
-| PoC | Cache verification PoC — confirm `providerOptions.anthropic.cacheControl` produces the same `cache_read_input_tokens > 0` we get from the raw SDK today | 🟡 in progress | (this PR) |
-| 0 | Foundation — add `ai`, `@ai-sdk/anthropic`, `@ai-sdk/react`, `zod`, `tailwindcss`, `postcss`, `autoprefixer`; init shadcn with CSS-variables mode; scope Tailwind to `ai-elements/` only; disable `preflight` globally | ⏳ pending | — |
-| 1a | Server: `/api/ai/chat` → `streamText` + AI SDK tools + `stopWhen: stepCountIs(8)` | ⏳ pending | — |
-| 1b | Server: `/api/ai/copy` → `streamText` (no tools) | ⏳ pending | — |
-| 1c | Server: `/api/ai/image` → `streamObject` (ideas mode) + `streamText` (prompt mode) | ⏳ pending | — |
-| 2a | Client: `CopilotPanel.jsx` → `useChat` + Elements (Conversation / Message / PromptInput / Tool / Reasoning / Suggestion / Persona / Loader) | ⏳ pending | — |
+| PoC | Cache verification PoC — confirmed `providerOptions.anthropic.cacheControl` produces the same Anthropic cache hits as the raw SDK. ~99.6% cache-hit rate on call 2 (3515 / 3529 input tokens). | ✅ merged | [#60](https://github.com/CodeFire98/lr-studio-dashboard/pull/60) |
+| 0 | Foundation — Tailwind v3.4 + shadcn primitives + AI SDK deps. Content scoped to `ai-elements/`, preflight disabled. JS byte-identical, CSS +3.7 KB raw. | ✅ merged | [#61](https://github.com/CodeFire98/lr-studio-dashboard/pull/61) |
+| HOTFIX | Scope shadcn `--accent` (and other tokens) under `.ai-elements` instead of `:root` — was clobbering app.css's coral `--accent: #E8553D` in prod. Moved rules OUTSIDE `@layer base` so Tailwind content-purging can't drop them. | ✅ merged | [#63](https://github.com/CodeFire98/lr-studio-dashboard/pull/63) |
+| 1a | Server: `/api/ai/chat` → `streamText` + AI SDK `tool({ inputSchema (Zod), execute })` + `stopWhen: stepCountIs(8)`. Wire protocol preserved (legacy SSE event names). 464 → 391 LoC. Smoke-tested on Bamboo Bear. | ✅ merged | [#62](https://github.com/CodeFire98/lr-studio-dashboard/pull/62) |
+| 1b | Server: `/api/ai/copy` → `streamText` (no tools). Wire protocol preserved. 292 → 277 LoC. | 🟡 open | [#64](https://github.com/CodeFire98/lr-studio-dashboard/pull/64) |
+| 1c | Server: `/api/ai/image` → `streamObject` (ideas mode) + `streamText` (prompt mode). Replaces lenient JSON parser with Zod schema. Also DELETES `web/api/ai/cache-poc.ts` (PoC retired). | ⏳ pending | — |
+| 2a | Client: `CopilotPanel.jsx` → `useChat` + Elements (Conversation / Message / PromptInput / Tool / Reasoning / Suggestion / Persona / Loader). Wire protocol switches to AI SDK data-stream protocol here. | ⏳ pending | — |
 | 2b | Client: `AICopyPreview.jsx` → `useCompletion` | ⏳ pending | — |
 | 2c | Client: `AIImagePromptPanel.jsx` → `useObject` (ideas) + `useCompletion` (prompt) | ⏳ pending | — |
 | 3 | Net-new: pick from {Reasoning panel surfacing, image attachments in chat, dynamic Suggestion chips from `recentApprovedPlans`, per-message cost in metadata} | ⏳ pending | — |
 | 4 | Optional: DB-backed conversation persistence (Supabase `copilot_conversations` table). Only if a user asks. | 🚫 not scheduled | — |
 
-Recommendation: ship as **PR A (PoC + Phase 0 + Phase 1)**, **PR B (Phase 2)**, **PR C (Phase 3 cherry-pick)** — three approvals instead of seven.
+**Update history**: PoC + Phase 0 + Hotfix + Phase 1a all merged 2026-05-11. Originally planned as one big "PR A" — split into one PR per phase based on user smoke-testing each before continuing.
 
 ---
 
