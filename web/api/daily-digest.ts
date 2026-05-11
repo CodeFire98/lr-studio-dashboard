@@ -137,6 +137,44 @@ async function digestForBrand(
   istDateLabel: string,
   emailByUserId: Map<string, string>,
 ): Promise<BrandResult> {
+  // 0. Idempotency check — has this brand already received the digest
+  // for this same `tomorrow IST` window in a previous run today? If yes,
+  // skip the whole pipeline.
+  //
+  // Two reasons this matters:
+  //   (a) Defensive against duplicate Resend sends if the cron fires
+  //       twice — Vercel's Hobby plan has a flexible 1-hour fire window
+  //       and we can't guarantee the platform won't fire more than once
+  //       within it (e.g. retry after a deploy interrupted the first
+  //       attempt).
+  //   (b) Lets the admin click the "Run" button on the cron page as a
+  //       recovery tool when the auto-fire was missed (e.g. deploy
+  //       churn ate the fire window) WITHOUT worrying about brand
+  //       members getting duplicate emails.
+  //
+  // Key is (account_id, window_start_utc, sent > 0). window_start_utc
+  // is precise to the IST tomorrow-midnight moment and unique per IST
+  // day — robust across timezone boundaries + year wraparounds in a
+  // way the human-readable label like "Tuesday, May 12" would not be.
+  // Idempotency check failures are logged but non-fatal — better to
+  // risk a duplicate than fail the run on a transient DB blip.
+  const { data: priorSends, error: idempErr } = await client
+    .from("daily_digest_log")
+    .select("id, run_at, sent")
+    .eq("account_id", brand.id)
+    .eq("window_start_utc", windowStartUtc)
+    .gt("sent", 0)
+    .limit(1);
+  if (idempErr) {
+    console.warn("[daily-digest] idempotency check failed", idempErr.message);
+  } else if (priorSends && priorSends.length > 0) {
+    return mkSkip(
+      brand,
+      "already_sent_today",
+      `Found prior send for ${istDateLabel} at ${priorSends[0].run_at} (id=${priorSends[0].id})`,
+    );
+  }
+
   // 1. Plans scheduled in tomorrow's window (IST), status filter
   const { data: plans, error: plansErr } = await client
     .from("post_plans")
