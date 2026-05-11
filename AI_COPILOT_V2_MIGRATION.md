@@ -240,18 +240,35 @@ After this PR's Vercel preview deploys:
 3. Run: `fetch('/api/ai/cache-poc', { headers: { Authorization: 'Bearer ' + (await window.__LR_AUTH__.supabase.auth.getSession()).data.session.access_token }}).then(r => r.json()).then(console.log)`
 4. Read the two rows. Cache landed = ✅ proceed to Phase 0. Cache didn't land = 🛑 dig into provider options.
 
-### Results
+### Results — 2026-05-11
 
-> _To be filled in after running the PoC._
+Run against Vercel preview for PR #60 with model `claude-sonnet-4-6` and a deterministic ~3500-token cached system prompt.
 
 | | Call 1 | Call 2 |
 |---|---|---|
-| `inputTokens` | | |
-| `outputTokens` | | |
-| `cacheCreationInputTokens` | | |
-| `cacheReadInputTokens` | | |
+| `inputTokens` (total) | 3529 | 3529 |
+| `outputTokens` | 5 | 5 |
+| `cache_creation_input_tokens` (raw Anthropic) | 11 | 11 |
+| `cache_read_input_tokens` (raw Anthropic) | **3515** | **3515** |
+| `inputTokenDetails.cacheReadTokens` (SDK normalized) | **3515** | **3515** |
+| `inputTokenDetails.cacheWriteTokens` (SDK normalized) | 11 | 11 |
 
-**Verdict**: ⬜ PASS (cache landed) / ⬜ FAIL (investigate)
+**Verdict**: ✅ **PASS**
+
+- 3515 of 3529 input tokens served from cache → ~99.6% cache-hit rate.
+- The constant 11 tokens of `cache_creation_input_tokens` is Anthropic's normal per-call alignment overhead, not a cost concern.
+- Both call 1 and call 2 hit cache because the 5-min TTL was still warm from prior PoC runs — exactly the behavior we expect for back-to-back chat turns in the real Co-pilot.
+- Confirmed via two paths:
+  1. SDK-normalized: `result.usage.inputTokenDetails.cacheReadTokens` ✓
+  2. Raw provider: `result.providerMetadata.anthropic.usage.cache_read_input_tokens` ✓
+- Bonus: `cache_creation.ephemeral_5m_input_tokens: 11` confirms we're getting the 5-min ephemeral cache (not the 1h variant, which we don't want).
+
+**Implication for the migration**: `providerOptions.anthropic.cacheControl = { type: 'ephemeral' }` on AI SDK system messages produces identical Anthropic cache behavior to the raw SDK's `cache_control: { type: 'ephemeral' }` blocks. Safe to proceed to Phase 0.
+
+### Gotchas surfaced by the PoC (added to the breakage checklist)
+
+1. **Vercel ignores `api/_*.ts` files.** Adding `_cache-poc.ts` returned `index.html` with status 200 because Vercel treats underscore-prefixed files as private helpers. Always name route files without leading underscores.
+2. **AI SDK v6 cache token paths.** `providerMetadata.anthropic` exposes only `cacheCreationInputTokens` as a flat camelCase field — there's **no** flat `cacheReadInputTokens`. Use either the SDK-normalized `result.usage.inputTokenDetails.cacheReadTokens` or the raw `result.providerMetadata.anthropic.usage.cache_read_input_tokens`. Plan to use the SDK-normalized path in production routes for provider portability.
 
 ---
 
