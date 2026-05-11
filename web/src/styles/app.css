@@ -4875,6 +4875,106 @@ input, textarea { font: inherit; color: inherit; }
 .copilot-cancel { background: var(--ink-3); }
 .copilot-cancel:hover { background: var(--ink-2); }
 
+/* AI Draft button next to copy editor */
+.ai-draft-btn {
+  background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 14%, var(--surface)), var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 28%, var(--line));
+  color: var(--accent);
+  font-weight: 500;
+}
+.ai-draft-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 22%, var(--surface)), color-mix(in oklab, var(--accent) 6%, var(--surface)));
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
+}
+.ai-draft-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* AI copy preview block — renders below the textarea while AI streams */
+.ai-copy-preview {
+  margin-top: 10px;
+  border: 1px solid color-mix(in oklab, var(--accent) 28%, var(--line));
+  border-radius: 8px;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 5%, var(--surface)), var(--surface));
+  overflow: hidden;
+  animation: aiCopyPreviewIn 200ms var(--ease-out);
+}
+@keyframes aiCopyPreviewIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ai-copy-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 20%, var(--line));
+  font-size: 12px;
+}
+.ai-copy-preview-label {
+  font-weight: 500;
+  color: var(--accent);
+}
+.ai-copy-preview-streaming {
+  color: var(--ink-4);
+  font-style: italic;
+}
+.ai-copy-preview-meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-5);
+  font-variant-numeric: tabular-nums;
+}
+.ai-copy-preview-body {
+  padding: 12px;
+  min-height: 80px;
+}
+.ai-copy-preview-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-1);
+}
+.ai-copy-preview-skeleton {
+  display: flex;
+  gap: 4px;
+  padding: 8px 0;
+}
+.ai-copy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  animation: copilotPulse 1.2s infinite ease-in-out;
+}
+.ai-copy-dot:nth-child(2) { animation-delay: 0.15s; }
+.ai-copy-dot:nth-child(3) { animation-delay: 0.3s; }
+.ai-copy-preview-error {
+  margin: 0 12px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft, #fdecea);
+  color: var(--accent-ink, #b1382c);
+  font-size: 12px;
+}
+.ai-copy-preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid color-mix(in oklab, var(--accent) 18%, var(--line));
+  background: var(--surface);
+}
+
 /* AI draft pill on PostPlanDetailView */
 .ai-draft-pill {
   display: inline-flex;

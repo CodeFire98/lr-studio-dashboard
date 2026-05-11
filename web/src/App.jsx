@@ -949,6 +949,7 @@ const App = () => {
         onPlanChanged={upsertPostPlan}
         onPlanDeleted={removePostPlanLocal}
         onPlanSeen={clearUnreadForPlan}
+        copilotEligible={copilotEligible}
       />
     );
 
