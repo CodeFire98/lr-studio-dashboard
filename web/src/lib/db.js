@@ -1557,6 +1557,10 @@ export function mapPostPlanRow(row) {
     updatedAt: row.updated_at,
     approvedAt: row.approved_at,
     postedAt: row.posted_at,
+    aiGenerated: row.ai_generated === true,
+    aiDraftPayload: row.ai_draft_payload && typeof row.ai_draft_payload === 'object'
+      ? row.ai_draft_payload
+      : {},
   };
 }
 

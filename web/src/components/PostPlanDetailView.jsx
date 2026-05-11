@@ -989,6 +989,15 @@ const PostPlanDetailView = ({
           </div>
           <div className="sub" style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
             <StatusPill status={getDisplayStatus({ status }, publications)} size="lg"/>
+            {plan?.aiGenerated && (
+              <span
+                className="ai-draft-pill"
+                title="Created by the AI Co-pilot. Edit, then submit for review through the normal workflow."
+              >
+                <span aria-hidden style={{ marginRight: 4 }}>✨</span>
+                AI draft
+              </span>
+            )}
             <span>·</span>
             <input
               type="datetime-local"
