@@ -1,0 +1,63 @@
+/* =====================================================================
+   elements.css — Tailwind + shadcn/ui design tokens for AI Elements.
+
+   This file is imported AFTER app.css in main.jsx so any Tailwind
+   utilities used inside ai-elements/* components can override the
+   hand-written base styles per-component when needed.
+
+   Coexistence guarantees with app.css:
+   - Tailwind preflight is disabled in tailwind.config.js, so this
+     file does NOT inject a global reset. The existing app.css reset
+     stays authoritative.
+   - All CSS variable names use shadcn's neutral palette names
+     (--background, --foreground, --primary, etc.). None of them
+     collide with the existing tokens in app.css (--bg, --ink,
+     --accent, etc.).
+   - Tailwind's `content` glob is scoped to src/components/ai-elements/**
+     so utility classes are only emitted for files in that directory.
+     Non-AI-Elements components cannot accidentally pick up Tailwind
+     classes by typing them in className.
+
+   Customization is intentionally minimal in Phase 0 — we keep shadcn's
+   neutral defaults so AI Elements look like themselves out of the box.
+   When a designer wants to align the chat surface with the dashboard's
+   coral accent / warm-cream palette, override these variables here.
+   ===================================================================== */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 0 0% 96.1%;
+    --secondary-foreground: 0 0% 9%;
+
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+
+    --accent: 0 0% 96.1%;
+    --accent-foreground: 0 0% 9%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 9%;
+
+    --radius: 0.5rem;
+  }
+}
