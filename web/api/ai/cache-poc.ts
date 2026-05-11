@@ -132,16 +132,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ],
     });
 
-    const anthropicMeta = result.providerMetadata?.anthropic as
-      | { cacheCreationInputTokens?: number; cacheReadInputTokens?: number }
-      | undefined;
+    // Cache tokens live in TWO places in AI SDK v6:
+    // 1. result.usage.inputTokenDetails.{cacheReadTokens, cacheWriteTokens}
+    //    — the SDK-normalized shape (all providers).
+    // 2. result.providerMetadata.anthropic.usage.{cache_read_input_tokens,
+    //    cache_creation_input_tokens} — raw Anthropic API response (snake_case).
+    // providerMetadata.anthropic.cacheCreationInputTokens (camelCase flat field)
+    // also exists for backwards compat, but there's no matching cacheReadInputTokens
+    // flat field — must use the nested usage object for reads.
+    const usageDetails = (result.usage as { inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number } })?.inputTokenDetails;
+    const anthropicRawUsage = (result.providerMetadata?.anthropic as { usage?: { cache_read_input_tokens?: number; cache_creation_input_tokens?: number } } | undefined)?.usage;
 
     return {
       text: result.text,
       inputTokens: result.usage?.inputTokens,
       outputTokens: result.usage?.outputTokens,
-      cacheCreationInputTokens: anthropicMeta?.cacheCreationInputTokens,
-      cacheReadInputTokens: anthropicMeta?.cacheReadInputTokens,
+      // Prefer SDK normalized field; fall back to raw provider field.
+      cacheCreationInputTokens: usageDetails?.cacheWriteTokens ?? anthropicRawUsage?.cache_creation_input_tokens,
+      cacheReadInputTokens: usageDetails?.cacheReadTokens ?? anthropicRawUsage?.cache_read_input_tokens,
       raw: { usage: result.usage, providerMetadata: result.providerMetadata },
     };
   }
