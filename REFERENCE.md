@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-11 (AI Co-pilot scaffolding — PR 1 of the AI-native phase. Migration `0039_ai_copilot_scaffolding` adds `brand_kit_notes` table for free-form admin "memory" annotations, plus `post_plans.ai_generated` + `post_plans.ai_draft_payload` columns to mark AI-proposed plans. Brand-context compiler (`web/src/lib/brandContext.js`) assembles a single cached system-prompt blob from `brand_kits` + `brand_kit_notes` + recent approved plans for Claude calls. Pure foundation — no UI, no API route, nothing in the app reads these yet. PR 2 lands the `/api/ai/chat` Vercel route + sidebar Co-pilot panel behind a brand-id whitelist env var.)
+**Last updated:** 2026-05-11 (AI Co-pilot PR 2 — `/api/ai/chat` Vercel route with `@anthropic-ai/sdk` + SSE streaming + prompt-cached brand context; sidebar Co-pilot panel that drives the chat UI; `create_post_plan_draft` tool that writes real `post_plans` rows with `ai_generated=true`; "✨ AI draft" pill on `PostPlanDetailView`. All gated by the `AI_COPILOT_BRAND_IDS` server allowlist + `VITE_AI_COPILOT_BRAND_IDS` client mirror so we can roll out one brand at a time.)
 
 ---
 
@@ -11,6 +11,24 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-11 — AI Co-pilot PR 2: chat route + sidebar panel + AI draft pill
+First user-facing slice of the agency-side AI Co-pilot. Agency staff on a whitelisted brand can open a right-edge slide-in chat panel, ask the model to plan posts / draft copy / brainstorm, and receive real `post_plans` rows pre-filled and marked as "✨ AI draft" — they edit in the existing detail view and submit for review through the standard workflow. The "propose-first, in-the-post-plan-view, editable" UX the user spec'd in the design brainstorm.
+
+- **`@anthropic-ai/sdk` dependency** added to [web/package.json](web/package.json). Server-side only — the SDK is imported by [web/api/ai/chat.ts](web/api/ai/chat.ts), not by any client code, so it doesn't land in the SPA bundle.
+- **`web/api/ai/chat.ts` — new Vercel serverless route**. Streams Claude responses over Server-Sent Events. Auth mirrors `find-competitors.ts`: caller JWT verified by the anon-key Supabase client, agency-staff check via service-role lookup of `profiles.is_agency`, then a whitelist check against the `AI_COPILOT_BRAND_IDS` env-var allowlist (comma-separated UUIDs). Two cache breakpoints on the system prompt — fixed instructions + per-brand context blob — so back-to-back chat turns hit Anthropic's 5-min prompt cache. Default model `claude-sonnet-4-6`; `max_tokens: 1500` per turn; `MAX_TURNS = 8` cap on the agentic tool-use loop. Tools: **`create_post_plan_draft`** (only tool wired in this PR — inserts a real `post_plans` row via service-role with `status='drafting'`, `ai_generated=true`, `ai_draft_payload=<original tool args>`). SSE event types emitted to the panel: `text` (token deltas), `tool_call` (input args of an in-flight tool), `tool_result` (success/failure + payload), `usage` (input/output/cache token counts for the per-call meter), `done` (with the model's `stop_reason`), `error`.
+- **`web/src/components/CopilotPanel.jsx` — new** slide-in right-edge drawer (420px wide, animates in over 220ms). Header shows brand name + close button; scroll area renders user bubbles, assistant prose, and tool-call cards interleaved; footer holds a textarea (⌘↩ to send) and a per-call token-usage meter. Empty state shows three example prompts the admin can click to populate. Streams via `fetch` + manual SSE parser (`parseSse` async generator) — no event-source library, since EventSource doesn't support POST bodies or auth headers. Tool-call cards render in three states (`running`/`ok`/`error`) and a successful `create_post_plan_draft` shows an "Open plan →" button that navigates to the new plan's detail view + closes the panel. Chat state is in-memory only — resets when the active brand changes or the panel unmounts. No persistence in PR 2; that's a follow-up if a user asks.
+- **`web/src/App.jsx` — Co-pilot trigger + panel mount**. New "✨ Co-pilot" pill button in the topbar (right side, next to the Submit-idea CTA). Conditionally rendered when `copilotEligible` — i.e. `auth.isAgency` AND not in All-clients mode AND `scopeAccountId` is in the `VITE_AI_COPILOT_BRAND_IDS` allowlist (a `Set` built once at module load from the env var). Toggles a `copilotOpen` state; opening renders `<CopilotPanel/>` as a sibling of `<TweaksPanel/>`. Auto-closes when the user switches to a non-whitelisted brand via BrandPicker — `useEffect` watches `copilotEligible` and flips `copilotOpen=false` if it drops to `false` mid-session.
+- **`web/src/lib/db.js`** — `mapPostPlanRow` now surfaces `aiGenerated: row.ai_generated === true` and `aiDraftPayload: row.ai_draft_payload || {}` so every consumer (CalendarView, PostPlanDetailView, etc.) gets the AI metadata for free. Trivial additive change.
+- **`web/src/components/PostPlanDetailView.jsx`** — small "✨ AI draft" pill rendered next to the StatusPill in the page-head sub-row, only when `plan.aiGenerated === true`. Tooltipped: "Created by the AI Co-pilot. Edit, then submit for review through the normal workflow." Visually a soft accent-tinted capsule — distinct from the StatusPill (which is workflow-bucket coloured) but clearly secondary.
+- **`web/src/styles/app.css`** — new `.copilot-*` section (~250 lines) for the panel + trigger button + tool cards + typing indicator + token meter, plus `.ai-draft-pill` for the PostPlanDetailView badge. Slide-in animation from the right edge.
+- **Required env vars on the `lr-studio-dashboard-3kkp` Vercel project (all 3 environment toggles)**:
+  - `ANTHROPIC_API_KEY` — `sk-ant-...` from https://console.anthropic.com/settings/keys. Server-only, never exposed to the SPA bundle.
+  - `AI_COPILOT_BRAND_IDS` — comma-separated UUIDs of brands that get to use the Co-pilot. Empty = nobody can. The server enforces this allowlist regardless of what the client UI claims.
+  - `VITE_AI_COPILOT_BRAND_IDS` — same value, exposed to the client so the SPA renders/hides the topbar button. The server is the real authz boundary; the client mirror is just for the conditional render.
+- **No new migration** — PR 1 already shipped the `ai_generated` + `ai_draft_payload` columns and the `brand_kit_notes` table (none of which is wired into UI yet in PR 2 — that's PR 3+).
+- **Cost shape (per the design brainstorm)**: with prompt caching, a typical chat turn for a warm brand context costs ~$0.005–0.02. A "plan-the-week" multi-tool agentic loop costs ~$0.05–0.10. Expected per-brand monthly spend at moderate use: $3–5. The token-usage meter in the panel footer surfaces input / output / cache-read counts so the agency can see the cache landing in real-time.
+- **Sections touched**: Recent changes log; `Last updated`; §10 Edge functions / API routes (new `/api/ai/chat` row + full subsection); §12 External accounts & secrets (Anthropic key); §13 Known decisions (new entries: SSE-streaming pattern, whitelist-as-rollout-gate, separate-tool-per-action, allowlist enforced on both client and server); §14 Pending work (PR 2 line removed; new line for PR 3 inline-AI buttons).
 
 ### 2026-05-11 — AI Co-pilot scaffolding (PR 1 of the AI-native phase)
 First slice of the agency-side AI Co-pilot. Pure additive foundation — schema lands now so PR 2 can wire the `/api/ai/chat` Vercel route and the sidebar Co-pilot panel without re-architecting. Nothing in the SPA reads any of this yet; whitelist gating ships with PR 2.
@@ -1092,6 +1110,80 @@ No CLI / no manual step. Push to the branch, Vercel preview deploys; merge to ma
 
 No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel routes; everything lives in Vercel env vars.
 
+### `/api/ai/chat` (Vercel serverless route — AI Co-pilot)
+
+Agency-side AI Co-pilot chat backend. Streams Claude responses over Server-Sent Events to [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx), runs tool calls server-side, and writes AI-drafted post plans to the DB via service-role. Source: [web/api/ai/chat.ts](web/api/ai/chat.ts).
+
+#### Auth & gating
+
+- **JWT verification**: caller MUST send `Authorization: Bearer <user JWT>`. The handler verifies it via the anon-key Supabase client (`supabase.auth.getUser()`).
+- **Agency-only**: handler reads `profiles.is_agency` for the caller via service-role; 403s if false. Brand users are explicitly locked out at the API surface — Brand Co-pilot is a later phase.
+- **Brand allowlist**: the request's `accountId` MUST be in the `AI_COPILOT_BRAND_IDS` env-var list (comma-separated UUIDs). This is the rollout gate. Expand the list as we widen the test set; today only Bamboo Bear should be on it.
+
+#### Tools (PR 2 set)
+
+- **`create_post_plan_draft({scheduled_at, platforms, concept, copy_variants})`** — inserts a row into `post_plans` with `status='drafting'`, `ai_generated=true`, `ai_draft_payload=<original args>`. Writes via service-role since the agency-staff + brand-allowlist gates above are the real boundary. Returns `{id, scheduled_at, platforms, concept, status}` for the panel to render an "Open plan →" CTA.
+
+Future tools (PR 3+): `write_brand_note`, `update_post_plan`, `list_recent_post_plans`, `suggest_calendar_blocks`.
+
+#### Streaming protocol (SSE)
+
+The handler emits these event types over `text/event-stream`. Each event is `event: <type>\ndata: <json>\n\n`. The client uses a manual SSE parser (`parseSse` in [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx)) rather than `EventSource`, because EventSource doesn't support POST bodies or auth headers.
+
+| Event | Payload | Purpose |
+|---|---|---|
+| `text` | `{ delta }` | Token-by-token model output. The panel appends to the current assistant message. |
+| `tool_call` | `{ id, name, input }` | Model called a tool. Renders an in-flight tool card. |
+| `tool_result` | `{ id, name, ok, result?, error? }` | Tool finished. Updates the card status. |
+| `usage` | `{ input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens }` | Per-turn usage. Drives the footer token meter. |
+| `done` | `{ stop_reason }` | Model finished this turn / loop. |
+| `error` | `{ error }` | Server-side error during streaming. |
+
+#### Prompt caching
+
+The system prompt is split into two cached blocks with `cache_control: { type: 'ephemeral' }`:
+1. The static instruction prefix (rarely changes).
+2. The brand-context blob from `compileBrandContext()` (changes when `brand_kits` / `brand_kit_notes` / recent approved plans mutate).
+
+Anthropic's cache TTL is 5 minutes; back-to-back chat turns for the same brand re-hit the cache and pay ~10% input-token rate. The `usage` SSE event surfaces cache reads/writes in the panel footer so the agency can see this landing in real time.
+
+#### Model & limits
+
+- Default: `claude-sonnet-4-6` (hard-coded; switch via env var if we need to A/B later).
+- `max_tokens: 1500` per turn — aggressive cap, prevents the model from rambling.
+- `MAX_TURNS = 8` cap on the agentic tool-use loop. If the model wants more, we emit `stop_reason: 'max_turns_reached'` and stop.
+
+#### Request shape
+
+```js
+POST /api/ai/chat
+Authorization: Bearer <user JWT>            // from supabase.auth.getSession()
+Content-Type: application/json
+Accept: text/event-stream
+{
+  "accountId": "<brand uuid>",
+  "messages": [
+    { "role": "user", "content": "Draft an Instagram post about ..." },
+    // assistant + user turns accumulate as the chat grows
+  ]
+}
+// → 200 text/event-stream (see events table above)
+// → 4xx/5xx { error }
+```
+
+#### Environment variables (set on `lr-studio-dashboard-3kkp` Vercel project, all 3 environment toggles)
+
+| Name | Required for | Where to get it |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | every call | https://console.anthropic.com/settings/keys — `sk-ant-...`. Server-only, never `VITE_`-prefixed. |
+| `AI_COPILOT_BRAND_IDS` | every call | Comma-separated list of brand UUIDs that get to use the Co-pilot. Run `select id, name from accounts where type='brand';` in Supabase to find the UUID for your target brand. Empty = nobody can use it. |
+| `VITE_AI_COPILOT_BRAND_IDS` | SPA build | Same value as above. Exposed to the SPA so the topbar "✨ Co-pilot" button renders only for whitelisted brands. The server is the real authz; this is just for the conditional render. |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | every call | Already set for `/api/fetch-trends` and `/api/daily-digest`. No change. |
+
+#### Deploying
+
+Same as the other Vercel routes: push to branch → preview deploy auto-builds; merge to main → prod deploys. No `supabase secrets set` step. New env vars must be added in Vercel Project Settings before the route works.
+
 ---
 
 ## 11. Deployment & environments
@@ -1126,6 +1218,7 @@ No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel
 | Vercel | linked GitHub repo `CodeFire98/lr-studio-dashboard` | Hosting, Web Analytics, Speed Insights |
 | Firecrawl | dashboard at `firecrawl.dev` | Brand kit enrichment via `/v2/scrape` |
 | Resend | dashboard at `resend.com` | Transactional email via `send-email` edge function. Sending domain `linkrunner.io` (Squarespace DNS), verified 2026-04-29. From: `agency@linkrunner.io`. |
+| Anthropic | `console.anthropic.com` | Claude API for the AI Co-pilot (`/api/ai/chat`). Default model `claude-sonnet-4-6`. Direct SDK integration — no OpenRouter (caching pass-through unreliable). |
 | Google OAuth | Google Cloud Console → OAuth client | Sign-in via Supabase OAuth provider |
 | Google Workspace | hosts `agency@linkrunner.io` mailbox | Receives replies to outbound invitation emails (Reply-To header points at the inviter, but bounces / replies-to-the-from land here) |
 | Domain registrar | (per Lakshith) | `agency.linkrunner.io`, `cal.linkrunner.io`, `linkrunner.io` |
@@ -1143,6 +1236,9 @@ No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel
 | `EMAIL_FROM` / `EMAIL_FROM_NAME` / `APP_URL` | Supabase function secrets (non-secret values, but stored alongside the API key for convenience) | Read by `send-email`. Defaults baked in if unset. |
 | Supabase Personal Access Token (PAT) | Local `.claude/local-secrets.env` (gitignored) **or** `~/.supabase/access-token` (CLI default) | Used for `db push`, `functions deploy`, Management API SQL endpoint. Source the file before CLI ops: `source .claude/local-secrets.env`. |
 | `.claude/local-secrets.env` | Local-only, gitignored (entry in `.gitignore`) | Single-source-of-truth for the PAT. Keys in Supabase Edge Function secrets (service_role / Firecrawl / Resend) **do not** live here — they only get written to Supabase via `supabase secrets set` and never come back to disk. |
+| `ANTHROPIC_API_KEY` | Vercel env vars (all 3 environment toggles) | Read by `/api/ai/chat` from `process.env`. Server-only; never `VITE_`-prefixed. |
+| `AI_COPILOT_BRAND_IDS` | Vercel env vars | Comma-separated UUIDs that may use the Co-pilot. Server-side allowlist enforced inside `/api/ai/chat`. |
+| `VITE_AI_COPILOT_BRAND_IDS` | Vercel env vars | Same value as above, exposed to the SPA so the topbar trigger renders conditionally. Server is the real authz boundary; this is just for the render gate. |
 
 ### Pending credential rotations (from session memory, 2026-04-23 → 05-01)
 
@@ -1157,6 +1253,9 @@ No `supabase secrets set` step needed — Supabase secrets don't apply to Vercel
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **AI Co-pilot streams via SSE, not WebSocket and not a polling endpoint.** Three options for getting token-by-token Claude output to the panel: (a) WebSocket, (b) Server-Sent Events over a long-lived `text/event-stream` response, (c) chunked JSON polling. Chose (b) for several reasons: Vercel serverless functions support streaming responses out of the box (with `X-Accel-Buffering: no` to disable the default response buffering), Anthropic's TypeScript SDK has a first-class `stream()` API that exposes per-token deltas via `.on('text', ...)`, and SSE is one-way (server→client) which exactly matches our needs — we only send the user message at the start, then watch tokens come back. WebSocket would add bidirectional plumbing we don't use; polling would lose the token-level interactivity that makes the Co-pilot feel fast. The client uses a manual SSE parser (`parseSse` async generator) rather than `EventSource` because EventSource doesn't support POST bodies or `Authorization` headers — both of which we need (the user's JWT goes in the Authorization header, and the chat history goes in the POST body).
+- **AI Co-pilot rollout uses a UUID allowlist env var, not a per-account boolean column.** Considered (a) `accounts.ai_copilot_enabled boolean default false` — clean, queryable, surfaced in the Settings UI later, (b) a server-side `AI_COPILOT_BRAND_IDS` env-var allowlist + matching `VITE_` mirror for the client conditional render. Chose (b) for the rollout phase because flipping the allowlist in Vercel env vars takes one click and zero schema changes — perfect for "let's test with Bamboo Bear today and add Acme tomorrow." A DB-column approach would force a migration + a CRUD UI for the agency to toggle it, neither of which earn their weight while we're still validating the loop end-to-end. Once we're widening past a handful of brands, we'll move to the column approach (or a `feature_flags` table) and let the env-var allowlist deprecate naturally. The double-gate (server allowlist + client `VITE_` mirror) is intentional — the client mirror is just for the conditional render; if someone bypasses the UI and calls `/api/ai/chat` directly, the server still enforces the allowlist.
+- **AI Co-pilot tools run server-side, not in the client.** Anthropic's tool-use protocol works in two modes: client-side execution (server returns "I want to call tool X with args Y", client runs it, sends back the result) or server-side wrapper (the API handler runs the tool inline before returning the final response). We went with server-side execution inside the `/api/ai/chat` route. Reasons: (a) the only PR-2 tool (`create_post_plan_draft`) writes to the DB via service-role, which can't safely run from the browser; (b) keeping the agentic loop server-side means the client just consumes a stream and renders cards, no orchestration logic — way simpler component; (c) it lets us add tools later (`write_brand_note`, `update_post_plan`) without changing the client at all. Trade-off: the SSE stream has to carry tool-call and tool-result events as additional event types alongside text deltas, so the client SSE parser is a bit more complex. Worth it.
 - **AI Co-pilot brand-context compiler is a pure single-purpose module, not inlined into the API route.** Prompt caching is the entire cost story for this feature — Anthropic's prompt cache gives ~90% input-token discount on cache hits within a 5-min TTL. For the cache to actually hit, the compiled blob must be **byte-stable per brand**: same inputs, same output, every time. Considered (a) inlining the compile logic directly into the future `/api/ai/chat` route, (b) building it as a method on a brand-context class with internal state, (c) a pure function in its own module. Chose (c). Pure + stateless = trivially testable, no hidden mutations, can be imported from both the SPA (for UI previews) and the Vercel route (for actual AI calls), and we can swap the data sources later (e.g. add `post_plan_publications` once we have analytics) without restructuring callers. Trade-off: one extra file in `web/src/lib/`. Worth it.
 - **`brand_kit_notes` lives in its own table, not as a jsonb array on `brand_kits`.** Considered (a) `brand_kits.admin_notes jsonb default '[]'::jsonb` — single-table, no migration ceremony, (b) a dedicated `brand_kit_notes` table mirroring `post_plan_ideas` shape. Chose (b). Reasons: notes will be written frequently by the Co-pilot (every "remember that …" turn), often concurrently with admin edits to the BrandKit UI — jsonb-array mutation has classic last-write-wins race conditions that a row-per-note shape sidesteps. Per-note metadata (created_by, is_pinned, individual delete) needs columnar structure anyway; jamming it into an array of objects would just reinvent half a table. And realtime subscriptions per note (for cross-tab sync between Co-pilot and BrandKit UI) are clean when each note is a row but messy when the whole array refires on every change. Same pattern as the `brand_kits` ↔ `brand_kit_enrichments` split from migration 0017. Trade-off: one extra table + four RLS policies. Already mirrors `post_plan_ideas` so the pattern is familiar.
 - **AI-generated plans are marked with a flag column, not stored in a separate `ai_drafts` table.** Considered (a) staging AI proposals in a parallel `ai_drafts` table that promotes to `post_plans` when the admin approves, (b) writing directly into `post_plans` with an `ai_generated` flag and showing a pill in the existing detail view. Chose (b). The user's spec is "propose first, in the post plan view, in an editable format" — that's exactly what we get by writing directly to `post_plans`: the AI's output IS a real plan, the admin edits it in the surface they already use, submits for review through the existing workflow. No separate "AI inbox" to manage, no "promote draft" plumbing, no duplicate RLS policies. The `ai_generated` flag is the minimum metadata needed to surface "✨ AI draft" branding and run acceptance-rate telemetry. `ai_draft_payload jsonb` preserves the original tool-call args so we can later diff what AI proposed vs what the admin shipped (and offer "reset to AI draft" if the admin over-edits).
@@ -1218,7 +1317,9 @@ Running log of "we considered X and chose Y because Z" — newest first.
 
 ## 14. Pending work / known issues
 
-- **AI Co-pilot PR 2 — `/api/ai/chat` route + sidebar panel**: scaffolding (schema + brand-context compiler) shipped 2026-05-11 in PR 1. Next slice: Vercel API route at `web/api/ai/chat.ts` using `@anthropic-ai/sdk` with prompt caching, streaming over SSE, two starter tools (`read_brand_context`, `create_post_plan_draft`). New env var `ANTHROPIC_API_KEY` on Vercel (server-only). Gated by `AI_COPILOT_BRAND_IDS=<comma list of uuids>` allowlist so only test brands see the surface. Sidebar Co-pilot panel + an `ai_generated` pill on `PostPlanDetailView` round out the user-visible side. Validate end-to-end with Bamboo Bear before widening the allowlist. After this lands: inline "Draft copy" buttons in `PostPlanDetailView`, then `write_brand_note` tool, then trend → plan auto-suggest, then Idea Inbox triage.
+- **AI Co-pilot PR 3 — inline AI affordances in PostPlanDetailView**: PR 2 (2026-05-11) shipped the chat panel + `create_post_plan_draft` tool. Next slice adds narrow, in-place AI actions on the post-plan detail view: "Draft copy" / "Improve this" / "A/B 3 variants" buttons on each `copy_variants` field, "Suggest concept" on `ConvertIdeaModal` and the calendar empty-day right-click, "Generate image prompt" on the Deliverables card. Same `/api/ai/chat` backend; new tool whitelist scoped per surface (e.g. "Draft copy" only exposes `update_post_plan_field`, not `create_post_plan_draft`). After PR 3: `write_brand_note` (Co-pilot writes to `brand_kit_notes` when admin says "remember that…") + BrandKit UI to hand-edit notes. Then trend → plan auto-suggest (pre-fill `TurnIntoPostPlanModal` from a trend signal). Then Idea Inbox triage. Performance feedback loop is the long-tail item — needs `post_plan_publications` analytics piped in first.
+- **AI Co-pilot chat persistence**: PR 2 (2026-05-11) keeps chat history in-memory only — resets when the active brand changes or the panel unmounts. Not addressing yet. If users start losing context they care about, add a `copilot_conversations` table keyed by `(account_id, user_id)` with a jsonb `messages` column + an "Open recent chats" affordance in the panel header. Trivial migration, ~50 LOC on the panel side. Defer until someone asks.
+- **AI Co-pilot per-account toggle (vs env-var allowlist)**: PR 2 gates rollout via `AI_COPILOT_BRAND_IDS` env var. Once we're past the initial validation phase (multiple brands using it weekly), migrate to either `accounts.ai_copilot_enabled boolean` or a `feature_flags` table so the agency can self-serve toggle without a Vercel env-var deploy. Defer.
 - **Auto-downscale oversize images on upload**: today the dimension validator (`web/src/lib/imageValidation.js`) rejects images larger than 8192×8192 / 33MP. A friendlier alternative is auto-resizing via canvas: detect oversize, downscale to fit within the limits, replace the `File` reference, then proceed with upload. Trade-offs: canvas re-encoding silently shifts colour profiles (sRGB assumed), the original is lost unless we keep both, and EXIF/metadata is stripped. Worth doing if support requests pile up but not before. Track when we hear repeat complaints from non-technical users.
 - **Daily-digest manual-trigger affordance**: deferred from the 2026-05-08 build. Plan was a `?force=true&accountId=<uuid>&dry_run=true&date=YYYY-MM-DD` set of query params on `/api/daily-digest` so the team can preview a brand's digest HTML without waiting for 18:00 IST or actually mailing anyone. `dry_run=true` returns the rendered HTML + recipient list as JSON instead of calling `send-email`; `date=YYYY-MM-DD` overrides the IST tomorrow-window for previewing future days; `accountId=<uuid>` scopes the run to one brand; `force=true` bypasses any future "already sent today" idempotency check. Auth stays on `CRON_SECRET`, so still gated. Follow-up PR: ~30 LOC additive change to the existing route, no schema work.
 - **Agency-side workflow email triggers**: brand-side daily digest shipped 2026-05-08; the agency-side equivalent is on the roadmap as a separate flow, not a sibling of the brand digest. Likely shape: (a) **idea-submitted** notification when a brand drops a new `post_plan_ideas` row (Tier 2 in the Resend integration memory note); (b) **per-day "your morning brief"** email at e.g. 9am IST surfacing what's drafting/needs_review for *today* across all brands the agency lead owns ("4 plans to ship to brand A, 2 awaiting brand B's approval, 1 going live in 2hrs"); (c) **stale plan weekly digest** every Monday flagging plans that have been in Drafting / Needs review for >7 days. All three land as new `template` cases on the existing `send-email` function. Agency-side recipients come from the agency `accounts` membership rather than per-brand `account_members_with_email`. The brand-side digest deliberately excludes Drafting plans (brand can't act on them) — the agency-side digest is where "drafting plans for tomorrow" belongs.

@@ -8,6 +8,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './components/Icon.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TweaksPanel } from './components/TweaksPanel.jsx';
+import { CopilotPanel } from './components/CopilotPanel.jsx';
 import { LoginModal } from './components/LoginModal.jsx';
 import { IdeateView } from './components/IdeateView.jsx';
 import { IdeateInboxView } from './components/IdeateInboxView.jsx';
@@ -49,6 +50,18 @@ import {
 import { supabase } from './lib/supabase';
 import { ALL_CLIENTS } from './components/BrandPicker.jsx';
 import { promptCreateBrand } from './components/CreateBrandModal.jsx';
+
+// ---- AI Co-pilot allowlist (PR 2 rollout gate) ------------------------
+// Comma-separated list of brand UUIDs that get to see the Co-pilot. Mirror
+// of AI_COPILOT_BRAND_IDS on the server side (which is the real authz —
+// this client-side flag just controls whether the button is rendered).
+// Set VITE_AI_COPILOT_BRAND_IDS in Vercel env vars.
+const COPILOT_ALLOWED_BRAND_IDS = new Set(
+  (import.meta.env.VITE_AI_COPILOT_BRAND_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 
 // ---------- URL ↔ route mapping (Phase 2 routing layer) ------------------
 // We keep the legacy `route = {view, id}` shape across the codebase so the
@@ -167,6 +180,7 @@ function useTweaks() {
 const App = () => {
   const [tweaks, setTweaks] = useTweaks();
   const [tweaksOpen, setTweaksOpen] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
   const [auth, setAuth] = useState(() => readAuth());
   const [mode, setMode] = useState(() => localStorage.getItem("lr_mode") || "customer");
   // Agency users navigate via a brand picker that scopes every surface to
@@ -1013,6 +1027,20 @@ const App = () => {
   // brand-side surface. Agency staff see Inbox in the sidebar instead.
   const showGotIdeasCta = !!auth && !auth.isAgency && route.view !== "ideate";
 
+  // AI Co-pilot eligibility — agency-only, per-brand, gated by the
+  // VITE_AI_COPILOT_BRAND_IDS allowlist during rollout.
+  const copilotEligible =
+    !!auth?.isAgency &&
+    !isAllClientsMode &&
+    !!scopeAccountId &&
+    COPILOT_ALLOWED_BRAND_IDS.has(scopeAccountId);
+
+  // Auto-close the panel if the active brand changes out of eligibility
+  // (e.g. user switches to a non-whitelisted brand via BrandPicker).
+  useEffect(() => {
+    if (!copilotEligible && copilotOpen) setCopilotOpen(false);
+  }, [copilotEligible, copilotOpen]);
+
   return (
     <div
       className="app"
@@ -1080,6 +1108,17 @@ const App = () => {
                 <Icon name="send" size={13}/>Submit idea
               </button>
             )}
+            {copilotEligible && (
+              <button
+                className={"btn btn-sm copilot-trigger " + (copilotOpen ? "is-open" : "")}
+                onClick={() => setCopilotOpen((v) => !v)}
+                title={copilotOpen ? "Hide Co-pilot" : "Open Co-pilot"}
+                aria-pressed={copilotOpen}
+              >
+                <span className="copilot-trigger-spark" aria-hidden>✨</span>
+                <span>Co-pilot</span>
+              </button>
+            )}
             {isGuest && (
               <button className="btn btn-primary btn-sm" onClick={() => requireAuth(null, null)}>
                 <Icon name="login" size={13}/>Log In
@@ -1089,6 +1128,15 @@ const App = () => {
         </div>
         {renderView()}
       </div>
+      {copilotEligible && copilotOpen && (
+        <CopilotPanel
+          accountId={scopeAccountId}
+          brandName={calendarAccountName}
+          brandSlug={brandAccounts.find((b) => b.id === scopeAccountId)?.slug || auth?.account?.slug || null}
+          onClose={() => setCopilotOpen(false)}
+          onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setCopilotOpen(false); }}
+        />
+      )}
       {tweaksOpen && <TweaksPanel tweaks={tweaks} setTweaks={setTweaks} onClose={() => setTweaksOpen(false)}/>}
       <LoginModal
         open={loginOpen}
