@@ -63,6 +63,7 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for L+R Agency — a social-media
 - Match the brand's voice in any copy you draft. If the voice block is sparse, ask before guessing.
 - Be concise. The admin reads fast and prefers signal over preamble.
 - When the admin asks you to plan posts or draft content, use the create_post_plan_draft tool to actually create the plan rather than just describing it. The plan lands in their calendar as a "✨ AI draft" — they edit and submit through the normal workflow.
+- When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true ("we always tag @sarahbamboo on milestone posts"); leave non-pinned for time-bound or context-specific facts ("Q4 launch is the new bamboo onesie line"). The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
 - After calling a tool, briefly tell the admin what you did and link them to the result if applicable. Don't just go silent.
 - If you don't have enough information (e.g. no date, no platform), ask a clarifying question instead of guessing.
 
@@ -70,6 +71,7 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for L+R Agency — a social-media
 
 - read_brand_context — already compiled into the system message; you don't need to call this unless the admin explicitly says "refresh my brand context"
 - create_post_plan_draft — create a real post_plans row pre-filled with concept and per-platform copy. status='drafting', ai_generated=true. The admin will edit and submit for review.
+- write_brand_note — persist a fact about the brand to the brand_kit_notes table. Used when the admin tells you to remember something. The note flows into the brand context on every future AI call (chat + inline copy). Pin always-true facts; leave others non-pinned.
 
 ## What you don't do
 
@@ -112,6 +114,27 @@ const TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["scheduled_at", "platforms", "concept", "copy_variants"],
+    },
+  },
+  {
+    name: "write_brand_note",
+    description:
+      "Persist a fact about this brand to the brand_kit_notes table — the AI Co-pilot's long-term memory layer for this brand. Use this when the admin tells you to remember something: 'remember that…', 'from now on…', 'make a note that…', 'the founder hates the word X', 'no holiday content before Oct 15'. The note becomes part of the brand context on every future AI call (chat + inline copy generation). Set is_pinned=true for ALWAYS-true facts that should ride along on every call regardless of recency; leave is_pinned=false for time-bound or campaign-specific facts that decay out of the window over time. After calling, confirm to the admin in one short sentence what you wrote down.",
+    input_schema: {
+      type: "object",
+      properties: {
+        body: {
+          type: "string",
+          description:
+            "The note text — what to remember. Write it in declarative, action-oriented form (e.g. 'Always tag @sarahbamboo on milestone posts' not 'I should remember to tag @sarahbamboo'). Keep it to 1-3 sentences. Phrase it so a future AI reading it can act on it without further context.",
+        },
+        is_pinned: {
+          type: "boolean",
+          description:
+            "true for always-true facts ('founder's wife runs the brand', 'never use the word authentic'). false for time-bound or context-specific facts ('Q4 launch is the new onesie line', 'we're freezing holiday content till Oct 15'). When in doubt, leave false — pinned notes use up cache budget on every call.",
+        },
+      },
+      required: ["body"],
     },
   },
 ];
@@ -182,6 +205,40 @@ async function runToolCall(
         platforms: data.platforms,
         concept: data.concept,
         status: data.status,
+      },
+    };
+  }
+
+  if (toolName === "write_brand_note") {
+    const body = typeof toolInput.body === "string" ? toolInput.body.trim() : "";
+    const isPinned = toolInput.is_pinned === true;
+    if (!body) return { ok: false, error: "body is required" };
+    // Cap body length defensively — notes are meant to be short facts, not
+    // essays. If the model tries to write a 4000-char screed it likely
+    // misunderstood the tool's purpose.
+    if (body.length > 1000) {
+      return { ok: false, error: "body must be <= 1000 chars; notes are short facts" };
+    }
+
+    const { data, error } = await serviceClient
+      .from("brand_kit_notes")
+      .insert({
+        account_id: accountId,
+        body,
+        is_pinned: isPinned,
+        created_by: userId,
+      })
+      .select("id, body, is_pinned, created_at")
+      .single();
+
+    if (error) return { ok: false, error: `insert failed: ${error.message}` };
+    return {
+      ok: true,
+      result: {
+        id: data.id,
+        body: data.body,
+        is_pinned: data.is_pinned,
+        created_at: data.created_at,
       },
     };
   }

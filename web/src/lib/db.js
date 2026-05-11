@@ -2704,3 +2704,119 @@ export function subscribeToPostPlanIdeas(onChange, { accountId } = {}) {
   return () => supabase.removeChannel(channel);
 }
 
+// ============================================================
+// Brand-kit notes (free-form admin "memory" the AI Co-pilot reads
+// on every call, written either by the BrandKit UI or by the AI's
+// write_brand_note tool when the admin says "remember that…").
+// ============================================================
+
+const BRAND_KIT_NOTE_SELECT =
+  'id, account_id, body, is_pinned, created_by, created_at, updated_at';
+
+function mapBrandKitNoteRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    body: row.body || '',
+    isPinned: row.is_pinned === true,
+    createdBy: row.created_by || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function loadBrandKitNotes(accountId) {
+  if (!accountId) return [];
+  const { data, error } = await supabase
+    .from('brand_kit_notes')
+    .select(BRAND_KIT_NOTE_SELECT)
+    .eq('account_id', accountId)
+    .order('is_pinned', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapBrandKitNoteRow);
+}
+
+export async function createBrandKitNote({ accountId, body, isPinned, userId }) {
+  if (!accountId) throw new Error('createBrandKitNote: accountId is required');
+  const trimmed = (body || '').trim();
+  if (!trimmed) throw new Error('createBrandKitNote: body is required');
+  if (trimmed.length > 1000) {
+    throw new Error('createBrandKitNote: body must be <= 1000 chars');
+  }
+  const { data, error } = await supabase
+    .from('brand_kit_notes')
+    .insert({
+      account_id: accountId,
+      body: trimmed,
+      is_pinned: isPinned === true,
+      created_by: userId ?? null,
+    })
+    .select(BRAND_KIT_NOTE_SELECT)
+    .single();
+  if (error) throw error;
+  return mapBrandKitNoteRow(data);
+}
+
+export async function updateBrandKitNote(id, patch) {
+  const cols = {};
+  if (patch?.body !== undefined) cols.body = String(patch.body).trim();
+  if (patch?.isPinned !== undefined) cols.is_pinned = patch.isPinned === true;
+  if (Object.keys(cols).length === 0) {
+    const { data } = await supabase
+      .from('brand_kit_notes')
+      .select(BRAND_KIT_NOTE_SELECT)
+      .eq('id', id)
+      .maybeSingle();
+    return data ? mapBrandKitNoteRow(data) : null;
+  }
+  const { data, error } = await supabase
+    .from('brand_kit_notes')
+    .update(cols)
+    .eq('id', id)
+    .select(BRAND_KIT_NOTE_SELECT)
+    .single();
+  if (error) throw error;
+  return mapBrandKitNoteRow(data);
+}
+
+export async function deleteBrandKitNote(id) {
+  const { error } = await supabase.from('brand_kit_notes').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export function subscribeToBrandKitNotes(onChange, { accountId } = {}) {
+  // Mirrors the post_plan_ideas subscription pattern from above — unique
+  // suffix per call so multiple subscribers don't share a channel and
+  // trip supabase-realtime-js's "cannot add callbacks after subscribe()"
+  // error. accountId-filtered when present.
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const channelName = accountId
+    ? `lr_brand_kit_notes_${accountId}_${suffix}`
+    : `lr_brand_kit_notes_stream_${suffix}`;
+  const filter = accountId
+    ? { event: '*', schema: 'public', table: 'brand_kit_notes', filter: `account_id=eq.${accountId}` }
+    : { event: '*', schema: 'public', table: 'brand_kit_notes' };
+  const channel = supabase
+    .channel(channelName)
+    .on('postgres_changes', filter, async (payload) => {
+      try {
+        if (payload.eventType === 'DELETE') {
+          onChange({ type: 'DELETE', id: payload.old.id });
+          return;
+        }
+        const { data } = await supabase
+          .from('brand_kit_notes')
+          .select(BRAND_KIT_NOTE_SELECT)
+          .eq('id', payload.new.id)
+          .maybeSingle();
+        onChange({ type: payload.eventType, note: data ? mapBrandKitNoteRow(data) : null });
+      } catch (e) {
+        console.warn('brand_kit_notes realtime failed', e);
+      }
+    })
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
