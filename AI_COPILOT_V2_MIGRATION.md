@@ -71,18 +71,19 @@ Mark a phase complete only when its PR is merged AND the Vercel preview has been
 
 | # | Phase | Status | PR |
 |---|---|---|---|
-| PoC | Cache verification PoC — confirm `providerOptions.anthropic.cacheControl` produces the same `cache_read_input_tokens > 0` we get from the raw SDK today | 🟡 in progress | (this PR) |
-| 0 | Foundation — add `ai`, `@ai-sdk/anthropic`, `@ai-sdk/react`, `zod`, `tailwindcss`, `postcss`, `autoprefixer`; init shadcn with CSS-variables mode; scope Tailwind to `ai-elements/` only; disable `preflight` globally | ⏳ pending | — |
-| 1a | Server: `/api/ai/chat` → `streamText` + AI SDK tools + `stopWhen: stepCountIs(8)` | ⏳ pending | — |
-| 1b | Server: `/api/ai/copy` → `streamText` (no tools) | ⏳ pending | — |
-| 1c | Server: `/api/ai/image` → `streamObject` (ideas mode) + `streamText` (prompt mode) | ⏳ pending | — |
-| 2a | Client: `CopilotPanel.jsx` → `useChat` + Elements (Conversation / Message / PromptInput / Tool / Reasoning / Suggestion / Persona / Loader) | ⏳ pending | — |
+| PoC | Cache verification PoC — confirmed `providerOptions.anthropic.cacheControl` produces the same Anthropic cache hits as the raw SDK. ~99.6% cache-hit rate on call 2 (3515 / 3529 input tokens). | ✅ merged | [#60](https://github.com/CodeFire98/lr-studio-dashboard/pull/60) |
+| 0 | Foundation — Tailwind v3.4 + shadcn primitives + AI SDK deps. Content scoped to `ai-elements/`, preflight disabled. JS byte-identical, CSS +3.7 KB raw. | ✅ merged | [#61](https://github.com/CodeFire98/lr-studio-dashboard/pull/61) |
+| HOTFIX | Scope shadcn `--accent` (and other tokens) under `.ai-elements` instead of `:root` — was clobbering app.css's coral `--accent: #E8553D` in prod. Moved rules OUTSIDE `@layer base` so Tailwind content-purging can't drop them. | ✅ merged | [#63](https://github.com/CodeFire98/lr-studio-dashboard/pull/63) |
+| 1a | Server: `/api/ai/chat` → `streamText` + AI SDK `tool({ inputSchema (Zod), execute })` + `stopWhen: stepCountIs(8)`. Wire protocol preserved (legacy SSE event names). 464 → 391 LoC. Smoke-tested on Bamboo Bear. | ✅ merged | [#62](https://github.com/CodeFire98/lr-studio-dashboard/pull/62) |
+| 1b | Server: `/api/ai/copy` → `streamText` (no tools). Wire protocol preserved. 292 → 277 LoC. | 🟡 open | [#64](https://github.com/CodeFire98/lr-studio-dashboard/pull/64) |
+| 1c | Server: `/api/ai/image` → `streamObject` (ideas mode) + `streamText` (prompt mode). Replaces lenient JSON parser with Zod schema. Also DELETES `web/api/ai/cache-poc.ts` (PoC retired). | ⏳ pending | — |
+| 2a | Client: `CopilotPanel.jsx` → `useChat` + Elements (Conversation / Message / PromptInput / Tool / Reasoning / Suggestion / Persona / Loader). Wire protocol switches to AI SDK data-stream protocol here. | ⏳ pending | — |
 | 2b | Client: `AICopyPreview.jsx` → `useCompletion` | ⏳ pending | — |
 | 2c | Client: `AIImagePromptPanel.jsx` → `useObject` (ideas) + `useCompletion` (prompt) | ⏳ pending | — |
 | 3 | Net-new: pick from {Reasoning panel surfacing, image attachments in chat, dynamic Suggestion chips from `recentApprovedPlans`, per-message cost in metadata} | ⏳ pending | — |
 | 4 | Optional: DB-backed conversation persistence (Supabase `copilot_conversations` table). Only if a user asks. | 🚫 not scheduled | — |
 
-Recommendation: ship as **PR A (PoC + Phase 0 + Phase 1)**, **PR B (Phase 2)**, **PR C (Phase 3 cherry-pick)** — three approvals instead of seven.
+**Update history**: PoC + Phase 0 + Hotfix + Phase 1a all merged 2026-05-11. Originally planned as one big "PR A" — split into one PR per phase based on user smoke-testing each before continuing.
 
 ---
 
@@ -220,6 +221,22 @@ Add a one-line entry every time we make a "we tried X, chose Y" call during the 
 - **2026-05-11**: Go full path (SDK + Elements) over SDK-only. Reason: AI Elements unlocks ~10 net-new capabilities (Reasoning, attachments, suggestions, etc.) for ~1.5 extra days of work. — Lakshith
 - **2026-05-11**: PoC first before Phase 0. Reason: cache survival is the entire cost premise; 20-min verification de-risks the next 5 days. — Lakshith
 - **2026-05-11**: Stay on Bamboo Bear allowlist through all phases. Reason: blast radius minimization while changing the stack. — Lakshith
+- **2026-05-11**: System prompt stays brand-agnostic; all brand-specific tuning flows through `brand_kit_notes` per brand. Reason: every new brand inherits universal platform best-practices automatically without code changes. Brand specifics accumulate via the memory tool over time. — Lakshith
+
+## Deferred / roadmap (out of the v2 migration but tracked here)
+
+These items came up during the v2 work but are scoped to separate PRs after migration completes (or in parallel if priority shifts).
+
+- **Brand notes restructure** — three sub-pieces, one PR when picked up:
+  1. RLS migration on `brand_kit_notes` tightening from "agency staff OR account members" → **agency staff only** on SELECT/INSERT/UPDATE/DELETE.
+  2. Frontend gating in [BrandNotesSection.jsx](web/src/components/BrandNotesSection.jsx) so non-agency users never see the card.
+  3. Move the Brand notes UI out of [BrandKitView.jsx](web/src/components/BrandKitView.jsx) into its own top-level view (e.g. `/c/:slug/brand-notes`) with an agency-only sidebar entry positioned below "Trends Radar".
+  - **Rationale**: notes are a thinking-out-loud surface for the agency. Brand users shouldn't see the raw memory dump, and the notes deserve a dedicated workspace rather than being buried inside BrandKit.
+  - **Migration touchpoint**: the user runs the SQL via Supabase dashboard (per project pattern).
+  - **Status**: scoped, not started.
+
+- **System prompt platform-quality improvements (universal)** — small standalone PR adding platform-specific copywriting guidance to the SYSTEM_PROMPT in [chat.ts](web/api/ai/chat.ts). Applies to all brands. **Note**: deliberately NOT pre-baking any brand-specific guidance (e.g. Bamboo Bear quirks) into the system prompt — that work lives in `brand_kit_notes`.
+  - **Status**: deferred until Track A (v2 migration) is fully in.
 
 ---
 

@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-11 (Rebrand to **Linkrunner Media** + UX polish pass: agency banner removed, universal search bar removed (deferred to roadmap), "Add brand asset" CTA hoisted to the top of Brand Intelligence, video uploads now get a client-extracted JPEG thumbnail sidecar so the grid shows real frames instead of a generic play icon. Earlier same-day: daily-digest idempotency check added.)
+**Last updated:** 2026-05-11 (**AI Co-pilot v2 migration kickoff**: PoC + Phase 0 + Phase 1a + hotfix shipped; Phase 1b open as PR #64. Migrating from raw `@anthropic-ai/sdk` + hand-rolled SSE/MAX_TURNS loop to the Vercel AI SDK + AI Elements component library. Wire protocol preserved through Phase 1 so existing client components keep working untouched until Phase 2. Bamboo-Bear-only allowlist scope. Tracked end-to-end in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md). Earlier same-day: Rebrand to **Linkrunner Media** + UX polish pass; daily-digest idempotency check added.)
 
 ---
 
@@ -11,6 +11,26 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-11 — AI Co-pilot v2 Phase 1b: migrate `/api/ai/copy` to Vercel AI SDK ([PR #64](https://github.com/CodeFire98/lr-studio-dashboard/pull/64))
+Server-only change to the inline AI draft / AI redraft route. Replaces raw `@anthropic-ai/sdk` + hand-rolled streaming with `streamText` from the Vercel AI SDK. Wire protocol unchanged (same SSE event names: `text` / `usage` / `done` / `error`) so [AICopyPreview.jsx](web/src/components/AICopyPreview.jsx) keeps working untouched until Phase 2b. Two cache breakpoints expressed via `providerOptions.anthropic.cacheControl = { type: 'ephemeral' }` — same caching behaviour as v1, verified by the PoC (PR #60). Bamboo Bear allowlist only.
+- **Sections touched:** Recent changes log; `Last updated`.
+
+### 2026-05-11 — AI Co-pilot v2 Phase 1a: migrate `/api/ai/chat` to Vercel AI SDK ([PR #62](https://github.com/CodeFire98/lr-studio-dashboard/pull/62))
+The conversational chat route swap. Replaces the raw Anthropic SDK + manual `while (turn < MAX_TURNS)` tool-use loop with `streamText` + AI SDK `tool({ inputSchema (Zod), execute })` factories and `stopWhen: stepCountIs(8)`. The SDK now handles agentic looping + tool_use → tool_result message threading automatically. Wire protocol unchanged — [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx) untouched. Tools `create_post_plan_draft` and `write_brand_note` re-expressed with Zod schemas; same side-effects on `post_plans` and `brand_kit_notes` tables. 464 LoC → 391 LoC net.
+- **Sections touched:** Recent changes log; `Last updated`; §13 Known decisions (entries: SDK-managed agentic loop over manual MAX_TURNS while-loop; wire-protocol-preserved during server migration so client can swap in a separate phase). §10 Edge functions (`/api/ai/chat` implementation rewritten; behaviour identical).
+
+### 2026-05-11 — Hotfix: scope shadcn CSS tokens under `.ai-elements` (restore coral `--accent`) ([PR #63](https://github.com/CodeFire98/lr-studio-dashboard/pull/63))
+Production regression fix. Phase 0's `elements.css` had defined shadcn's neutral `--accent: 0 0% 96.1%` under `:root`, silently overriding `app.css`'s `--accent: #E8553D` (coral) because elements.css imports after app.css. Every button styled with `var(--accent)` lost its orange in prod (Co-pilot pill, "Open plan →" tool card button, user message bubbles, post-plan delete button, login modal submit). Two-piece fix: (1) scope the shadcn token block under `.ai-elements` selector instead of `:root`; (2) move it OUTSIDE `@layer base` so Tailwind v3.4's content-scan purging doesn't drop the block when no AI Elements files exist yet. AI Elements components in Phase 2+ MUST render inside `<div className="ai-elements">` to pick up the scoped tokens.
+- **Sections touched:** Recent changes log; `Last updated`; §13 Known decisions (entry: scope-shadcn-tokens-under-`.ai-elements`-not-`:root`-to-avoid-clobbering-existing-design-tokens).
+
+### 2026-05-11 — AI Co-pilot v2 Phase 0: Tailwind + shadcn foundation ([PR #61](https://github.com/CodeFire98/lr-studio-dashboard/pull/61))
+Pipeline-only foundation. No live route or client component touched. Adds `tailwindcss@^3.4` (+ `postcss` + `autoprefixer`), `@ai-sdk/react`, `class-variance-authority`, `clsx`, `lucide-react`, `tailwind-merge`, `tailwindcss-animate`. New config files: `tailwind.config.js` (content glob scoped to `web/src/components/ai-elements/**` only; `corePlugins.preflight: false` to disable Tailwind's CSS reset), `postcss.config.js`, `components.json` (shadcn registry), `web/src/lib/utils.ts` (cn() helper). New `web/src/styles/elements.css` imported AFTER `app.css` in `main.jsx` so Tailwind utilities used inside ai-elements/* can override hand-written base styles per-component. JS bundle byte-identical. CSS bundle +3.7 KB raw / +0.65 KB gzipped (empty Tailwind base layer). Important: this PR's `:root`-scoped shadcn tokens caused a prod regression — fixed by the same-day hotfix PR #63 (now landed).
+- **Sections touched:** Recent changes log; `Last updated`; §4 Tech stack (note: Tailwind v3.4 added, scoped to `ai-elements/` only — does not replace hand-written CSS); §13 Known decisions (entries: scope-Tailwind-via-content-glob-not-globally; disable-preflight-to-protect-hand-written-CSS; Tailwind-v3-over-v4 for shadcn-style compatibility).
+
+### 2026-05-11 — AI Co-pilot v2: cache PoC + migration tracking doc ([PR #60](https://github.com/CodeFire98/lr-studio-dashboard/pull/60))
+First commit of the AI Co-pilot v2 migration. Adds [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md) — the migration runbook with phase plan, rollback steps, cost model, and a "things that could break later" checklist. Adds a temporary verification route at `web/api/ai/cache-poc.ts` (agency-only) that runs two `generateText` calls 1.5s apart with identical `providerOptions.anthropic.cacheControl = { type: 'ephemeral' }` system messages and returns both calls' cache token counts. Confirmed: 3515 / 3529 input tokens served from cache (~99.6% hit rate) — the AI SDK provider produces identical Anthropic cache behaviour to the raw SDK. Migration is safe to proceed. Deps added: `ai@^6`, `@ai-sdk/anthropic@^3`, `zod@^4`. Live routes untouched.
+- **Sections touched:** Recent changes log; `Last updated`; §10 Edge functions / API routes (NEW: `/api/ai/cache-poc.ts` — TEMPORARY, scheduled for deletion after Phase 1c lands); §13 Known decisions (entries: AI-SDK-+-AI-Elements over SDK-only; PoC-before-Phase-0 to validate cache survival; preserve-wire-protocol during server migration; Bamboo-Bear-only allowlist scope through all v2 phases).
 
 ### 2026-05-11 — Rebrand to "Linkrunner Media" + dashboard polish (banner / search / brand-asset CTA / video thumbnails)
 
@@ -690,12 +710,13 @@ paint, then revalidated against the live session.
 
 ## 4. Tech stack
 
-- **Frontend**: React 18 + Vite, vanilla CSS (no Tailwind), no router (state-based routing in App.jsx)
+- **Frontend**: React 18 + Vite, hand-written CSS in `web/src/styles/app.css` (~2500 lines, authoritative for all current UI). **Scoped Tailwind v3.4** added in AI Co-pilot v2 Phase 0 ([PR #61](https://github.com/CodeFire98/lr-studio-dashboard/pull/61)) — content glob restricted to `web/src/components/ai-elements/**` only, `preflight: false` so the existing CSS reset stays authoritative, design tokens scoped under `.ai-elements` class (NOT `:root`). Tailwind only applies inside AI Elements components from Phase 2 onward; the rest of the app remains pure hand-written CSS.
+- **AI / LLM**: Vercel **AI SDK v6** (`ai` + `@ai-sdk/anthropic@^3` + `@ai-sdk/react@^3`) + `zod@^4` for tool/output schemas. AI Co-pilot v2 migration in progress — see [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md). Phase 1 server routes (`/api/ai/chat`, `/api/ai/copy`) use `streamText` + `tool({ inputSchema (Zod), execute })`; Phase 2 client uses `useChat` / `useCompletion` / `useObject` hooks. `@anthropic-ai/sdk@^0.95` still in deps as a transitional dep (only used by the `/api/ai/image` route until Phase 1c lands). **AI Elements** component library (shadcn-style copy-paste from `https://elements.ai-sdk.dev/`) lands in Phase 2 for chat surfaces (Conversation / Message / PromptInput / Tool / Reasoning / Persona).
 - **Data layer**: `@supabase/supabase-js` v2 — single client at `web/src/lib/supabase.js`
 - **Auth**: Supabase Auth (email/password + Google OAuth + invite tokens)
 - **Backend**: Postgres on Supabase, RLS-enforced
 - **Edge runtime**: Deno on Supabase Functions
-- **External**: Firecrawl v2 (`/scrape` for enrichment, planned `/agent` for socials)
+- **External**: Firecrawl v2 (`/scrape` for enrichment, planned `/agent` for socials); Anthropic Claude (claude-sonnet-4-6 default; prompt caching via 5-min `ephemeral` TTL)
 - **Hosting**: Vercel (auto-deploy on `main`), Vercel Web Analytics + Speed Insights enabled
 - **Custom fonts**: Google Fonts loaded on demand by `useGoogleFonts()` hook
 
