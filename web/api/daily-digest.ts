@@ -387,6 +387,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
   }
 
+  // Audit log — one row per (run, brand) into daily_digest_log so we
+  // have a permanent SQL-queryable trail of which brand got what on
+  // which day. Vercel's runtime logs evict after ~24h on Hobby and the
+  // observability invocations page caps at 12h, so without this we
+  // can't answer "did Bamboo Bear get yesterday's email?" without
+  // catching the run live. Failure to write the audit log is logged
+  // but doesn't fail the run — the email send is the primary goal.
+  if (results.length > 0) {
+    const rows = results.map((r) => ({
+      run_at: now.toISOString(),
+      account_id: r.accountId,
+      brand_name: r.brandName,
+      sent: r.sent,
+      failed: r.failed,
+      recipients: r.recipients,
+      plans_needs_review: r.needsReview,
+      plans_approved: r.approved,
+      skip_reason: r.skipReason,
+      skip_details: r.skipDetails
+        ? String(r.skipDetails).slice(0, 500)
+        : null,
+      window_start_utc: startUtc,
+      window_end_utc: endUtc,
+      tomorrow_ist_label: istDateLabel,
+    }));
+    const { error: logErr } = await client.from("daily_digest_log").insert(rows);
+    if (logErr) {
+      console.warn("[daily-digest] audit log insert failed", logErr.message);
+    }
+  }
+
   const totalSent = results.reduce((acc, r) => acc + r.sent, 0);
   const totalFailed = results.reduce((acc, r) => acc + r.failed, 0);
   res.status(200).json({
