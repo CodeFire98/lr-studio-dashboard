@@ -220,6 +220,22 @@ Add a one-line entry every time we make a "we tried X, chose Y" call during the 
 - **2026-05-11**: Go full path (SDK + Elements) over SDK-only. Reason: AI Elements unlocks ~10 net-new capabilities (Reasoning, attachments, suggestions, etc.) for ~1.5 extra days of work. — Lakshith
 - **2026-05-11**: PoC first before Phase 0. Reason: cache survival is the entire cost premise; 20-min verification de-risks the next 5 days. — Lakshith
 - **2026-05-11**: Stay on Bamboo Bear allowlist through all phases. Reason: blast radius minimization while changing the stack. — Lakshith
+- **2026-05-11**: System prompt stays brand-agnostic; all brand-specific tuning flows through `brand_kit_notes` per brand. Reason: every new brand inherits universal platform best-practices automatically without code changes. Brand specifics accumulate via the memory tool over time. — Lakshith
+
+## Deferred / roadmap (out of the v2 migration but tracked here)
+
+These items came up during the v2 work but are scoped to separate PRs after migration completes (or in parallel if priority shifts).
+
+- **Brand notes restructure** — three sub-pieces, one PR when picked up:
+  1. RLS migration on `brand_kit_notes` tightening from "agency staff OR account members" → **agency staff only** on SELECT/INSERT/UPDATE/DELETE.
+  2. Frontend gating in [BrandNotesSection.jsx](web/src/components/BrandNotesSection.jsx) so non-agency users never see the card.
+  3. Move the Brand notes UI out of [BrandKitView.jsx](web/src/components/BrandKitView.jsx) into its own top-level view (e.g. `/c/:slug/brand-notes`) with an agency-only sidebar entry positioned below "Trends Radar".
+  - **Rationale**: notes are a thinking-out-loud surface for the agency. Brand users shouldn't see the raw memory dump, and the notes deserve a dedicated workspace rather than being buried inside BrandKit.
+  - **Migration touchpoint**: the user runs the SQL via Supabase dashboard (per project pattern).
+  - **Status**: scoped, not started.
+
+- **System prompt platform-quality improvements (universal)** — small standalone PR adding platform-specific copywriting guidance to the SYSTEM_PROMPT in [chat.ts](web/api/ai/chat.ts). Applies to all brands. **Note**: deliberately NOT pre-baking any brand-specific guidance (e.g. Bamboo Bear quirks) into the system prompt — that work lives in `brand_kit_notes`.
+  - **Status**: deferred until Track A (v2 migration) is fully in.
 
 ---
 

@@ -1,37 +1,29 @@
 // =====================================================================
 // /api/ai/copy — Vercel serverless function — AI inline copy generation
 //
-// PR 4 of the AI Co-pilot phase. Generates per-platform post copy for an
-// existing post_plans row and streams the text back over Server-Sent
-// Events. The client renders the streamed text in an inline preview next
-// to the textarea — the user clicks "Use this" to accept or "Discard" to
-// dismiss. The server never writes to copy_variants; the existing
-// client-side persist() path owns DB writes.
+// AI Co-pilot v2 Phase 1b: migrated from raw @anthropic-ai/sdk to the
+// Vercel AI SDK's streamText primitive. Single-shot text generation,
+// no tools, no agentic loop — simpler than /api/ai/chat. Wire protocol
+// preserved (text / usage / done / error events) so AICopyPreview.jsx
+// keeps working untouched until Phase 2b.
 //
-// Why a separate endpoint from /api/ai/chat (and not just another tool):
-//   - This is a single-shot text generation, not an agentic loop. No
-//     tool-use overhead, lower latency, simpler client code (just consume
-//     a stream of text deltas, no tool-call cards).
-//   - The system prompt is mode-specific ("you are writing JUST the
-//     {platform} caption for this post, output the caption only — no
-//     preamble, no explanation"). Different shape from the conversational
-//     Co-pilot which is allowed to chat / call tools / propose things.
-//
-// Modes (PR 4 ships `draft` only; `improve` / `variants` follow in later PRs):
+// Modes:
 //   - draft: generate fresh copy from concept + brand voice. Used when
 //     the textarea is empty OR the user explicitly wants a fresh take.
+//   - improve: revise existing copy based on the admin's instruction.
+//     The current caption is the starting point — preserve what works,
+//     change ONLY what's asked.
 //
-// Auth model (mirrors /api/ai/chat): JWT verified → is_agency check →
-// AI_COPILOT_BRAND_IDS allowlist gate on the target accountId.
+// Auth model (unchanged): JWT → is_agency → AI_COPILOT_BRAND_IDS gate.
 //
-// Env vars: ANTHROPIC_API_KEY, AI_COPILOT_BRAND_IDS, SUPABASE_URL,
-// SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY (all already set on
-// lr-studio-dashboard-3kkp Vercel project from PR 2).
+// Env vars (unchanged): ANTHROPIC_API_KEY, AI_COPILOT_BRAND_IDS,
+// SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.
 // =====================================================================
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import Anthropic from "@anthropic-ai/sdk";
+import { streamText } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
@@ -44,7 +36,7 @@ const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL_ID = "claude-sonnet-4-6";
 const MAX_TOKENS = 700; // Captions are short; cap aggressively.
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -197,24 +189,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.status(200);
   res.write(": stream open\n\n");
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-
   // Pick the right system prompt for the mode. The brand-context block is
   // identical across both, so it caches across draft + improve calls for
-  // the same brand within the 5-min TTL.
+  // the same brand within the 5-min TTL — and across this route AND
+  // /api/ai/chat AND /api/ai/image since all three use the same
+  // brandContext.js compiler output.
   const systemInstructions = mode === "improve" ? SYSTEM_INSTRUCTIONS_IMPROVE : SYSTEM_INSTRUCTIONS_DRAFT;
-  const systemBlocks: Anthropic.TextBlockParam[] = [
-    {
-      type: "text",
-      text: systemInstructions,
-      cache_control: { type: "ephemeral" },
-    },
-    {
-      type: "text",
-      text: `\n\n---\n\n${brandContext}`,
-      cache_control: { type: "ephemeral" },
-    },
-  ];
 
   const platformLabel = PLATFORM_LABEL[body.platform];
   const platformGuide = PLATFORM_GUIDANCE[body.platform];
@@ -261,27 +241,54 @@ Output the caption text only — no preamble, no quotes.`;
   }
 
   try {
-    const stream = anthropic.messages.stream({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: systemBlocks,
-      messages: [{ role: "user", content: userMessage }],
+    // Two cache breakpoints, same as chat.ts:
+    //   1. Mode-specific system instructions
+    //   2. Brand context blob
+    // Cache validated by the Phase 1a smoke test on /api/ai/chat.
+    const result = streamText({
+      model: anthropic(MODEL_ID),
+      maxOutputTokens: MAX_TOKENS,
+      messages: [
+        {
+          role: "system",
+          content: systemInstructions,
+          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+        },
+        {
+          role: "system",
+          content: `\n\n---\n\n${brandContext}`,
+          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+        },
+        { role: "user", content: userMessage },
+      ],
     });
 
-    stream.on("text", (delta) => {
-      writeSseEvent(res, "text", { delta });
-    });
-
-    const finalMessage = await stream.finalMessage();
-
-    writeSseEvent(res, "usage", {
-      input_tokens: finalMessage.usage.input_tokens,
-      output_tokens: finalMessage.usage.output_tokens,
-      cache_creation_input_tokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
-      cache_read_input_tokens: finalMessage.usage.cache_read_input_tokens ?? 0,
-    });
-
-    writeSseEvent(res, "done", { stop_reason: finalMessage.stop_reason });
+    // Drain fullStream and translate to the legacy wire protocol —
+    // same event names as chat.ts so AICopyPreview.jsx works untouched.
+    for await (const part of result.fullStream) {
+      if (part.type === "text-delta") {
+        writeSseEvent(res, "text", { delta: part.text });
+      } else if (part.type === "finish-step") {
+        const u = part.usage as
+          | {
+              inputTokens?: number;
+              outputTokens?: number;
+              inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
+            }
+          | undefined;
+        writeSseEvent(res, "usage", {
+          input_tokens: u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0,
+          output_tokens: u?.outputTokens ?? 0,
+          cache_creation_input_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
+          cache_read_input_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
+        });
+      } else if (part.type === "finish") {
+        writeSseEvent(res, "done", { stop_reason: part.finishReason });
+      } else if (part.type === "error") {
+        const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
+        writeSseEvent(res, "error", { error: errMsg });
+      }
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     writeSseEvent(res, "error", { error: msg });
