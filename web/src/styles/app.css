@@ -4641,6 +4641,25 @@ input, textarea { font: inherit; color: inherit; }
   place-items: center;
 }
 .copilot-close:hover { background: var(--surface-2); color: var(--ink); }
+.copilot-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.copilot-header-btn {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 500;
+}
+.copilot-header-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 .copilot-scroll {
   flex: 1;
