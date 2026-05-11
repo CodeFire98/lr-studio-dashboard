@@ -1309,7 +1309,8 @@ const PostPlanDetailView = ({
                                 accountId={plan.accountId}
                                 planId={plan.id}
                                 platform={activeCopyTab}
-                                hasExistingCopy={!!draft.trim()}
+                                mode={draft.trim() ? 'improve' : 'draft'}
+                                currentCopy={draft}
                                 onAccept={(generated) => {
                                   handleCopyChange(activeCopyTab, generated);
                                   setAiPreviewPlatform(null);

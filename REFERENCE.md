@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-11 (AI Co-pilot PR 4 — Inline "✨ AI draft" button on each platform's copy editor in `PostPlanDetailView`. Click streams a brand-voice caption into an inline preview block via the new `/api/ai/copy` endpoint; admin clicks "Use this" / "Regenerate" / "Discard". No DB writes from the server — the existing client-side persist flow owns saving.)
+**Last updated:** 2026-05-11 (AI Co-pilot PR 5 — Instruction-driven AI draft/redraft. The inline copy preview now asks the admin "what should this post be about?" / "what should I change?" BEFORE generating, so the model has explicit direction. Redraft mode reads the in-flight draft (incl. unsaved edits) as the starting point and preserves what works — only changes what the instruction asks. Instruction stays editable after streaming so the admin can refine + Regenerate to iterate.)
 
 ---
 
@@ -11,6 +11,32 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-11 — AI Co-pilot PR 5: instruction-driven AI draft / redraft
+PR 4 shipped an inline "AI draft" button but the model had no specific direction — it just wrote whatever caption it thought made sense from the brand voice + concept, which was too random for production use. And "redraft" wasn't actually picking up the existing copy to improve. This PR rebuilds both flows around an **explicit instruction step** from the admin.
+
+**New flow**:
+1. Click "✨ AI draft" (empty textarea) or "✨ AI redraft" (textarea has content)
+2. Preview block opens in **compose phase** — small textarea autofocused with a placeholder ("What should this post be about?" / "What should I change?")
+3. Admin types their direction → ⌘↩ or click "Generate"
+4. Switches to **streaming phase** — caption streams into the body below; Stop button to abort
+5. **Done phase** — admin reviews. Instruction textarea is still visible so they can edit it and click **Regenerate** to iterate; or **Use this** / **Replace with this** to accept; or **Discard** to dismiss
+6. For redraft: the in-flight draft (incl. unsaved edits in the textarea, not just the saved version) is sent as `current_copy`. The model treats it as the starting point and changes ONLY what the instruction asks — preserves the rest.
+
+- **`web/api/ai/copy.ts`** — extended:
+  - Body shape gains `instruction: string` (optional but strongly used) and `current_copy: string` (required for `mode: 'improve'`)
+  - Two distinct system prompts: `SYSTEM_INSTRUCTIONS_DRAFT` and `SYSTEM_INSTRUCTIONS_IMPROVE`. Improve mode's prompt is critical — it tells the model to **preserve what works in the current caption and change ONLY what the admin asks**, NOT to rewrite from scratch ("Don't add changes they didn't ask for — match what they asked, no more, no less").
+  - User message for `improve` includes the current copy verbatim (triple-quoted block) + the admin's instruction. For `draft`, the instruction (if any) is included as "ADMIN'S DIRECTION (the primary signal for what this post should be about)".
+  - Empty instruction is allowed in both modes — in `draft` mode the model falls back to brand voice + concept (the PR 4 behaviour); in `improve` mode the model does a conservative single-pass polish.
+  - The brand-context blob is unchanged → still hits the same prompt cache as `/api/ai/chat`, so back-to-back draft + redraft + chat operations within 5 min all cache against each other.
+- **`web/src/components/AICopyPreview.jsx`** — rebuilt as a state machine: `compose` → `streaming` → `done` (or `error`). The instruction textarea stays mounted across all phases and remains editable after streaming completes, so the admin can iterate without closing the preview. ⌘↩ from the instruction input fires Generate. Stop button mid-stream keeps whatever's been received so far and moves to `done` (so the admin can use a partial result if it's already good enough). Regenerate re-fires with the current (possibly-edited) instruction; instruction remains editable between regenerations.
+- **`web/src/components/PostPlanDetailView.jsx`** — passes `mode={draft.trim() ? 'improve' : 'draft'}` and `currentCopy={draft}` to `<AICopyPreview/>`. Note: `draft` is the in-flight `copyDrafts[platform]` state (controlled textarea), not the saved `copyVariants[platform]` — so any unsaved edits the admin made in the textarea are visible to the AI when they click redraft. Matches the user's intent — "improve what I have RIGHT NOW," not "improve what's saved on the server."
+- **CSS** — `.ai-copy-preview-instruction` block (dashed-bottom-border separator, label, textarea, hint line showing ⌘↩ shortcut or "Edit instruction + Regenerate to iterate"). Visually distinct from the streamed-output area below so the admin's input is clearly separate from the AI's output.
+- **What this PR replaces in the roadmap**:
+  - **Generic "Improve" dropdown** (was PR 5 — "Shorter", "More playful", "Remove emojis", "Custom…"): **dropped permanently**. The free-form instruction textarea covers everything the dropdown would have, plus the long tail (anything the dropdown couldn't enumerate). Don't bring this back unless we hit a usage pattern that genuinely wants presets.
+  - **A/B 3 variants** (was PR 6): **deferred to the long-tail backlog**. The instruction-driven loop covers the iterate case ("regenerate with a different instruction") natively, so A/B is less urgent. Revisit if multiple users explicitly ask for side-by-side comparison.
+- **What's still queued**: PR 6 is now **brand memory** (was PR 7) — `write_brand_note` tool + BrandKit notes UI. PR 7+ same long-tail as before (Suggest concept, image prompt generator, trend → plan, performance feedback).
+- **Sections touched**: Recent changes log; `Last updated`; §10 `/api/ai/copy` subsection (body shape, system prompts, behaviour); §13 Known decisions (new entry: instruction-as-required-input over generic-presets-or-no-direction); §14 Pending work (PR 5 retired and pre-existing PR-5 (generic Improve) deleted from the queue; PR-6 (A/B variants) moved to backlog; brand-memory promoted from PR 7 to PR 6).
 
 ### 2026-05-11 — AI Co-pilot PR 4: inline "AI draft" on the copy editor
 First inline-AI surface inside `PostPlanDetailView`. Each platform's copy textarea now gets an "✨ AI draft" button in the EDIT-mode footer (only for agency users, only on Co-pilot-allowlisted brands). Clicking it streams a brand-voice caption suggestion into an inline preview below the textarea; admin reviews and applies / regenerates / discards. The chat panel from PR 2 is still the right tool for "plan a week" or brainstorming — the inline button is for the 50-times-a-day "draft the IG caption" workflow that's too small to context-switch into chat for.
@@ -1251,17 +1277,24 @@ Accept: text/event-stream
   "accountId": "<brand uuid>",
   "plan_id": "<post_plans.id>",
   "platform": "instagram" | "linkedin" | "x",
-  "mode": "draft"
+  "mode": "draft" | "improve",      // default 'draft'
+  "instruction": "<free-form direction>",  // optional but strongly used; primary signal for what to generate
+  "current_copy": "<existing caption>"     // required for mode='improve'; the starting point the model preserves and only changes per the instruction
 }
 // → 200 text/event-stream — same SSE events as /api/ai/chat (text / usage / done / error), no tool_call events since this route doesn't use tools
 // → 4xx/5xx { error }
 ```
 
-#### Mode
+#### Modes
 
-- **`draft` (PR 4)**: generates a fresh caption from the plan's concept + brand voice. Used both when the textarea is empty and when the user wants a different take. The client's "Replace with this" button confirms before overwriting existing copy.
+- **`draft`**: generate a fresh caption. The admin's `instruction` (e.g. "a Mother's Day post celebrating moms who run small businesses") is the primary direction; the plan's stored `concept` is fallback context. Empty instruction is allowed — the model falls back to concept + brand voice.
+- **`improve`**: revise the provided `current_copy` based on the admin's `instruction` (e.g. "make the hook punchier", "add a CTA at the end"). The model's system prompt explicitly says to **preserve what works and change only what the instruction asks** — no scratch rewrites, no unrequested changes. Empty instruction triggers a conservative polish (tighten weak phrasing, fix awkward rhythm, lean further into the brand voice).
 
-Future modes (PR 5+): `improve` (revise current_copy based on an instruction), `variants` (generate 3 A/B angles).
+`current_copy` for `improve` mode is the **in-flight client draft** (whatever's in the textarea, including unsaved edits), not the saved server-side value. This matches the admin's intent: "improve what I have RIGHT NOW," not "improve what was last saved."
+
+Deferred / dropped from earlier roadmap:
+- **`variants` mode** (3 side-by-side A/B angles): moved to long-tail backlog. The instruction-driven loop covers iteration ("regenerate with a different instruction") natively.
+- **Generic Improve dropdown** ("Shorter" / "More playful" / "Remove emojis"): dropped permanently — the free-form instruction textarea covers everything presets would have, plus the long tail.
 
 #### Why a separate endpoint from `/api/ai/chat` and not just another tool
 
@@ -1355,6 +1388,7 @@ Same as the other Vercel routes: push to branch → preview deploy auto-builds; 
 
 Running log of "we considered X and chose Y because Z" — newest first.
 
+- **AI copy generation asks the admin for an instruction BEFORE generating, no presets.** PR 4 generated copy from brand voice + concept alone — output was too random and didn't react to the admin's intent for this specific post. Considered (a) a "Custom prompt" textarea + a dropdown of presets like "Shorter / More playful / Remove emojis", (b) free-form instruction textarea only, (c) leave as-is and ask the admin to refine via Regenerate. Chose (b). Presets sound friendly but in practice an agency drafting for a specific brand has specific things in mind — "a Mother's Day post celebrating moms who run small businesses" isn't a preset; "make the hook punchier and add a CTA about our sustainability page" isn't a preset. A textarea covers both the easy case ("shorter") AND the long tail, and an agency lead types fast enough that the friction is minimal. Presets would also have to be maintained, internationalized, A/B tested for which ones work, etc. — overhead for a feature that's strictly worse than letting users say what they actually want. The instruction stays editable after streaming so the admin can refine + Regenerate to iterate without closing the preview. For "redraft" mode specifically, the system prompt is critical — it instructs the model to **preserve what works in the current copy and change ONLY what the admin's instruction asks**. The first iteration of redraft just rewrote everything from scratch, which felt like "AI took my work away." The fix is in the prompt, not the API shape: explicit instructions to preserve + change-only-what's-asked.
 - **Inline copy generation is a separate `/api/ai/copy` endpoint, not another tool on `/api/ai/chat`.** The chat panel does agentic multi-turn work (call a tool → see the result → call another tool). Inline "AI draft" is single-shot — user clicks a button, the model writes one caption, that's it. Considered (a) add a `draft_post_copy(plan_id, platform)` tool to `/api/ai/chat`, (b) build a separate endpoint. Chose (b). Reasons: (i) latency — no tool-use loop overhead so tokens stream immediately on click instead of after the model "decides" to call the tool; (ii) the system prompt shape is different — chat is conversational, copy generation is "output ONE caption, no preamble, no quotes, no explanation," which Claude follows much better with a clean system message vs sharing context with chat instructions; (iii) the client consumer is half the size — only `text` events to parse, no `tool_call` / `tool_result` rendering. Trade-off: two endpoints to maintain, but they share the auth pipeline and `brandContext.js` compiler. Will keep this split if we add `improve` / `variants` modes (same endpoint, new mode flag) and only revisit if a use case wants AI orchestration across copy generation + plan creation in a single agentic flow.
 - **AI Co-pilot chat history persists to localStorage, not a DB table (for v1).** When the panel closes or the page refreshes today, the in-memory React state would be lost. Considered (a) DB table `copilot_conversations(account_id, user_id, messages jsonb)` with realtime + cross-device sync, (b) localStorage keyed by `(userId, accountId)`. Chose (b). Reasons: realtime cross-device sync isn't a real need yet (agency staff work from one machine 90%+ of the time); a DB table adds a migration, RLS, db.js helpers, optimistic-update plumbing, and realtime subscriptions for what users haven't asked for. localStorage gives us close→reopen continuity and refresh-survives — the two cases that actually came up in first-use testing — with one file and 30 LOC. We cap at last 60 messages per (user, brand) to keep growth bounded (~50KB per conversation, well under the 5MB browser cap even at 100 brands). When cross-device sync becomes a real ask, this migrates cleanly to a DB table — the message shape doesn't change, just the storage backend. The "Start new" header button explicitly clears (with confirm if non-empty) so the user has a manual reset they can trust.
 - **AI Co-pilot streams via SSE, not WebSocket and not a polling endpoint.** Three options for getting token-by-token Claude output to the panel: (a) WebSocket, (b) Server-Sent Events over a long-lived `text/event-stream` response, (c) chunked JSON polling. Chose (b) for several reasons: Vercel serverless functions support streaming responses out of the box (with `X-Accel-Buffering: no` to disable the default response buffering), Anthropic's TypeScript SDK has a first-class `stream()` API that exposes per-token deltas via `.on('text', ...)`, and SSE is one-way (server→client) which exactly matches our needs — we only send the user message at the start, then watch tokens come back. WebSocket would add bidirectional plumbing we don't use; polling would lose the token-level interactivity that makes the Co-pilot feel fast. The client uses a manual SSE parser (`parseSse` async generator) rather than `EventSource` because EventSource doesn't support POST bodies or `Authorization` headers — both of which we need (the user's JWT goes in the Authorization header, and the chat history goes in the POST body).
@@ -1422,12 +1456,12 @@ Running log of "we considered X and chose Y because Z" — newest first.
 
 ## 14. Pending work / known issues
 
-- **AI Co-pilot PR 5 — inline `improve` mode + dropdown of copy actions**: PR 4 (2026-05-11) shipped inline `draft` mode. Next: extend `/api/ai/copy` with `mode: 'improve'` (takes `current_copy` + `instruction`, returns a revised version), plus an "Improve" dropdown next to "AI draft" with preset instructions ("Shorter", "More playful", "Remove emojis", "Punchier hook") and a "Custom…" option that opens an inline prompt input. Same preview UX as PR 4 — streams into the preview block, accept replaces the textarea content.
-- **AI Co-pilot PR 6 — A/B 3 variants**: extend `/api/ai/copy` with `mode: 'variants'`. Generates 3 captions in parallel (different angles — hook-led, story-led, question-led). Side-by-side comparison UI in `AICopyPreview`. Per-variant "Use this" button.
-- **AI Co-pilot PR 7 — brand memory + BrandKit notes UI**: adds `write_brand_note` tool to `/api/ai/chat` so the Co-pilot persists "remember that…" facts to `brand_kit_notes`. Plus a new "Notes" section in BrandKit view for hand-edit (add / pin / delete). Realtime sync so chat-side writes show up in BrandKit UI without refresh. This is when the AI starts building a real per-brand memory over time.
-- **AI Co-pilot PR 8 — Suggest concept** on `ConvertIdeaModal` and the calendar empty-day right-click. Pre-fills a new plan from a vague idea or a blank Tuesday slot.
-- **AI Co-pilot PR 9 — Generate image prompt** button on the Deliverables card. Produces a ready-to-paste prompt for whatever image tool you use elsewhere.
-- **AI Co-pilot long-tail**: trend → plan auto-suggest (pre-fill `TurnIntoPostPlanModal` from a trend signal). Idea Inbox triage. Recurring series autopilot. Weekly Friday strategy memo. Performance feedback loop (needs `post_plan_publications` analytics piped in first).
+- **AI Co-pilot PR 6 — brand memory + BrandKit notes UI** *(promoted from PR 7 after the PR 5/6 collapse)*: adds `write_brand_note` tool to `/api/ai/chat` so the Co-pilot persists "remember that…" facts to `brand_kit_notes`. Plus a new "Notes" section in BrandKit view for hand-edit (add / pin / delete). Realtime sync so chat-side writes show up in BrandKit UI without refresh. **This is when the AI starts building a real per-brand memory over time.**
+- **AI Co-pilot PR 7 — Suggest concept** on `ConvertIdeaModal` and the calendar empty-day right-click. Pre-fills a new plan from a vague idea or a blank Tuesday slot.
+- **AI Co-pilot PR 8 — Generate image prompt** button on the Deliverables card. Produces a ready-to-paste prompt for whatever image tool you use elsewhere.
+- **AI Co-pilot long-tail / backlog**:
+  - **A/B 3 variants for copy generation** *(was PR 6, deferred 2026-05-11)*: side-by-side comparison UI generating 3 different angles. Less urgent now that instruction-driven `improve` covers iteration via the Regenerate-with-edited-instruction loop. Revisit if multiple users explicitly ask for side-by-side.
+  - Trend → plan auto-suggest (pre-fill `TurnIntoPostPlanModal` from a trend signal). Idea Inbox triage. Recurring series autopilot. Weekly Friday strategy memo. Performance feedback loop (needs `post_plan_publications` analytics piped in first).
 - **AI Co-pilot chat persistence**: PR 2 (2026-05-11) keeps chat history in-memory only — resets when the active brand changes or the panel unmounts. Not addressing yet. If users start losing context they care about, add a `copilot_conversations` table keyed by `(account_id, user_id)` with a jsonb `messages` column + an "Open recent chats" affordance in the panel header. Trivial migration, ~50 LOC on the panel side. Defer until someone asks.
 - **AI Co-pilot per-account toggle (vs env-var allowlist)**: PR 2 gates rollout via `AI_COPILOT_BRAND_IDS` env var. Once we're past the initial validation phase (multiple brands using it weekly), migrate to either `accounts.ai_copilot_enabled boolean` or a `feature_flags` table so the agency can self-serve toggle without a Vercel env-var deploy. Defer.
 - **Auto-downscale oversize images on upload**: today the dimension validator (`web/src/lib/imageValidation.js`) rejects images larger than 8192×8192 / 33MP. A friendlier alternative is auto-resizing via canvas: detect oversize, downscale to fit within the limits, replace the `File` reference, then proceed with upload. Trade-offs: canvas re-encoding silently shifts colour profiles (sRGB assumed), the original is lost unless we keep both, and EXIF/metadata is stripped. Worth doing if support requests pile up but not before. Track when we hear repeat complaints from non-technical users.

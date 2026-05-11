@@ -1,20 +1,26 @@
 // =====================================================================
-// AICopyPreview — inline streaming preview for AI-drafted post copy
+// AICopyPreview — instruction-driven inline AI copy generation
 // =====================================================================
 //
 // Used by PostPlanDetailView's per-platform copy editor. When the agency
-// clicks "✨ Draft" next to the copy textarea, this component appears
-// below it, streams the AI's caption suggestion in, and offers
-// "Use this" / "Discard" actions.
+// clicks "✨ AI draft" or "✨ AI redraft", this component opens and
+// asks for a short instruction ("what should this be about?" for draft,
+// "what should I change?" for redraft). The admin types their direction,
+// clicks Generate, and the AI streams a caption suggestion into the same
+// preview block.
 //
-// Streaming uses the same SSE protocol as /api/ai/chat — we parse it
-// here inline since it's a single-purpose, single-stream consumer (no
-// tool-use events to interleave). When the panel chat grows to share
-// more code with this component, extract a shared SSE helper.
+// State machine:
+//   compose   → instruction textarea visible, Generate button
+//   streaming → text deltas accumulating, Stop button
+//   done      → final text + action buttons (Use this / Regenerate /
+//               Discard). Instruction textarea STAYS visible so the
+//               admin can refine it and click Regenerate to iterate.
+//   error     → error message, Retry / Discard
 //
-// The component owns its own stream lifecycle and aborts on unmount —
-// if the user dismisses the preview mid-stream, we don't burn tokens
-// generating text nobody will see.
+// For mode=improve, the API reads the plan's current copy server-side
+// AND we pass the in-flight draft (which may include unsaved edits) as
+// `current_copy`. The server uses it as the starting point and only
+// changes what the admin's instruction asks for — preserving the rest.
 // =====================================================================
 
 /* eslint-disable */
@@ -53,19 +59,32 @@ async function* parseSse(response) {
 
 const PLATFORM_LABEL = { instagram: 'Instagram', linkedin: 'LinkedIn', x: 'X' };
 
-const AICopyPreview = ({ accountId, planId, platform, hasExistingCopy, onAccept, onDismiss }) => {
+const AICopyPreview = ({ accountId, planId, platform, mode = 'draft', currentCopy = '', onAccept, onDismiss }) => {
+  // 'compose' | 'streaming' | 'done' | 'error'
+  const [phase, setPhase] = useState('compose');
+  const [instruction, setInstruction] = useState('');
   const [text, setText] = useState('');
-  const [streaming, setStreaming] = useState(true);
   const [error, setError] = useState('');
   const [usage, setUsage] = useState(null);
   const abortRef = useRef(null);
-  const startedRef = useRef(false);
+  const instructionInputRef = useRef(null);
+
+  const isImprove = mode === 'improve';
+  const platformLabel = PLATFORM_LABEL[platform] || platform;
+
+  // Autofocus the instruction textarea on mount.
+  useEffect(() => {
+    instructionInputRef.current?.focus();
+  }, []);
+
+  // Cancel any in-flight stream on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const startStream = useCallback(async () => {
     setText('');
     setError('');
-    setStreaming(true);
     setUsage(null);
+    setPhase('streaming');
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -74,18 +93,22 @@ const AICopyPreview = ({ accountId, planId, platform, hasExistingCopy, onAccept,
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('Not signed in');
 
+      const payload = {
+        accountId,
+        plan_id: planId,
+        platform,
+        mode,
+        instruction: instruction.trim(),
+      };
+      if (isImprove) payload.current_copy = currentCopy || '';
+
       const resp = await fetch('/api/ai/copy', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({
-          accountId,
-          plan_id: planId,
-          platform,
-          mode: 'draft',
-        }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
 
@@ -107,26 +130,35 @@ const AICopyPreview = ({ accountId, planId, platform, hasExistingCopy, onAccept,
           setError(evt.data.error || 'Unknown error');
         }
       }
+      setPhase((prev) => (prev === 'streaming' ? 'done' : prev));
     } catch (err) {
-      if (err.name !== 'AbortError') {
+      if (err.name === 'AbortError') {
+        // Stop pressed mid-stream — keep what we have, move to done if
+        // we got anything, otherwise back to compose.
+        setPhase((prev) => {
+          if (prev !== 'streaming') return prev;
+          return text.trim() ? 'done' : 'compose';
+        });
+      } else {
         setError(err.message || String(err));
+        setPhase('error');
       }
     } finally {
-      setStreaming(false);
       abortRef.current = null;
     }
-  }, [accountId, planId, platform]);
+  }, [accountId, planId, platform, mode, instruction, isImprove, currentCopy, text]);
 
-  // Auto-start once on mount; abort on unmount.
-  useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
+  const handleGenerate = () => {
+    if (phase === 'streaming') return;
     startStream();
-    return () => abortRef.current?.abort();
-  }, [startStream]);
+  };
+
+  const handleStop = () => {
+    abortRef.current?.abort();
+  };
 
   const handleAccept = () => {
-    if (!text.trim() || streaming) return;
+    if (!text.trim() || phase === 'streaming') return;
     onAccept?.(text.trim());
   };
 
@@ -135,41 +167,68 @@ const AICopyPreview = ({ accountId, planId, platform, hasExistingCopy, onAccept,
     onDismiss?.();
   };
 
-  const handleRegenerate = () => {
-    abortRef.current?.abort();
-    startedRef.current = false;
-    setTimeout(() => {
-      startedRef.current = true;
-      startStream();
-    }, 0);
+  const handleKeyDown = (e) => {
+    // Cmd/Ctrl+Enter from the instruction textarea fires Generate.
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handleGenerate();
+    }
   };
 
+  const headTitle = isImprove
+    ? `AI redraft for ${platformLabel}`
+    : `AI draft for ${platformLabel}`;
+  const instructionPlaceholder = isImprove
+    ? "What should I change? e.g. 'make the hook punchier', 'add a call to action', 'shorter, no emojis'"
+    : "What should this post be about? e.g. 'a Mother's Day post celebrating moms who run small businesses'. Leave empty to draft from the concept + brand voice alone.";
+  const instructionLabel = isImprove ? "What to change" : "What this post should be about";
+
   return (
-    <div className="ai-copy-preview" role="region" aria-label={`AI draft for ${PLATFORM_LABEL[platform] || platform}`}>
+    <div className="ai-copy-preview" role="region" aria-label={headTitle}>
       <div className="ai-copy-preview-head">
         <span className="ai-copy-preview-label">
           <span aria-hidden style={{ marginRight: 6 }}>✨</span>
-          AI draft for {PLATFORM_LABEL[platform] || platform}
+          {headTitle}
         </span>
-        {streaming && <span className="ai-copy-preview-streaming">Generating…</span>}
-        {!streaming && usage && (
+        {phase === 'streaming' && <span className="ai-copy-preview-streaming">Generating…</span>}
+        {phase === 'done' && usage && (
           <span className="ai-copy-preview-meta" title="input / output tokens">
             {usage.input ?? 0} in {usage.cacheRead ? `(${usage.cacheRead} cached)` : ''} · {usage.output ?? 0} out
           </span>
         )}
       </div>
 
-      <div className="ai-copy-preview-body">
-        {text ? (
-          <pre>{text}</pre>
-        ) : streaming ? (
-          <div className="ai-copy-preview-skeleton">
-            <span className="ai-copy-dot" /><span className="ai-copy-dot" /><span className="ai-copy-dot" />
-          </div>
-        ) : null}
+      <div className="ai-copy-preview-instruction">
+        <label className="ai-copy-preview-instruction-label">{instructionLabel}</label>
+        <textarea
+          ref={instructionInputRef}
+          className="ai-copy-preview-instruction-input"
+          rows={2}
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={instructionPlaceholder}
+          disabled={phase === 'streaming'}
+        />
+        <div className="ai-copy-preview-instruction-hint">
+          {phase === 'compose' && '⌘↩ to generate'}
+          {phase === 'done' && 'Edit your instruction and click Regenerate to iterate'}
+        </div>
       </div>
 
-      {error && (
+      {(phase === 'streaming' || phase === 'done') && (
+        <div className="ai-copy-preview-body">
+          {text ? (
+            <pre>{text}</pre>
+          ) : (
+            <div className="ai-copy-preview-skeleton">
+              <span className="ai-copy-dot" /><span className="ai-copy-dot" /><span className="ai-copy-dot" />
+            </div>
+          )}
+        </div>
+      )}
+
+      {phase === 'error' && error && (
         <div className="ai-copy-preview-error">
           <Icon name="alert" size={12} /> {error}
         </div>
@@ -180,28 +239,50 @@ const AICopyPreview = ({ accountId, planId, platform, hasExistingCopy, onAccept,
           type="button"
           className="btn btn-sm btn-ghost"
           onClick={handleDismiss}
-          disabled={false}
         >
           Discard
         </button>
-        <button
-          type="button"
-          className="btn btn-sm btn-ghost"
-          onClick={handleRegenerate}
-          disabled={streaming}
-          title="Generate a different draft"
-        >
-          Regenerate
-        </button>
-        <button
-          type="button"
-          className="btn btn-sm btn-primary"
-          onClick={handleAccept}
-          disabled={streaming || !text.trim() || !!error}
-          title={hasExistingCopy ? 'Replace current copy with this draft' : 'Use this draft'}
-        >
-          {hasExistingCopy ? 'Replace with this' : 'Use this'}
-        </button>
+        <span style={{ flex: 1 }} />
+        {phase === 'streaming' && (
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={handleStop}
+          >
+            Stop
+          </button>
+        )}
+        {(phase === 'done' || phase === 'error') && (
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={handleGenerate}
+            title="Run again with the current instruction"
+          >
+            Regenerate
+          </button>
+        )}
+        {phase === 'compose' && (
+          <button
+            type="button"
+            className="btn btn-sm btn-primary ai-draft-btn"
+            onClick={handleGenerate}
+          >
+            <span aria-hidden style={{ marginRight: 4 }}>✨</span>
+            Generate
+          </button>
+        )}
+        {phase === 'done' && (
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={handleAccept}
+            disabled={!text.trim() || !!error}
+            title={isImprove ? 'Replace current copy with this version' : 'Use this as the caption'}
+          >
+            {isImprove ? 'Replace with this' : 'Use this'}
+          </button>
+        )}
       </div>
     </div>
   );
