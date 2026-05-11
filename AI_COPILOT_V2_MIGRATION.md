@@ -159,6 +159,9 @@ Recommendation: ship as **PR A (PoC + Phase 0 + Phase 1)**, **PR B (Phase 2)**, 
 
 - [ ] **Existing CSS visually regresses** — hand-written `app.css` styles look wrong after deploy. Check Tailwind config — `corePlugins: { preflight: false }` must be set, OR scope Tailwind via `important: '.ai-elements'` selector.
   - Fix: re-scope Tailwind, redeploy. Existing `app.css` selectors must take precedence.
+- [ ] **Orange / accent buttons go invisible after a CSS change** — caused by shadcn defining a same-named CSS variable (`--accent`) under `:root`, overriding `app.css`'s `--accent: #E8553D`. Verified failure mode on 2026-05-11 after Phase 0 shipped — Co-pilot pill, "Open plan" button, message bubbles, login submit all went white. Fixed by scoping ALL shadcn tokens under `.ai-elements` (not `:root`) and putting them OUTSIDE `@layer base` so Tailwind's content-scan purging can't drop them when no AI Elements files exist yet.
+  - Verification: `grep -oE ':root\{[^}]+\}' dist/assets/index-*.css | grep -oE '\-\-accent: [^;]+'` must return `--accent: #E8553D` (coral). `grep -c "\.ai-elements{" dist/assets/index-*.css` must return `1`.
+  - Token-name collisions to watch out for in any future shadcn extension: `--accent` (only one that currently collides — but `--input`, `--border`, `--ring`, `--background`, `--foreground` are all generic-enough names someone could add to `app.css` later, so keep them scoped).
 - [ ] **AI Elements components don't render** — blank slots where messages should be. Check `tailwind.config.js` content array — must include `./src/components/ai-elements/**/*.{js,ts,jsx,tsx}`.
   - Fix: add the path, restart dev server.
 - [ ] **shadcn CLI fails on Vite** — `npx shadcn@latest init` errors out because of missing Next.js conventions. Walk through with a `--vite` flag if available, OR manually create `components.json`, `lib/utils.ts` (the cn() helper), and copy CSS variables to a new entry.
