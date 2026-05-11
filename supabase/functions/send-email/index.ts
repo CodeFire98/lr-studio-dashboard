@@ -16,28 +16,42 @@
 //   tomorrow's scheduled posts split into "needs your approval" and
 //   "ready to ship" buckets. Triggered by the Vercel Cron route at
 //   /api/daily-digest, which prepares the payload (queries, joins,
-//   thumbnails) and calls this function with a service-role token —
-//   so the user-JWT auth path is bypassed for this template only.
+//   thumbnails) and calls this function with the shared CRON_SECRET.
 //
 // Auth model:
-//   - Caller's JWT is verified by the platform (verify_jwt = true).
-//   - We use a JWT-scoped client to read protected data through RLS so
-//     the caller can only trigger emails for things they have access to.
-//   - team-invite: caller must be a member of the inviting account.
-//   - agency-update: caller must be agency staff (is_agency_user()).
-//   - daily-digest: caller must present the service-role bearer token.
-//     (The cron route, running on Vercel, holds it. No user JWT.)
+//   - Platform `verify_jwt` is **disabled** for this function. The
+//     in-code dispatcher below does all the auth work. Disabling the
+//     platform gate was forced by the cron route: with the new
+//     `sb_secret_...` API key format becoming the default,
+//     `Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}` from Vercel
+//     stopped being a valid JWT, and the platform rejected the call
+//     with UNAUTHORIZED_INVALID_JWT_FORMAT before our code ran. So we
+//     moved the auth check entirely into our code — see daily_digest
+//     handler below.
+//   - team-invite: caller must present a user JWT. We validate it via
+//     `auth.getUser()` against ANON_KEY — equivalent guarantee to
+//     platform verify_jwt, just done in code. Then RLS-scoped reads
+//     ensure they can only trigger invites for accounts they belong to.
+//   - agency-update: same user-JWT validation + an explicit
+//     `is_agency` check against the caller's profile.
+//   - daily-digest: caller must present `Authorization: Bearer
+//     ${CRON_SECRET}` — a random opaque string set on both Vercel (the
+//     cron route's env) and here (as a Supabase function secret).
+//     Literal string compare; no JWT format coupling. CRON_SECRET is
+//     never logged.
 //   - The Resend API call itself happens server-side only.
 //
 // Env vars (set with `supabase secrets set ...`):
-//   RESEND_API_KEY           — required, re_... key from resend.com
-//   EMAIL_FROM               — sender address, e.g. "agency@linkrunner.io"
-//   EMAIL_FROM_NAME          — sender display name, default "L+R Agency"
-//   APP_URL                  — base URL for invite links, default
-//                              "https://agency.linkrunner.io"
-//   SUPABASE_URL             — auto-injected
+//   RESEND_API_KEY            — required, re_... key from resend.com
+//   EMAIL_FROM                — sender address, e.g. "agency@linkrunner.io"
+//   EMAIL_FROM_NAME           — sender display name, default "L+R Agency"
+//   APP_URL                   — base URL for invite links, default
+//                               "https://agency.linkrunner.io"
+//   CRON_SECRET               — shared with Vercel for the daily-digest
+//                               cron→edge-function auth (same value)
+//   SUPABASE_URL              — auto-injected
 //   SUPABASE_SERVICE_ROLE_KEY — auto-injected
-//   SUPABASE_ANON_KEY        — auto-injected
+//   SUPABASE_ANON_KEY         — auto-injected
 // =====================================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -47,6 +61,7 @@ const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const EMAIL_FROM = Deno.env.get("EMAIL_FROM") ?? "";
 const EMAIL_FROM_NAME = Deno.env.get("EMAIL_FROM_NAME") ?? "L+R Agency";
 const APP_URL = Deno.env.get("APP_URL") ?? "https://agency.linkrunner.io";
+const CRON_SECRET = Deno.env.get("CRON_SECRET") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
@@ -104,30 +119,6 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-// Decode a JWT's payload (the middle base64url segment) without verifying
-// the signature. We use this for the daily-digest service-role check —
-// the platform's verify_jwt=true has already validated the signature
-// before our function code runs, so we can trust the payload contents.
-//
-// We avoid a literal-string compare against SUPABASE_SERVICE_ROLE_KEY
-// because the same Supabase project may surface the service role under
-// two different key formats (legacy JWT `eyJ...` auto-injected into
-// edge functions vs. the new `sb_secret_...` style stored on Vercel).
-// A role-claim check works regardless of which format the caller used.
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const pad = (4 - (b64.length % 4)) % 4;
-    if (pad) b64 += "=".repeat(pad);
-    const json = atob(b64);
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
 }
 
 // Send N emails in one API call via Resend's /emails/batch endpoint.
@@ -810,32 +801,27 @@ Deno.serve(async (req) => {
   }
 
   // daily-digest is the only template that runs without a user JWT —
-  // it's invoked by the Vercel Cron route, which holds the service-role
-  // key. Decode the bearer and check `role: "service_role"` rather than
-  // doing a literal string compare against SUPABASE_SERVICE_ROLE_KEY:
-  // the same Supabase project may surface the service role under
-  // multiple key formats (legacy `eyJ...` auto-injected here vs. the
-  // newer `sb_secret_...` stored on Vercel) and a string compare would
-  // break across formats. The platform's verify_jwt=true has already
-  // validated the signature; we just need to introspect the role claim.
+  // it's invoked by the Vercel Cron route, which holds CRON_SECRET (a
+  // random opaque string set as an env var on both sides). Literal
+  // string compare: the bearer must equal CRON_SECRET. No JWT decode,
+  // no role check — the secret IS the gate.
+  //
+  // We deliberately moved away from comparing the bearer against
+  // SUPABASE_SERVICE_ROLE_KEY: that value comes in two formats (legacy
+  // `eyJ...` JWT vs the new `sb_secret_...` opaque string) and the
+  // platform's `verify_jwt` check would reject the latter before our
+  // code ran. CRON_SECRET sidesteps the entire problem.
   if (body?.template === "daily-digest") {
     const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-    const payload = decodeJwtPayload(token);
-    if (payload?.role !== "service_role") {
-      // Self-diagnosing error so we can tell the difference between the
-      // two failure modes from the cron's response JSON without log
-      // diving:
-      //   * bearer wasn't a JWT at all → likely Vercel has the new
-      //     `sb_secret_...` format which doesn't decode here. Caller
-      //     needs to switch Vercel's env to the legacy `eyJ...`
-      //     service-role JWT.
-      //   * bearer decoded but role wasn't service_role → caller used
-      //     a user / anon JWT.
-      const detail = payload
-        ? `got role=${String(payload.role ?? "missing")}`
-        : "bearer is not a decodable JWT — likely the new sb_secret_ format. Use the legacy eyJ... service-role JWT for SUPABASE_SERVICE_ROLE_KEY on the cron caller.";
+    if (!CRON_SECRET) {
       return jsonResponse(
-        { error: "daily-digest requires service-role auth", detail },
+        { error: "daily-digest is misconfigured: CRON_SECRET not set on this function. Run: supabase secrets set CRON_SECRET=<same-value-as-Vercel>" },
+        500,
+      );
+    }
+    if (token !== CRON_SECRET) {
+      return jsonResponse(
+        { error: "daily-digest requires the shared CRON_SECRET bearer" },
         403,
       );
     }
