@@ -10,6 +10,7 @@ import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import { PlatformChip, STATUS_CONFIG, StatusPill, getDisplayStatus } from './postPlanShared.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 import {
   createPostPlan,
   duplicatePostPlan,
@@ -528,7 +529,6 @@ const AttachmentPopover = ({ items }) => {
       {items.map((a) => {
         const isImage = (a.mimeType || '').startsWith('image/') && a.url;
         const isVideo = (a.mimeType || '').startsWith('video/');
-        const showVideoThumb = isVideo && !!a.thumbnailUrl;
         const isFinal = a.kind === 'final';
         return (
           <div
@@ -538,8 +538,8 @@ const AttachmentPopover = ({ items }) => {
           >
             {isImage ? (
               <SafeImage src={a.url} alt={a.filename} filename={a.filename} caption="Preview unavailable" loading="lazy" />
-            ) : showVideoThumb ? (
-              <SafeImage src={a.thumbnailUrl} alt={a.filename} filename={a.filename} caption="Preview unavailable" loading="lazy" />
+            ) : isVideo ? (
+              <VideoThumb thumbnailUrl={a.thumbnailUrl} alt={a.filename} badgeSize={18} />
             ) : (
               <div className="cal-list-ref-thumb-fallback">
                 <Icon name="paperclip" size={14} />

@@ -17,6 +17,7 @@ import {
 import { ConvertIdeaModal } from './ConvertIdeaModal.jsx';
 import { linkifyText } from './IdeateView.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 
 const PLATFORMS = [
   { key: 'instagram', label: 'Instagram' },
@@ -445,28 +446,15 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
             {attachments.map((att) => {
               const isImage = (att.mimeType || '').startsWith('image/') && att.url;
               const isVideo = (att.mimeType || '').startsWith('video/');
-              const showVideoThumb = isVideo && !!att.thumbnailUrl;
               return (
               <div key={att.id} className="inbox-attachment-tile">
                 {isImage ? (
                   <a href={att.url} target="_blank" rel="noopener noreferrer">
                     <SafeImage src={att.url} alt={att.filename} filename={att.filename} caption="Preview unavailable" />
                   </a>
-                ) : showVideoThumb ? (
-                  <a href={att.url} target="_blank" rel="noopener noreferrer" style={{ position: 'relative', display: 'block' }}>
-                    <SafeImage src={att.thumbnailUrl} alt={att.filename} filename={att.filename} caption="Preview unavailable" />
-                    <span
-                      aria-hidden
-                      style={{
-                        position: 'absolute', top: '50%', left: '50%',
-                        transform: 'translate(-50%, -50%)',
-                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                        width: 32, height: 32, borderRadius: 99,
-                        background: 'rgba(0,0,0,0.6)', color: '#fff',
-                        fontSize: 12, lineHeight: 1, paddingLeft: 2,
-                        pointerEvents: 'none',
-                      }}
-                    >▶</span>
+                ) : isVideo ? (
+                  <a href={att.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', width: '100%', height: '100%' }}>
+                    <VideoThumb thumbnailUrl={att.thumbnailUrl} alt={att.filename} badgeSize={32} />
                   </a>
                 ) : (
                   <a href={att.url} target="_blank" rel="noopener noreferrer" className="inbox-attachment-file">

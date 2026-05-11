@@ -8,6 +8,7 @@ import { Icon } from './Icon.jsx';
 import { Art } from './primitives.jsx';
 import { useLightbox } from './Lightbox.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 import { readAuth } from '../lib/auth.js';
 import {
   loadBrandKit,
@@ -750,7 +751,6 @@ const ReferencesCard = ({ accountId, isAgency = false, assets }) => {
           {items.map((item) => {
             const isImage = (item.mimeType || '').startsWith('image/');
             const isVideo = (item.mimeType || '').startsWith('video/');
-            const showVideoThumb = isVideo && !!item.thumbnailUrl;
             return (
               <div
                 key={item.path}
@@ -771,33 +771,13 @@ const ReferencesCard = ({ accountId, isAgency = false, assets }) => {
                   >
                     <SafeImage src={item.url} alt={item.name} filename={item.name} caption="Preview unavailable" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
                   </button>
-                ) : showVideoThumb ? (
+                ) : isVideo ? (
                   <button
                     type="button"
                     onClick={() => openItem(item)}
-                    style={{ display: 'block', height: '100%', width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'zoom-in', position: 'relative' }}
+                    style={{ display: 'block', height: '100%', width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'zoom-in' }}
                   >
-                    <SafeImage src={item.thumbnailUrl} alt={item.name} filename={item.name} caption="Preview unavailable" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
-                    <span
-                      aria-hidden
-                      style={{
-                        position: 'absolute',
-                        top: '50%', left: '50%',
-                        transform: 'translate(-50%, -50%)',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        width: 36,
-                        height: 36,
-                        borderRadius: 99,
-                        background: 'rgba(0,0,0,0.6)',
-                        color: '#fff',
-                        fontSize: 14,
-                        lineHeight: 1,
-                        paddingLeft: 3,
-                        pointerEvents: 'none',
-                      }}
-                    >▶</span>
+                    <VideoThumb thumbnailUrl={item.thumbnailUrl} alt={item.name} badgeSize={36}/>
                   </button>
                 ) : (
                   <button
