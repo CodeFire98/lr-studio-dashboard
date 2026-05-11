@@ -12,6 +12,17 @@
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
 
+### 2026-05-11 — AI Co-pilot polish: cross-platform context inside a post plan ([PR #66](https://github.com/CodeFire98/lr-studio-dashboard/pull/66))
+Three user-reported issues with how the AI routes use plan context, fixed together server-side. Pre-existing issues that surfaced clearly during v2 smoke testing — NOT v2 regressions.
+
+1. **Inline AI copy drafts didn't reliably follow the active platform's format** — IG drafts sometimes came back LinkedIn-shaped. Root cause: platform requirements were buried at the bottom of a long user message in `/api/ai/copy`. Fix: platform requirements now sit at the TOP of the user message with "MUST FOLLOW STRICTLY — non-negotiable" framing, plus a closing reminder. Cache strategy unchanged (system prompt blocks still hold the brand context).
+
+2. **AI copy didn't know about other platforms' captions on the same plan** — drafting IG then LinkedIn produced two unrelated angles instead of a coherent campaign across surfaces. Fix: `/api/ai/copy` now includes an `OTHER PLATFORMS' COPY ON THIS SAME PLAN` block in the user message when any sibling platforms have copy. Model is instructed to match the campaign angle/hook while adapting the format to the target platform.
+
+3. **Image ideas + prompt only saw the active platform's caption** — visual direction lacked full campaign context. Fix: `/api/ai/image` now includes ALL platforms' captions on the plan (capped at 600 chars each), labelling the active one with "← THIS PLATFORM" so the model anchors aspect-ratio / format to it while staying tonally cohesive with sibling platforms.
+
+- **Sections touched:** Recent changes log; `Last updated`; §13 Known decisions (entry: platform-requirements-at-top-of-user-message-for-strict-adherence; entry: pass-all-platforms-copy-as-cross-platform-context-on-AI-routes).
+
 ### 2026-05-11 — AI Co-pilot v2 Phase 1c: migrate `/api/ai/image` to Vercel AI SDK + retire PoC route ([PR #65](https://github.com/CodeFire98/lr-studio-dashboard/pull/65))
 Final server-side migration PR. The image-ideation route now uses **`streamObject`** for `mode: 'ideas'` with a Zod schema for the `{ ideas: [{title, description, style_keywords[]}] }` output shape — replaces the v1 lenient JSON parser (strip ```json fences, retry-parse) hack. The model is now constrained by the schema at the SDK boundary AND the result is validated server-side. Schema enforces 3-5 ideas (min/max) so the model can't return 1 or 10. `mode: 'prompt'` uses `streamText` (same pattern as `/api/ai/copy`). Wire protocol unchanged on both modes — text deltas stream as `text` SSE events; the client's accumulate-then-parse-on-done flow keeps working untouched. Also DELETES the temporary `web/api/ai/cache-poc.ts` route — PoC retired now that all three production routes have migrated and the cache survival is end-to-end verified across `/api/ai/chat`, `/api/ai/copy`, and `/api/ai/image`.
 - **Sections touched:** Recent changes log; `Last updated`; §10 Edge functions / API routes (`/api/ai/cache-poc.ts` removed; `/api/ai/image.ts` now uses streamObject + streamText); §13 Known decisions (entry: streamObject-with-Zod-schema over raw JSON output for structured AI generations).
