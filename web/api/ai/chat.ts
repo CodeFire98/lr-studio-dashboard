@@ -55,7 +55,7 @@ const MODEL = "claude-sonnet-4-6";
 const MAX_TURNS = 8;           // Cap on agentic tool-use loop iterations.
 const MAX_TOKENS_PER_TURN = 1500;
 
-const SYSTEM_PROMPT = `You are the AI Co-pilot for L+R Agency — a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
+const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
 
 ## How to behave
 

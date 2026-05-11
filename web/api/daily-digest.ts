@@ -186,9 +186,17 @@ async function digestForBrand(
   const thumbByPlan = new Map<string, string>();
   for (const f of (finals ?? []) as Array<{ post_plan_id: string; storage_path: string; mime_type: string | null }>) {
     if (thumbByPlan.has(f.post_plan_id)) continue; // already took the newest
-    if (!(f.mime_type ?? "").startsWith("image/")) continue;
-    const { data: pub } = client.storage.from(POST_PLAN_BUCKET).getPublicUrl(f.storage_path);
-    if (pub?.publicUrl) thumbByPlan.set(f.post_plan_id, pub.publicUrl);
+    const mime = (f.mime_type ?? "").toLowerCase();
+    if (mime.startsWith("image/")) {
+      const { data: pub } = client.storage.from(POST_PLAN_BUCKET).getPublicUrl(f.storage_path);
+      if (pub?.publicUrl) thumbByPlan.set(f.post_plan_id, pub.publicUrl);
+    } else if (mime.startsWith("video/")) {
+      // Videos carry a sidecar JPEG at `<path>.thumb.jpg` from the client-
+      // side extractor. The URL is built unconditionally; if no sidecar
+      // exists the email's image-fallback (composed tile) shows instead.
+      const { data: pub } = client.storage.from(POST_PLAN_BUCKET).getPublicUrl(`${f.storage_path}.thumb.jpg`);
+      if (pub?.publicUrl) thumbByPlan.set(f.post_plan_id, pub.publicUrl);
+    }
   }
 
   // 4. Recipients — direct query rather than the

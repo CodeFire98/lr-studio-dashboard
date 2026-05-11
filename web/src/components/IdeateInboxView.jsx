@@ -151,7 +151,7 @@ const IdeateInboxView = ({ auth, accountId, accountName, navigateToPlan }) => {
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <div className="tiny" style={{marginBottom: 8, color: 'var(--accent-ink)'}}>L+R Agency</div>
+          <div className="tiny" style={{marginBottom: 8, color: 'var(--accent-ink)'}}>Linkrunner Media</div>
           <h1>Inbox</h1>
           <div className="sub">
             {accountName ? `Ideas from ${accountName}` : 'Brand-submitted ideas. Open one to refine and add to the calendar.'}
@@ -442,11 +442,31 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
           <div className="empty" style={{padding: 12, fontSize: 12, color: 'var(--ink-4)'}}>No reference files attached.</div>
         ) : (
           <div className="inbox-attachments-grid">
-            {attachments.map((att) => (
+            {attachments.map((att) => {
+              const isImage = (att.mimeType || '').startsWith('image/') && att.url;
+              const isVideo = (att.mimeType || '').startsWith('video/');
+              const showVideoThumb = isVideo && !!att.thumbnailUrl;
+              return (
               <div key={att.id} className="inbox-attachment-tile">
-                {(att.mimeType || '').startsWith('image/') && att.url ? (
+                {isImage ? (
                   <a href={att.url} target="_blank" rel="noopener noreferrer">
                     <SafeImage src={att.url} alt={att.filename} filename={att.filename} caption="Preview unavailable" />
+                  </a>
+                ) : showVideoThumb ? (
+                  <a href={att.url} target="_blank" rel="noopener noreferrer" style={{ position: 'relative', display: 'block' }}>
+                    <SafeImage src={att.thumbnailUrl} alt={att.filename} filename={att.filename} caption="Preview unavailable" />
+                    <span
+                      aria-hidden
+                      style={{
+                        position: 'absolute', top: '50%', left: '50%',
+                        transform: 'translate(-50%, -50%)',
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        width: 32, height: 32, borderRadius: 99,
+                        background: 'rgba(0,0,0,0.6)', color: '#fff',
+                        fontSize: 12, lineHeight: 1, paddingLeft: 2,
+                        pointerEvents: 'none',
+                      }}
+                    >▶</span>
                   </a>
                 ) : (
                   <a href={att.url} target="_blank" rel="noopener noreferrer" className="inbox-attachment-file">
@@ -463,7 +483,8 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
                   <Icon name="close" size={10} />
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

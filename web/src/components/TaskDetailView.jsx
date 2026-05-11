@@ -121,7 +121,7 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
     return () => { cancelled = true; unsub(); };
   }, [task?.id]);
 
-  // Agency lead picker: load the L+R team once (per session) so the dropdown
+  // Agency lead picker: load the Linkrunner team once (per session) so the dropdown
   // can offer assignment targets. Brand viewers don't need this list.
   const [agencyMembers, setAgencyMembers] = useState([]);
   const [reassigning, setReassigning] = useState(false);

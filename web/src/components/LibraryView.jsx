@@ -395,6 +395,36 @@ const LibraryView = ({ auth, accountId, setRoute }) => {
                           loading="lazy"
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                         />
+                      ) : (a.mimeType || '').startsWith('video/') && a.thumbnailUrl ? (
+                        <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+                          <SafeImage
+                            src={a.thumbnailUrl}
+                            alt={a.filename}
+                            filename={a.filename}
+                            caption="Preview unavailable"
+                            loading="lazy"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                          <span
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              top: '50%', left: '50%',
+                              transform: 'translate(-50%, -50%)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 40, height: 40,
+                              borderRadius: 99,
+                              background: 'rgba(0,0,0,0.6)',
+                              color: '#fff',
+                              fontSize: 16,
+                              lineHeight: 1,
+                              paddingLeft: 3,
+                              pointerEvents: 'none',
+                            }}
+                          >▶</span>
+                        </div>
                       ) : (
                         <div style={{ textAlign: 'center', padding: 12 }}>
                           <Icon name="upload" size={36} />

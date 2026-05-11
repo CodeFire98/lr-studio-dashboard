@@ -317,7 +317,7 @@ const MOCK = (() => {
     { id: "t4", name: "Tomás Vega", initials: "TV", email: "tomas@luma.co", role: "Reviewer", status: "Pending", avatarColor: "#8B5CF6" },
   ];
 
-  // ----- Admin queue (L+R internal) -----
+  // ----- Admin queue (Linkrunner Media internal) -----
   const adminQueue = [
     { id: "q1", taskId: "p_launch", urgency: "hot", lastActivity: "4h ago", note: "Waiting for refreshed v2 concepts review." },
     { id: "q2", taskId: "p_tiktok", urgency: "warm", lastActivity: "8h ago", note: "First round in review with Luma team." },

@@ -301,7 +301,7 @@ const BrandOnboardingModal = ({ open, kit, accountId, accountName, onComplete, o
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 240 }}>
                 <strong style={{ fontSize: 15, color: 'var(--ink)' }}>Skip the typing — let us fill the rest</strong>
                 <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
-                  We'll read your website, find your socials, palette, voice, and logo. Powered by L+R Brand Intelligence.
+                  We'll read your website, find your socials, palette, voice, and logo. Powered by Linkrunner Brand Intelligence.
                 </span>
               </div>
               <button

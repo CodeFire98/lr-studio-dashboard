@@ -47,7 +47,7 @@ class ErrorBoundary extends React.Component {
           </h1>
           <p style={{fontSize: 14, color: 'var(--ink-3, #6B6A6B)', marginBottom: 20}}>
             The error below has been logged to the browser console. If this keeps
-            happening, copy it to your L+R contact.
+            happening, copy it to your Linkrunner Media contact.
           </p>
           <pre style={{
             background: 'var(--surface-2, #F6F5F0)',

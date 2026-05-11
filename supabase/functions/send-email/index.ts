@@ -44,7 +44,7 @@
 // Env vars (set with `supabase secrets set ...`):
 //   RESEND_API_KEY            — required, re_... key from resend.com
 //   EMAIL_FROM                — sender address, e.g. "agency@linkrunner.io"
-//   EMAIL_FROM_NAME           — sender display name, default "L+R Agency"
+//   EMAIL_FROM_NAME           — sender display name, default "Linkrunner Media"
 //   APP_URL                   — base URL for invite links, default
 //                               "https://agency.linkrunner.io"
 //   CRON_SECRET               — shared with Vercel for the daily-digest
@@ -59,7 +59,7 @@ import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const EMAIL_FROM = Deno.env.get("EMAIL_FROM") ?? "";
-const EMAIL_FROM_NAME = Deno.env.get("EMAIL_FROM_NAME") ?? "L+R Agency";
+const EMAIL_FROM_NAME = Deno.env.get("EMAIL_FROM_NAME") ?? "Linkrunner Media";
 const APP_URL = Deno.env.get("APP_URL") ?? "https://agency.linkrunner.io";
 const CRON_SECRET = Deno.env.get("CRON_SECRET") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -226,9 +226,9 @@ function renderTeamInvite(args: {
 }): { subject: string; html: string; text: string } {
   const { accountName, inviterName, role, inviteUrl } = args;
   const roleLabel = role === "owner" ? "a workspace owner" : "a team member";
-  const subject = `${inviterName} invited you to ${accountName} on L+R Agency`;
+  const subject = `${inviterName} invited you to ${accountName} on Linkrunner Media`;
   const text =
-    `${inviterName} invited you to join ${accountName} on L+R Agency as ${roleLabel}.\n\n` +
+    `${inviterName} invited you to join ${accountName} on Linkrunner Media as ${roleLabel}.\n\n` +
     `Accept your invite: ${inviteUrl}\n\n` +
     `This link expires in 7 days. If you weren't expecting this email you can ignore it.`;
   const safeAccount = escapeHtml(accountName);
@@ -243,7 +243,7 @@ function renderTeamInvite(args: {
         <td align="center">
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:12px;padding:40px 36px;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
             <tr><td>
-              <p style="margin:0 0 24px;font-size:13px;letter-spacing:0.10em;text-transform:uppercase;color:#7a7370">L+R Agency</p>
+              <p style="margin:0 0 24px;font-size:13px;letter-spacing:0.10em;text-transform:uppercase;color:#7a7370">Linkrunner Media</p>
               <h1 style="margin:0 0 16px;font-size:24px;line-height:1.3;font-weight:600;color:#1a1a1a">You're invited to ${safeAccount}</h1>
               <p style="margin:0 0 24px;font-size:16px;line-height:1.6;color:#454040">${safeInviter} invited you to join <strong>${safeAccount}</strong> as ${safeRole}. Click below to accept and create your account.</p>
               <p style="margin:0 0 32px">
@@ -270,11 +270,11 @@ function renderAgencyUpdate(args: {
   customSubject?: string;
 }): { subject: string; html: string; text: string } {
   const { accountName, senderName, message, calendarUrl, customSubject } = args;
-  const subject = (customSubject?.trim()) || `Update on ${accountName} from L+R Agency`;
+  const subject = (customSubject?.trim()) || `Update on ${accountName} from Linkrunner Media`;
   const text =
     `Hi ${accountName} team,\n\n` +
     `${message}\n\n` +
-    `— ${senderName}, L+R Agency\n\n` +
+    `— ${senderName}, Linkrunner Media\n\n` +
     `Open the Social Calendar: ${calendarUrl}`;
 
   // Preserve newlines in the user-typed message by converting them to <br>
@@ -295,16 +295,16 @@ function renderAgencyUpdate(args: {
         <td align="center">
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:12px;padding:40px 36px;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
             <tr><td>
-              <p style="margin:0 0 24px;font-size:13px;letter-spacing:0.10em;text-transform:uppercase;color:#7a7370">L+R Agency · update for ${safeAccount}</p>
+              <p style="margin:0 0 24px;font-size:13px;letter-spacing:0.10em;text-transform:uppercase;color:#7a7370">Linkrunner Media · update for ${safeAccount}</p>
               <h1 style="margin:0 0 24px;font-size:22px;line-height:1.3;font-weight:600;color:#1a1a1a">A note from your agency</h1>
               ${safeMessage}
               <p style="margin:24px 0 32px">
                 <a href="${safeUrl}" style="display:inline-block;background:#1a1a1a;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-size:15px;font-weight:500">Open Social Calendar</a>
               </p>
               <p style="margin:0 0 4px;font-size:14px;line-height:1.6;color:#454040">— ${safeSender}</p>
-              <p style="margin:0;font-size:13px;line-height:1.5;color:#9a9290">L+R Agency</p>
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#9a9290">Linkrunner Media</p>
               <hr style="border:none;border-top:1px solid #ece8e4;margin:28px 0">
-              <p style="margin:0;font-size:12px;line-height:1.5;color:#9a9290">You're receiving this because you're a member of the ${safeAccount} workspace on L+R Agency. Reply directly to this email to reach ${safeSender}.</p>
+              <p style="margin:0;font-size:12px;line-height:1.5;color:#9a9290">You're receiving this because you're a member of the ${safeAccount} workspace on Linkrunner Media. Reply directly to this email to reach ${safeSender}.</p>
             </td></tr>
           </table>
         </td>
@@ -431,7 +431,7 @@ async function handleAgencyUpdate(
   const senderName =
     (callerProfile.display_name as string | undefined)?.trim() ||
     user.email?.split("@")[0] ||
-    "L+R Agency";
+    "Linkrunner Media";
 
   const slug = (account.slug as string | undefined)?.trim();
   const calendarUrl = slug
@@ -684,7 +684,7 @@ function renderDailyDigest(args: {
             <tr>
               <td>
                 <p style="margin:0 0 12px;font-size:13px;letter-spacing:0.10em;text-transform:uppercase;color:#7a7370">
-                  L+R Agency · ${safeBrand}
+                  Linkrunner Media · ${safeBrand}
                 </p>
                 <h1 style="margin:0 0 6px;font-size:26px;line-height:1.25;font-weight:600;color:#1a1a1a">
                   Tomorrow's posts
@@ -706,7 +706,7 @@ function renderDailyDigest(args: {
 
                 <hr style="border:none;border-top:1px solid #ece8e4;margin:32px 0 16px">
                 <p style="margin:0;font-size:12px;line-height:1.55;color:#9a9290">
-                  You're getting this because you're a member of ${safeBrand} on L+R Agency. We send a quick rundown each evening at 6pm IST when posts are scheduled for the next day.
+                  You're getting this because you're a member of ${safeBrand} on Linkrunner Media. We send a quick rundown each evening at 6pm IST when posts are scheduled for the next day.
                   <a href="${safeSettingsUrl}" style="color:#7a7370;text-decoration:underline">Manage email preferences</a>.
                 </p>
               </td>

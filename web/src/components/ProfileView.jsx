@@ -189,7 +189,7 @@ const ProfileView = ({ setRoute, mode, onSignOut }) => {
   };
 
   const workspaceLine = auth.isAgency
-    ? 'L+R Agency'
+    ? 'Linkrunner Media'
     : `Brand · ${auth.account?.name || 'Workspace'}`;
 
   return (

@@ -1,5 +1,5 @@
 // =====================================================================
-// L+R Studio — Brand-context compiler for the AI Co-pilot
+// Linkrunner Media — Brand-context compiler for the AI Co-pilot
 // =====================================================================
 //
 // Single source of truth for the "who is this brand" blob we hand to
