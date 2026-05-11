@@ -8,6 +8,10 @@ import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import { PasswordResetPage } from './components/PasswordResetPage.jsx';
 import { LightboxProvider } from './components/Lightbox.jsx';
 import './styles/app.css';
+// AI Elements design tokens + scoped Tailwind utilities. Imported AFTER
+// app.css so component-level Tailwind classes can override the base
+// styles when needed. See AI_COPILOT_V2_MIGRATION.md Phase 0.
+import './styles/elements.css';
 
 window.LR_TWEAKS = window.LR_TWEAKS || {
   accent: 'coral',
