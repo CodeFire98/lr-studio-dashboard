@@ -1,5 +1,8 @@
 // =====================================================================
-// /api/ai/_cache-poc — TEMPORARY proof-of-concept route
+// /api/ai/cache-poc — TEMPORARY proof-of-concept route
+// (NOTE: was originally _cache-poc.ts, renamed because Vercel ignores
+// files prefixed with `_` in the api/ directory, treating them as
+// private helpers rather than route handlers.)
 //
 // Purpose: verify that the Vercel AI SDK's @ai-sdk/anthropic provider
 // translates `providerOptions.anthropic.cacheControl = { type: 'ephemeral' }`

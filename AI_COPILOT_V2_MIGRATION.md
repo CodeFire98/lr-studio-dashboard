@@ -108,7 +108,7 @@ Recommendation: ship as **PR A (PoC + Phase 0 + Phase 1)**, **PR B (Phase 2)**, 
 
 | Phase | Rollback method | Recovery time |
 |---|---|---|
-| PoC | Delete `/api/ai/_cache-poc.ts` route. Revert package.json deps. | <5 min |
+| PoC | Delete `/api/ai/cache-poc.ts` route. Revert package.json deps. | <5 min |
 | 0 | Revert PR. Tailwind/shadcn config files are isolated to new directories — removing them doesn't affect existing CSS. | <10 min |
 | 1a / 1b / 1c | Revert PR (per-route). Each server route is independent — Phase 1a can revert without touching 1b/1c. Existing client code keeps working against the rolled-back routes since the wire protocol was unchanged in Phase 1. | <10 min |
 | 2a / 2b / 2c | Revert PR. Client component swap is per-component; reverting just restores the old `.jsx` file. Server routes (Phase 1) keep working because the AI SDK's stream protocol is consumed by both old and new clients via adapter. | <10 min |
@@ -191,6 +191,8 @@ Recommendation: ship as **PR A (PoC + Phase 0 + Phase 1)**, **PR B (Phase 2)**, 
 
 ### Vercel / deploy
 
+- [ ] **API route returns the SPA `index.html` (status 200, HTML body)** — happens when Vercel doesn't register the file as a function and falls through to the `/(.*)` SPA rewrite. Most common cause: **filename starts with `_`**. Vercel treats `api/_*.ts` as private/internal helpers and ignores them as routes. Confirmed during the PoC for this migration — `_cache-poc.ts` returned `<!DOCTYPE html>` on a 200 even though the file existed; renaming to `cache-poc.ts` fixed it. Other possible causes: file isn't `.ts`/`.js`/`.mjs`, default export missing, route under a directory Vercel doesn't scan.
+  - Fix: rename to remove the underscore prefix. Confirm with `curl <preview-url>/api/<route>` — should NOT return HTML.
 - [ ] **Function timeout** — `/api/ai/chat` takes >10s and Vercel kills it. Free / Hobby tier has 10s default. Pro has 60s. We're on Pro (the `fetch-trends.ts` route already has `maxDuration: 300`).
   - Fix: if a chat route needs more time, add to `vercel.json` functions config: `"api/ai/chat.ts": { "maxDuration": 60 }`.
 - [ ] **CORS regression** — local dev hits 403 from `/api/ai/*`. Each route must keep its `Access-Control-Allow-Origin: *` headers.
@@ -235,7 +237,7 @@ After this PR's Vercel preview deploys:
 
 1. Sign in to the dashboard preview URL as an agency user (any account in `AI_COPILOT_BRAND_IDS`).
 2. Open browser devtools → Console.
-3. Run: `fetch('/api/ai/_cache-poc', { headers: { Authorization: 'Bearer ' + (await window.supabase.auth.getSession()).data.session.access_token }}).then(r => r.json()).then(console.table)`
+3. Run: `fetch('/api/ai/cache-poc', { headers: { Authorization: 'Bearer ' + (await window.__LR_AUTH__.supabase.auth.getSession()).data.session.access_token }}).then(r => r.json()).then(console.log)`
 4. Read the two rows. Cache landed = ✅ proceed to Phase 0. Cache didn't land = 🛑 dig into provider options.
 
 ### Results
@@ -262,7 +264,7 @@ After this PR's Vercel preview deploys:
 | `web/api/ai/chat.ts` | 464 LoC, raw Anthropic SDK, manual MAX_TURNS loop, manual SSE events | ~150 LoC, `streamText` with `tool()` definitions, `stopWhen: stepCountIs(8)`, `toUIMessageStreamResponse()` |
 | `web/api/ai/copy.ts` | 292 LoC, raw Anthropic SDK | ~100 LoC, `streamText` |
 | `web/api/ai/image.ts` | 306 LoC, lenient JSON parser for ideas | ~150 LoC, `streamObject` (ideas) + `streamText` (prompt) |
-| `web/api/ai/_cache-poc.ts` | does not exist | NEW: 60 LoC PoC route (delete after Phase 0 lands) |
+| `web/api/ai/cache-poc.ts` | does not exist | NEW: 60 LoC PoC route (delete after Phase 0 lands) |
 
 ### Client (changes per phase)
 
