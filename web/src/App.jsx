@@ -1133,6 +1133,7 @@ const App = () => {
           accountId={scopeAccountId}
           brandName={calendarAccountName}
           brandSlug={brandAccounts.find((b) => b.id === scopeAccountId)?.slug || auth?.account?.slug || null}
+          userId={auth?.id}
           onClose={() => setCopilotOpen(false)}
           onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setCopilotOpen(false); }}
         />

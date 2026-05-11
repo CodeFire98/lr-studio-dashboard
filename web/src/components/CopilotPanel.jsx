@@ -62,12 +62,46 @@ async function* parseSse(response) {
   }
 }
 
-const CopilotPanel = ({ accountId, brandName, onClose, onNavigateToPlan, brandSlug }) => {
+// Conversations are persisted to localStorage so closing the panel — or
+// switching brands and switching back — doesn't lose history. Keyed by
+// (userId, accountId) so different agency staff on the same browser get
+// their own threads, and each brand has its own conversation context.
+// Capped at MAX_PERSISTED_MESSAGES to keep localStorage from growing
+// unboundedly; oldest user-message-and-response pairs drop off first.
+const MAX_PERSISTED_MESSAGES = 60;
+const storageKey = (userId, accountId) => `lr_copilot_conv_${userId}_${accountId}`;
+
+function loadPersistedMessages(userId, accountId) {
+  if (!userId || !accountId) return [];
+  try {
+    const raw = localStorage.getItem(storageKey(userId, accountId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistMessages(userId, accountId, messages) {
+  if (!userId || !accountId) return;
+  try {
+    const trimmed = messages.length > MAX_PERSISTED_MESSAGES
+      ? messages.slice(messages.length - MAX_PERSISTED_MESSAGES)
+      : messages;
+    localStorage.setItem(storageKey(userId, accountId), JSON.stringify(trimmed));
+  } catch {
+    // localStorage full / unavailable — drop the persistence silently.
+    // Chat still works in-memory; only the cross-session continuity breaks.
+  }
+}
+
+const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan, brandSlug }) => {
   // Each message: { id, role, content, parts? }
   //   role: 'user' | 'assistant' | 'system'
   //   content: text for user; for assistant, the streamed text so far
   //   parts: array of { type: 'tool_call' | 'tool_result', ... } interleaved with text
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => loadPersistedMessages(userId, accountId));
   const [draft, setDraft] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
@@ -83,15 +117,42 @@ const CopilotPanel = ({ accountId, brandName, onClose, onNavigateToPlan, brandSl
     el.scrollTop = el.scrollHeight;
   }, [messages, streaming]);
 
-  // Reset chat when the active brand changes (or panel re-mounts).
+  // When the brand changes, swap to that brand's persisted conversation.
+  // (User changes are rare — same user keeps their threads — but we key on
+  // both so multi-staff sessions on the same browser stay separate.)
   useEffect(() => {
-    setMessages([]);
+    setMessages(loadPersistedMessages(userId, accountId));
     setError('');
     setUsage(null);
-  }, [accountId]);
+  }, [accountId, userId]);
+
+  // Persist on every message change. Trimmed in persistMessages.
+  useEffect(() => {
+    persistMessages(userId, accountId, messages);
+  }, [userId, accountId, messages]);
 
   // Cancel in-flight request on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // "Start new" — clear the current brand's conversation. Confirms first
+  // since this is destructive (no undo).
+  const startNew = () => {
+    if (streaming) {
+      abortRef.current?.abort();
+      setStreaming(false);
+    }
+    if (messages.length > 0 && !window.confirm('Start a new conversation? The current one will be cleared.')) {
+      return;
+    }
+    setMessages([]);
+    setError('');
+    setUsage(null);
+    try {
+      localStorage.removeItem(storageKey(userId, accountId));
+    } catch {
+      // ignore
+    }
+  };
 
   const sendMessage = useCallback(async () => {
     const text = draft.trim();
@@ -210,9 +271,20 @@ const CopilotPanel = ({ accountId, brandName, onClose, onNavigateToPlan, brandSl
           </h4>
           <div className="copilot-sub">{brandName || 'Brand'}</div>
         </div>
-        <button className="copilot-close" onClick={onClose} aria-label="Close Co-pilot">
-          <Icon name="x" size={14} />
-        </button>
+        <div className="copilot-header-actions">
+          {messages.length > 0 && (
+            <button
+              className="copilot-header-btn"
+              onClick={startNew}
+              title="Start a new conversation"
+            >
+              Start new
+            </button>
+          )}
+          <button className="copilot-close" onClick={onClose} aria-label="Close Co-pilot">
+            <Icon name="x" size={14} />
+          </button>
+        </div>
       </header>
 
       <div className="copilot-scroll" ref={scrollRef}>
