@@ -23,6 +23,7 @@ import {
   findCompetitorsForBrand,
 } from '../lib/db.js';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
+import { BrandNotesSection } from './BrandNotesSection.jsx';
 
 // System / pre-installed faces we never need to fetch from Google Fonts.
 // Anything not on this list gets a <link> appended so e.g. "Karla" actually
@@ -2072,6 +2073,8 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
           </div>
         </div>
       )}
+
+      <BrandNotesSection accountId={accountId} isAgency={!!auth.isAgency} userId={auth?.id}/>
 
       <ReferencesCard accountId={accountId} isAgency={!!auth.isAgency}/>
 

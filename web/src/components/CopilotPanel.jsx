@@ -407,12 +407,25 @@ function inlineMd(text) {
 
 const ToolCard = ({ part, onNavigateToPlan, brandSlug }) => {
   const isPlan = part.name === 'create_post_plan_draft';
+  const isNote = part.name === 'write_brand_note';
   const planId = isPlan && part.status === 'ok' ? part.result?.id : null;
-  const headline = part.status === 'running'
-    ? (isPlan ? 'Drafting a post plan…' : `Running ${part.name}…`)
-    : part.status === 'ok'
-      ? (isPlan ? 'Created an AI draft plan' : `Ran ${part.name}`)
-      : `${part.name} failed`;
+
+  let headline;
+  if (part.status === 'running') {
+    headline = isPlan
+      ? 'Drafting a post plan…'
+      : isNote
+        ? 'Saving a brand note…'
+        : `Running ${part.name}…`;
+  } else if (part.status === 'ok') {
+    headline = isPlan
+      ? 'Created an AI draft plan'
+      : isNote
+        ? (part.input?.is_pinned ? 'Saved a pinned brand note' : 'Saved a brand note')
+        : `Ran ${part.name}`;
+  } else {
+    headline = `${part.name} failed`;
+  }
 
   return (
     <div className={`copilot-tool copilot-tool-${part.status}`}>
@@ -428,6 +441,16 @@ const ToolCard = ({ part, onNavigateToPlan, brandSlug }) => {
               {part.input.platforms.map((p) => (
                 <span key={p} className="copilot-tool-pill">{p}</span>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+      {isNote && part.input?.body && (
+        <div className="copilot-tool-body">
+          <div className="copilot-tool-note-body">"{part.input.body}"</div>
+          {part.input.is_pinned && (
+            <div className="copilot-tool-note-pinned">
+              <Icon name="check" size={10}/> Pinned — rides on every AI call
             </div>
           )}
         </div>

@@ -5016,6 +5016,205 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--surface);
 }
 
+/* Brand notes section (BrandKitView) */
+.brand-notes-count {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: middle;
+  font-family: var(--font-sans, inherit);
+}
+.brand-notes-error {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  background: var(--accent-soft, #fdecea);
+  color: var(--accent-ink, #b1382c);
+  border-radius: 6px;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.brand-notes-empty {
+  text-align: center;
+  padding: 24px 12px;
+  color: var(--ink-3);
+  font-size: 13.5px;
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+.brand-notes-empty p {
+  margin: 0 0 8px;
+}
+.brand-notes-empty p:last-child {
+  margin: 0;
+}
+
+.brand-notes-composer {
+  background: color-mix(in oklab, var(--accent) 5%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 20%, var(--line));
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.brand-notes-composer textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.45;
+  background: var(--surface);
+  color: var(--ink-1);
+  outline: none;
+  min-height: 60px;
+}
+.brand-notes-composer textarea:focus {
+  border-color: var(--accent);
+}
+.brand-notes-composer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.brand-notes-pin-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-3);
+  cursor: pointer;
+  user-select: none;
+}
+.brand-notes-pin-label input[type="checkbox"] {
+  margin: 0 4px 0 0;
+  cursor: pointer;
+}
+
+.brand-notes-group {
+  margin-bottom: 16px;
+}
+.brand-notes-group:last-child {
+  margin-bottom: 0;
+}
+.brand-notes-group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.brand-note-row {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.brand-note-row:last-child {
+  margin-bottom: 0;
+}
+.brand-note-row:hover .brand-note-meta {
+  opacity: 1;
+}
+.brand-note-editing {
+  display: block;
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 3%, var(--surface));
+}
+.brand-note-editing textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.45;
+  background: var(--surface);
+  color: var(--ink-1);
+  outline: none;
+  min-height: 60px;
+}
+.brand-note-editing textarea:focus {
+  border-color: var(--accent);
+}
+.brand-note-body {
+  flex: 1;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-1);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.brand-note-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity 120ms;
+}
+.brand-note-time {
+  font-size: 11px;
+  color: var(--ink-4);
+}
+.brand-note-action {
+  background: transparent;
+  border: 0;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.brand-note-action:hover {
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+}
+.brand-note-delete:hover {
+  color: #b91c1c;
+  background: var(--accent-soft, #fdecea);
+}
+.brand-note-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Note tool-card body (chat panel) */
+.copilot-tool-note-body {
+  color: var(--ink-2);
+  line-height: 1.5;
+  font-style: italic;
+  font-size: 13px;
+}
+.copilot-tool-note-pinned {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
 /* AI draft pill on PostPlanDetailView */
 .ai-draft-pill {
   display: inline-flex;
