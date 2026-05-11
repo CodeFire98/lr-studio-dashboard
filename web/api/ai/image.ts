@@ -1,33 +1,36 @@
 // =====================================================================
 // /api/ai/image — Vercel serverless function — image-ideation pipeline
 //
-// Two-step image-prompt generation for the Deliverables surface in
-// PostPlanDetailView:
+// AI Co-pilot v2 Phase 1c: migrated from raw @anthropic-ai/sdk to the
+// Vercel AI SDK. Two-step image-prompt flow:
 //
-//   mode = 'ideas'  → returns 3-5 short image-direction concepts as
-//                     structured JSON. Each idea: {title, description,
-//                     style_keywords}. Streams the JSON output and the
-//                     client parses on completion.
+//   mode = 'ideas'  → uses streamObject with a Zod schema for
+//                     { ideas: [{title, description, style_keywords[]}] }.
+//                     Replaces the v1 lenient-JSON-parse-on-done hack —
+//                     Zod validates the output server-side and the SDK
+//                     constrains the model to produce schema-conforming
+//                     JSON.
 //
-//   mode = 'prompt' → takes a chosen idea + the admin's additional
-//                     details + brand context, returns a detailed
-//                     image-generation prompt the admin can paste
-//                     into Midjourney / DALL-E / Imagen / their tool of
-//                     choice. Streams text deltas.
+//   mode = 'prompt' → uses streamText for freeform image-gen prompt.
+//                     Same pattern as /api/ai/copy.
 //
-// Same auth pipeline as /api/ai/chat (JWT → is_agency → AI_COPILOT_BRAND_IDS
-// allowlist). Same prompt-cached brand-context blob — cache reads across
-// chat / copy / image surfaces within the 5-minute TTL.
+// Wire protocol UNCHANGED from v1 — both modes still emit text deltas
+// over SSE (event name "text") so the existing AIImagePromptPanel.jsx
+// keeps working untouched until Phase 2c. The client's lenient JSON
+// parser on stream-complete remains as defense-in-depth, but Zod
+// schema validation now makes it rarely needed.
 //
-// Why not one endpoint with one shape: ideas is structured-output, prompt
-// is freeform text. Same response protocol (SSE streaming) keeps the
-// client simple; the client just parses JSON on stream-complete for
-// ideas mode vs renders deltas for prompt mode.
+// Same auth pipeline as the other AI routes (JWT → is_agency →
+// AI_COPILOT_BRAND_IDS allowlist). Same prompt-cached brand-context
+// blob — cache reads across chat / copy / image surfaces within the
+// 5-minute TTL.
 // =====================================================================
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import Anthropic from "@anthropic-ai/sdk";
+import { streamText, streamObject } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
@@ -40,7 +43,7 @@ const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL_ID = "claude-sonnet-4-6";
 const MAX_TOKENS_IDEAS = 1200;
 const MAX_TOKENS_PROMPT = 1000;
 
@@ -50,23 +53,37 @@ const PLATFORM_LABEL: Record<string, string> = {
   x: "X (Twitter)",
 };
 
-// System prompts — tuned per mode so the model output shape is predictable
-// (parseable JSON for ideas; a single freeform prompt for prompt-mode).
+// Zod schema for the structured-output ideas mode. The shape mirrors v1's
+// hand-written JSON contract exactly so the existing client (which
+// accumulates text deltas into a JSON string and then parses) sees
+// identical output. streamObject also constrains Claude to produce
+// schema-conforming output AND validates the final result server-side —
+// the v1 lenient-fence-strip-then-parse hack is no longer needed here.
+const IDEAS_SCHEMA = z.object({
+  ideas: z
+    .array(
+      z.object({
+        title: z.string().describe("Short label, 2-5 words."),
+        description: z
+          .string()
+          .describe("1-2 sentence concept — what's in frame, mood, key compositional choice."),
+        style_keywords: z
+          .array(z.string())
+          .describe(
+            "3-6 stylistic adjectives or references — e.g. 'editorial', 'overcast natural light', 'shallow depth of field'.",
+          ),
+      }),
+    )
+    .min(3)
+    .max(5)
+    .describe(
+      "3 to 5 distinct image-direction concepts. Each must be a DIFFERENT angle — different framing, mood, subject choice, or compositional idea. Don't pad with repeats; if the brief is too thin for 5, return 3-4 instead.",
+    ),
+});
+
 const SYSTEM_IDEAS = `You are an art director helping an agency plan visual creative for a single brand. Given the post's concept and platform, propose 3-5 SHORT image direction concepts the agency can choose between.
 
 Each direction is a different ANGLE — different framing, mood, subject choice, or compositional idea. Don't propose 5 variations of the same shot. Spread the directions across the realistic possibilities (e.g. studio product shot, in-context lifestyle shot, abstract / conceptual, hands-only / detail crop, behind-the-scenes / process).
-
-Output ONLY a JSON object matching this exact shape — no preamble, no markdown fences, no explanation:
-
-{
-  "ideas": [
-    {
-      "title": "short label, 2-5 words",
-      "description": "1-2 sentence concept — what's in frame, mood, key compositional choice",
-      "style_keywords": ["3-6 stylistic adjectives or references — e.g. 'editorial', 'overcast natural light', 'shallow depth of field'"]
-    }
-  ]
-}
 
 Brand voice constraints from the brand context MUST inform every direction — palette, photography style, do/don'ts, voice tags. If the brand voice prohibits something (e.g. "no stock photo feel"), every direction respects that. If the admin's brief is too thin to generate 5 distinct angles, return fewer (3-4 is fine) rather than padding with repeats.`;
 
@@ -107,6 +124,21 @@ function writeSseEvent(res: VercelResponse, type: string, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
   // @ts-expect-error — Node response has flush, types don't expose it.
   res.flush?.();
+}
+
+type UsageShape = {
+  inputTokens?: number;
+  outputTokens?: number;
+  inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
+};
+
+function emitUsageEvent(res: VercelResponse, u: UsageShape | undefined) {
+  writeSseEvent(res, "usage", {
+    input_tokens: u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0,
+    output_tokens: u?.outputTokens ?? 0,
+    cache_creation_input_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
+    cache_read_input_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
+  });
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -205,21 +237,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.status(200);
   res.write(": stream open\n\n");
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-
+  // Two cache breakpoints (mode-specific instructions + brand context),
+  // same as chat.ts and copy.ts. Cache is shared across all three routes
+  // because brandContext is byte-stable per brand within the 5-min TTL.
   const systemInstructions = mode === "ideas" ? SYSTEM_IDEAS : SYSTEM_PROMPT_DETAILED;
-  const systemBlocks: Anthropic.TextBlockParam[] = [
-    {
-      type: "text",
-      text: systemInstructions,
-      cache_control: { type: "ephemeral" },
-    },
-    {
-      type: "text",
-      text: `\n\n---\n\n${brandContext}`,
-      cache_control: { type: "ephemeral" },
-    },
-  ];
 
   const platformLabel = PLATFORM_LABEL[body.platform];
   const scheduledLabel = plan.scheduled_at
@@ -247,9 +268,7 @@ Scheduled: ${scheduledLabel}${platformCopy ? `
 Caption (for tonal context):
 """
 ${platformCopy.slice(0, 800)}
-"""` : ""}${briefLine}
-
-Output the JSON object only — no preamble, no markdown fences, no commentary.`;
+"""` : ""}${briefLine}`;
   } else {
     const ideaTitle = body.idea_title?.trim() || "";
     const ideaDescription = body.idea_description?.trim() || "";
@@ -274,28 +293,74 @@ Description: ${ideaDescription}${keywords.length ? `\nStyle keywords: ${keywords
 Output the detailed image prompt text only — no preamble, no markdown, no quotes. Ready to paste into the admin's image-gen tool.`;
   }
 
+  // System messages array shared by both modes. Each block gets its own
+  // cache_control via providerOptions.anthropic.cacheControl. The AI SDK
+  // collapses contiguous system messages into a multi-block Anthropic
+  // system param so both cache breakpoints land.
+  const systemMessages = [
+    {
+      role: "system" as const,
+      content: systemInstructions,
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } },
+    },
+    {
+      role: "system" as const,
+      content: `\n\n---\n\n${brandContext}`,
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } },
+    },
+  ];
+
   try {
-    const stream = anthropic.messages.stream({
-      model: MODEL,
-      max_tokens: mode === "ideas" ? MAX_TOKENS_IDEAS : MAX_TOKENS_PROMPT,
-      system: systemBlocks,
-      messages: [{ role: "user", content: userMessage }],
-    });
+    if (mode === "ideas") {
+      // streamObject constrains Claude to produce schema-conforming JSON.
+      // The textStream emits raw JSON-token deltas as the object is built;
+      // the existing AIImagePromptPanel.jsx accumulates these into a
+      // string and lenient-parses on done — identical to v1 behaviour.
+      const result = streamObject({
+        model: anthropic(MODEL_ID),
+        maxOutputTokens: MAX_TOKENS_IDEAS,
+        schema: IDEAS_SCHEMA,
+        messages: [
+          ...systemMessages,
+          { role: "user", content: userMessage },
+        ],
+      });
 
-    stream.on("text", (delta) => {
-      writeSseEvent(res, "text", { delta });
-    });
+      for await (const chunk of result.textStream) {
+        writeSseEvent(res, "text", { delta: chunk });
+      }
 
-    const finalMessage = await stream.finalMessage();
+      // streamObject exposes usage as a Promise that resolves when the
+      // stream completes. Mirror the legacy snake_case wire shape.
+      const usage = (await result.usage) as UsageShape;
+      emitUsageEvent(res, usage);
 
-    writeSseEvent(res, "usage", {
-      input_tokens: finalMessage.usage.input_tokens,
-      output_tokens: finalMessage.usage.output_tokens,
-      cache_creation_input_tokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
-      cache_read_input_tokens: finalMessage.usage.cache_read_input_tokens ?? 0,
-    });
+      const finishReason = await result.finishReason;
+      writeSseEvent(res, "done", { stop_reason: finishReason });
+    } else {
+      // Freeform image-gen prompt — streamText, same pattern as copy.ts.
+      const result = streamText({
+        model: anthropic(MODEL_ID),
+        maxOutputTokens: MAX_TOKENS_PROMPT,
+        messages: [
+          ...systemMessages,
+          { role: "user", content: userMessage },
+        ],
+      });
 
-    writeSseEvent(res, "done", { stop_reason: finalMessage.stop_reason });
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") {
+          writeSseEvent(res, "text", { delta: part.text });
+        } else if (part.type === "finish-step") {
+          emitUsageEvent(res, part.usage as UsageShape | undefined);
+        } else if (part.type === "finish") {
+          writeSseEvent(res, "done", { stop_reason: part.finishReason });
+        } else if (part.type === "error") {
+          const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
+          writeSseEvent(res, "error", { error: errMsg });
+        }
+      }
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     writeSseEvent(res, "error", { error: msg });
