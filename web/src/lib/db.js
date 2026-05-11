@@ -6,6 +6,56 @@
 import { supabase } from './supabase';
 import MOCK from './mockData.js';
 import { validateImageDimensions } from './imageValidation.js';
+import { isVideoFile, extractVideoThumbnail, thumbnailBlobToFile } from './videoThumbnail.js';
+
+// Sidecar naming convention for video thumbnails. We upload a JPEG frame
+// of every video alongside the original at this suffix so the UI can
+// render a real preview instead of a generic play icon.
+const VIDEO_THUMBNAIL_SUFFIX = '.thumb.jpg';
+const isVideoMime = (m) => typeof m === 'string' && m.toLowerCase().startsWith('video/');
+
+// Upload a video's thumbnail sidecar to the same bucket + path scheme.
+// Safe to call for non-videos (returns null) and on failure (logs and
+// returns null — never fails the parent upload). Returns the sidecar
+// storage_path on success.
+async function uploadVideoThumbnailSidecar({ bucket, storagePath, file }) {
+  if (!isVideoFile(file)) return null;
+  try {
+    const blob = await extractVideoThumbnail(file);
+    if (!blob) return null;
+    const thumbFile = thumbnailBlobToFile(blob, file.name || 'thumb');
+    if (!thumbFile) return null;
+    const thumbPath = `${storagePath}${VIDEO_THUMBNAIL_SUFFIX}`;
+    const { error } = await supabase.storage
+      .from(bucket)
+      .upload(thumbPath, thumbFile, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType: 'image/jpeg',
+      });
+    if (error) {
+      console.warn('video thumbnail upload failed', error);
+      return null;
+    }
+    return thumbPath;
+  } catch (e) {
+    console.warn('video thumbnail extraction failed', e);
+    return null;
+  }
+}
+
+// Resolve a video attachment's thumbnail public URL by appending the
+// sidecar suffix to the storage path. Returns null for non-videos or
+// missing paths. The URL is built unconditionally — if the thumbnail
+// upload failed at write time, the browser will fall back to the
+// onError path in <SafeImage>.
+function resolveVideoThumbnailUrl({ bucket, storagePath, mimeType }) {
+  if (!storagePath || !isVideoMime(mimeType)) return null;
+  const { data } = supabase.storage
+    .from(bucket)
+    .getPublicUrl(`${storagePath}${VIDEO_THUMBNAIL_SUFFIX}`);
+  return data?.publicUrl || null;
+}
 
 const palettes = MOCK.palettes;
 
@@ -46,16 +96,16 @@ function personFromProfile(p) {
     return {
       id: 'u_unassigned',
       name: 'Unassigned',
-      initials: 'L+',
-      role: 'L+R Agency',
+      initials: 'LM',
+      role: 'Linkrunner Media',
       avatarColor: '#2B2B2E',
     };
   }
   return {
     id: p.id,
-    name: p.display_name || 'L+R Team',
-    initials: p.initials || 'L+',
-    role: p.is_agency ? 'L+R Agency' : 'Brand',
+    name: p.display_name || 'Linkrunner Team',
+    initials: p.initials || 'LM',
+    role: p.is_agency ? 'Linkrunner Media' : 'Brand',
     avatarColor: p.avatar_color || '#2B2B2E',
     email: p.email,
   };
@@ -1260,6 +1310,9 @@ export async function uploadBrandAsset({ accountId, file }) {
       contentType: file.type || undefined,
     });
   if (error) throw error;
+  // Sidecar thumbnail for videos so the references grid shows a real
+  // preview instead of a generic play icon.
+  await uploadVideoThumbnailSidecar({ bucket: 'brand-assets', storagePath: path, file });
   const { data } = supabase.storage.from('brand-assets').getPublicUrl(path);
   return {
     path,
@@ -1267,6 +1320,7 @@ export async function uploadBrandAsset({ accountId, file }) {
     name: file.name,
     sizeBytes: file.size,
     mimeType: file.type || null,
+    thumbnailUrl: resolveVideoThumbnailUrl({ bucket: 'brand-assets', storagePath: path, mimeType: file.type }),
   };
 }
 
@@ -1278,23 +1332,32 @@ export async function listBrandAssets(accountId) {
   if (error) throw error;
   return (data || [])
     .filter((o) => o.name && !o.name.endsWith('/'))
+    // Hide the sidecar JPEG thumbnails from the gallery — they're shown
+    // implicitly as the preview for the matching video, not as their
+    // own tile.
+    .filter((o) => !o.name.endsWith(VIDEO_THUMBNAIL_SUFFIX))
     .map((o) => {
       const path = `${accountId}/${o.name}`;
       const { data: pub } = supabase.storage.from('brand-assets').getPublicUrl(path);
+      const mimeType = o.metadata?.mimetype || '';
       return {
         path,
         name: o.name.replace(/^\d+_/, ''), // strip the timestamp prefix
         url: pub.publicUrl,
         sizeBytes: o.metadata?.size || 0,
-        mimeType: o.metadata?.mimetype || '',
+        mimeType,
         createdAt: o.created_at,
+        thumbnailUrl: resolveVideoThumbnailUrl({ bucket: 'brand-assets', storagePath: path, mimeType }),
       };
     });
 }
 
 export async function deleteBrandAsset(path) {
   if (!path) throw new Error('deleteBrandAsset: path is required');
-  const { error } = await supabase.storage.from('brand-assets').remove([path]);
+  // Best-effort sidecar cleanup. Storage remove() ignores missing keys
+  // silently, so we can include both unconditionally without checking
+  // the original mime type.
+  const { error } = await supabase.storage.from('brand-assets').remove([path, `${path}${VIDEO_THUMBNAIL_SUFFIX}`]);
   if (error) throw error;
 }
 
@@ -1843,6 +1906,11 @@ export async function loadPostPlanListRollups({ postPlanIds }) {
         filename: a.filename,
         mimeType: a.mime_type,
         url: pub?.publicUrl,
+        thumbnailUrl: resolveVideoThumbnailUrl({
+          bucket: POST_PLAN_ATTACHMENT_BUCKET,
+          storagePath: a.storage_path,
+          mimeType: a.mime_type,
+        }),
       };
     });
     attachmentsByPlan.set(planId, capped);
@@ -1921,6 +1989,11 @@ export function mapPostPlanAttachmentRow(row) {
     uploader: personFromProfile(row.uploader),
     createdAt: row.created_at,
     url: pub?.publicUrl,
+    thumbnailUrl: resolveVideoThumbnailUrl({
+      bucket: POST_PLAN_ATTACHMENT_BUCKET,
+      storagePath: row.storage_path,
+      mimeType: row.mime_type,
+    }),
   };
 }
 
@@ -1965,6 +2038,11 @@ export async function addPostPlanAttachment({
     });
   if (upErr) throw upErr;
 
+  // Fire-and-forget thumbnail upload for videos. We deliberately await
+  // the sidecar before inserting the DB row so the thumbnail URL exists
+  // by the time the realtime INSERT lands in other clients.
+  await uploadVideoThumbnailSidecar({ bucket: POST_PLAN_ATTACHMENT_BUCKET, storagePath: path, file });
+
   const { data, error } = await supabase
     .from('post_plan_attachments')
     .insert({
@@ -1981,7 +2059,7 @@ export async function addPostPlanAttachment({
   if (error) {
     // Roll the storage object back so we don't orphan a file the row
     // never got. Best-effort — surface the original DB error either way.
-    await supabase.storage.from(POST_PLAN_ATTACHMENT_BUCKET).remove([path]).catch(() => {});
+    await supabase.storage.from(POST_PLAN_ATTACHMENT_BUCKET).remove([path, `${path}${VIDEO_THUMBNAIL_SUFFIX}`]).catch(() => {});
     throw error;
   }
   return mapPostPlanAttachmentRow(data);
@@ -1994,9 +2072,13 @@ export async function deletePostPlanAttachment(attachment) {
   // user would never see it again. The DB delete is the user-visible bit,
   // so do storage first and let the row delete decide success.
   if (attachment.storagePath) {
+    const paths = [attachment.storagePath];
+    if (isVideoMime(attachment.mimeType)) {
+      paths.push(`${attachment.storagePath}${VIDEO_THUMBNAIL_SUFFIX}`);
+    }
     await supabase.storage
       .from(POST_PLAN_ATTACHMENT_BUCKET)
-      .remove([attachment.storagePath])
+      .remove(paths)
       .catch(() => {});
   }
   const { error } = await supabase
@@ -2561,6 +2643,11 @@ function mapPostPlanIdeaAttachmentRow(row) {
     uploader: personFromProfile(row.uploader),
     createdAt: row.created_at,
     url: pub?.publicUrl,
+    thumbnailUrl: resolveVideoThumbnailUrl({
+      bucket: POST_PLAN_ATTACHMENT_BUCKET,
+      storagePath: row.storage_path,
+      mimeType: row.mime_type,
+    }),
   };
 }
 
@@ -2601,6 +2688,8 @@ export async function addPostPlanIdeaAttachment({
     });
   if (upErr) throw upErr;
 
+  await uploadVideoThumbnailSidecar({ bucket: POST_PLAN_ATTACHMENT_BUCKET, storagePath: path, file });
+
   const { data, error } = await supabase
     .from('post_plan_idea_attachments')
     .insert({
@@ -2614,7 +2703,7 @@ export async function addPostPlanIdeaAttachment({
     .select(POST_PLAN_IDEA_ATTACHMENT_SELECT)
     .single();
   if (error) {
-    await supabase.storage.from(POST_PLAN_ATTACHMENT_BUCKET).remove([path]).catch(() => {});
+    await supabase.storage.from(POST_PLAN_ATTACHMENT_BUCKET).remove([path, `${path}${VIDEO_THUMBNAIL_SUFFIX}`]).catch(() => {});
     throw error;
   }
   return mapPostPlanIdeaAttachmentRow(data);
@@ -2623,9 +2712,13 @@ export async function addPostPlanIdeaAttachment({
 export async function deletePostPlanIdeaAttachment(attachment) {
   if (!attachment?.id) throw new Error('deletePostPlanIdeaAttachment: attachment is required');
   if (attachment.storagePath) {
+    const paths = [attachment.storagePath];
+    if (isVideoMime(attachment.mimeType)) {
+      paths.push(`${attachment.storagePath}${VIDEO_THUMBNAIL_SUFFIX}`);
+    }
     await supabase.storage
       .from(POST_PLAN_ATTACHMENT_BUCKET)
-      .remove([attachment.storagePath])
+      .remove(paths)
       .catch(() => {});
   }
   const { error } = await supabase

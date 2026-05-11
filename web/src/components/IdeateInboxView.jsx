@@ -17,6 +17,7 @@ import {
 import { ConvertIdeaModal } from './ConvertIdeaModal.jsx';
 import { linkifyText } from './IdeateView.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 
 const PLATFORMS = [
   { key: 'instagram', label: 'Instagram' },
@@ -151,7 +152,7 @@ const IdeateInboxView = ({ auth, accountId, accountName, navigateToPlan }) => {
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <div className="tiny" style={{marginBottom: 8, color: 'var(--accent-ink)'}}>L+R Agency</div>
+          <div className="tiny" style={{marginBottom: 8, color: 'var(--accent-ink)'}}>Linkrunner Media</div>
           <h1>Inbox</h1>
           <div className="sub">
             {accountName ? `Ideas from ${accountName}` : 'Brand-submitted ideas. Open one to refine and add to the calendar.'}
@@ -442,11 +443,18 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
           <div className="empty" style={{padding: 12, fontSize: 12, color: 'var(--ink-4)'}}>No reference files attached.</div>
         ) : (
           <div className="inbox-attachments-grid">
-            {attachments.map((att) => (
+            {attachments.map((att) => {
+              const isImage = (att.mimeType || '').startsWith('image/') && att.url;
+              const isVideo = (att.mimeType || '').startsWith('video/');
+              return (
               <div key={att.id} className="inbox-attachment-tile">
-                {(att.mimeType || '').startsWith('image/') && att.url ? (
+                {isImage ? (
                   <a href={att.url} target="_blank" rel="noopener noreferrer">
                     <SafeImage src={att.url} alt={att.filename} filename={att.filename} caption="Preview unavailable" />
+                  </a>
+                ) : isVideo ? (
+                  <a href={att.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', width: '100%', height: '100%' }}>
+                    <VideoThumb thumbnailUrl={att.thumbnailUrl} alt={att.filename} badgeSize={32} />
                   </a>
                 ) : (
                   <a href={att.url} target="_blank" rel="noopener noreferrer" className="inbox-attachment-file">
@@ -463,7 +471,8 @@ const InboxDetail = ({ idea, onSave, onConvert, onArchive, onRestore, saving }) 
                   <Icon name="close" size={10} />
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

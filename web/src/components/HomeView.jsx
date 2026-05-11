@@ -11,10 +11,10 @@ import { submitTask } from '../lib/db.js';
 // stuck in a permanent morning. One short phrase per slot, kept in the same
 // "lowercase, no terminal punctuation" voice as the original copy.
 const GREETINGS = {
-  morning:   "it's a fresh morning at L+R",       // 5 → 11
-  afternoon: "the afternoon's looking good at L+R", // 12 → 16
-  evening:   "evening at L+R — let's wrap up something nice", // 17 → 20
-  night:     "burning the late-night oil at L+R",  // 21 → 4
+  morning:   "it's a fresh morning at Linkrunner",       // 5 → 11
+  afternoon: "the afternoon's looking good at Linkrunner", // 12 → 16
+  evening:   "evening at Linkrunner — let's wrap up something nice", // 17 → 20
+  night:     "burning the late-night oil at Linkrunner",  // 21 → 4
 };
 function greetingTail(now = new Date()) {
   const h = now.getHours();
@@ -456,7 +456,7 @@ const HomeView = ({ setRoute, pushTask, requireAuth, auth }) => {
       const name = who.split(" ")[0];
       const accountId = profile?.account?.id || auth?.account?.id;
       if (!accountId) {
-        alert("No brand workspace found on your account — contact L+R to finish setup.");
+        alert("No brand workspace found on your account — contact Linkrunner Media to finish setup.");
         return;
       }
       const chipSnapshot = {};
@@ -491,7 +491,7 @@ const HomeView = ({ setRoute, pushTask, requireAuth, auth }) => {
           <span className="status-dot"/>
           {auth
             ? `Hello, ${(auth.name || MOCK.people.you.name).split(" ")[0]} — ${greetingTail()}`
-            : "Welcome to L+R — a calmer way to brief your agency"}
+            : "Welcome to Linkrunner Media — a calmer way to brief your agency"}
         </div>
 
         <h1 className="home-title">
@@ -590,7 +590,7 @@ const HomeView = ({ setRoute, pushTask, requireAuth, auth }) => {
             <div className="ack-bubble">
               <span className="who">L</span>
               <div>
-                <div style={{ fontSize: 11, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 500 }}>L+R · Just now</div>
+                <div style={{ fontSize: 11, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4, fontWeight: 500 }}>Linkrunner Media · Just now</div>
                 Thanks, {submitted.name} — we've got your brief. Your creative lead will follow up here within 24 hours with a kickoff and timeline.
               </div>
             </div>

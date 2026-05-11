@@ -14,6 +14,7 @@ import {
 } from '../lib/db.js';
 import { useLightbox } from './Lightbox.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 
 const LS_LIBRARY_KIND = 'lr_library_kind';
 
@@ -395,6 +396,8 @@ const LibraryView = ({ auth, accountId, setRoute }) => {
                           loading="lazy"
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                         />
+                      ) : (a.mimeType || '').startsWith('video/') ? (
+                        <VideoThumb thumbnailUrl={a.thumbnailUrl} alt={a.filename} badgeSize={42} />
                       ) : (
                         <div style={{ textAlign: 'center', padding: 12 }}>
                           <Icon name="upload" size={36} />

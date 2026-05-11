@@ -129,7 +129,7 @@ const UpdateBrandModal = ({ open, accountId, accountName, onClose }) => {
               type="text"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              placeholder={accountName ? `Update on ${accountName} from L+R Agency` : 'Update on your workspace from L+R Agency'}
+              placeholder={accountName ? `Update on ${accountName} from Linkrunner Media` : 'Update on your workspace from Linkrunner Media'}
               disabled={status === 'sending'}
               style={{
                 width: '100%',

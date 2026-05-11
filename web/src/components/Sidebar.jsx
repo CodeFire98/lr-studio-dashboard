@@ -7,7 +7,7 @@
      (Trends Radar moved to /c/:slug/trends), so the BrandPicker is the
      only meaningful affordance.
 
-   The L+R Agency wordmark stays at the top regardless. The BrandPicker
+   The Linkrunner Media wordmark stays at the top regardless. The BrandPicker
    sits below it once signed in and drives every other surface's scope. */
 import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon.jsx';
@@ -23,7 +23,7 @@ import { BrandPicker } from './BrandPicker.jsx';
 //     ideas waiting to be turned into post plans.
 //   - Tasks is gone from the sidebar in both modes — the product has
 //     moved fully onto post plans.
-//   - Agency users see "Trends Radar" and an "L+R Team" entry.
+//   - Agency users see "Trends Radar" and a "Linkrunner Team" entry.
 const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
   const primary = [
     { key: "calendar", label: "Social Calendar", icon: "calendar", badge: calendarUnreadCount || undefined },
@@ -43,7 +43,7 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
     { key: "team", label: isAgency ? "Brand team" : "Team", icon: "team" },
   ];
   if (isAgency) {
-    secondary.push({ key: "members", label: "L+R Team", icon: "team" });
+    secondary.push({ key: "members", label: "Linkrunner Team", icon: "team" });
   }
   return { primary, secondary };
 };
@@ -120,15 +120,15 @@ const Sidebar = ({
 
   // Subtitle line under the user pill — different for agency vs brand.
   const planLine = isAgency
-    ? "L+R Agency"
+    ? "Linkrunner Media"
     : (auth?.account?.name || (auth?.email ? auth.email : ""));
 
   return (
     <aside className="sidebar" data-guest={isGuest ? "true" : "false"}>
       <div className="sidebar-brand">
         <span className="dot" />
-        <span>L+R</span>
-        <span className="wordmark-tail">Agency</span>
+        <span>Linkrunner</span>
+        <span className="wordmark-tail">Media</span>
       </div>
 
       {/* Brand picker — drives the scope of every surface below. Only

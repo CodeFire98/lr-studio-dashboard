@@ -842,7 +842,7 @@ const App = () => {
     }
     if (route.view === "library") return <><strong>Library</strong></>;
     if (route.view === "clients") return <><strong>Clients</strong></>;
-    if (route.view === "members") return <><strong>L+R Team</strong></>;
+    if (route.view === "members") return <><strong>Linkrunner Team</strong></>;
     if (route.view === "trends")  return <><strong>Trends Radar</strong></>;
     if (route.view === "team") return <><strong>Team</strong></>;
     if (route.view === "brand") return <><strong>Brand Intelligence</strong></>;
@@ -1015,15 +1015,6 @@ const App = () => {
     );
   }
 
-  // Agency banner copy. In a brand: "Working in X · L+R Agency". In the
-  // cross-client view: "All clients · L+R Agency". Brand owners never see it.
-  const agencyBanner = (() => {
-    if (!auth?.isAgency) return null;
-    if (isAllClientsMode) return { label: 'All clients' };
-    const brandName = (brandAccounts.find((b) => b.id === activeAdminBrandId)?.name) || 'Brand';
-    return { label: `Working in ${brandName}` };
-  })();
-
   // Brand "Got ideas?" CTA — quick way to jump to the composer from any
   // brand-side surface. Agency staff see Inbox in the sidebar instead.
   const showGotIdeasCta = !!auth && !auth.isAgency && route.view !== "ideate";
@@ -1090,20 +1081,9 @@ const App = () => {
             )}
           </div>
         )}
-        {agencyBanner && (
-          <div className="admin-banner">
-            <span className="dot"/>{agencyBanner.label}
-            <span className="muted">· L+R Agency</span>
-          </div>
-        )}
         <div className="topbar">
           <div className="crumb">{crumb}</div>
           <div className="topbar-right">
-            <div className="topbar-search" onClick={() => document.querySelector(".topbar-search input")?.focus()}>
-              <Icon name="search" size={14}/>
-              <input placeholder="Search posts, ideas" style={{border: 0, background: "transparent", outline: "none", width: 180, fontSize: 13}}/>
-              <kbd>⌘K</kbd>
-            </div>
             {showGotIdeasCta && (
               <button className="btn btn-primary btn-sm" onClick={() => setRoute({view: "ideate"})}>
                 <Icon name="send" size={13}/>Submit idea

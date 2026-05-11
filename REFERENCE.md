@@ -1,9 +1,9 @@
-# L+R Studio Dashboard — Reference
+# Linkrunner Media Dashboard — Reference
 
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-11 (Daily-digest idempotency — per-brand check at top of `digestForBrand` skips when `daily_digest_log` already has a `sent > 0` row for the same `(account_id, window_start_utc)`. Makes the cron route safe to call multiple times: manual "Run" recovery after the scheduled fire missed, OR Vercel firing twice in its Hobby flexible window, both no-op. Diagnosed alongside the May 11 18:00 IST miss — root cause was AI Co-pilot PRs #56/#57 deploying at 12:29 UTC and 12:44 UTC, bracketing the cron's 12:30 UTC schedule and disrupting Vercel's fire window. No actual email was lost because the same digest had already been sent via a manual Run at 07:36 UTC. Idempotency makes this self-healing going forward.)
+**Last updated:** 2026-05-11 (Rebrand to **Linkrunner Media** + UX polish pass: agency banner removed, universal search bar removed (deferred to roadmap), "Add brand asset" CTA hoisted to the top of Brand Intelligence, video uploads now get a client-extracted JPEG thumbnail sidecar so the grid shows real frames instead of a generic play icon. Earlier same-day: daily-digest idempotency check added.)
 
 ---
 
@@ -11,6 +11,55 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-11 — Rebrand to "Linkrunner Media" + dashboard polish (banner / search / brand-asset CTA / video thumbnails)
+
+Five small but user-visible changes shipped together. The rebrand is a flat string swap; the rest are targeted UX improvements based on direct user feedback.
+
+**1) Rebrand: "L+R Agency" → "Linkrunner Media" across all user-facing copy and docs.**
+- Sidebar wordmark: "L+R Agency" → "Linkrunner Media" (split: word "Linkrunner" + accent tail "Media").
+- All hero greetings, breadcrumbs, kicker labels, settings copy, password-reset page, error boundary, brand-onboarding subtitle, idea-inbox kicker, profile workspace line, ProfileView, admin queue, and the email-sender defaults (`EMAIL_FROM_NAME` fallback + invite/update/digest templates) updated.
+- `index.html` `<title>` → "Linkrunner Media — Creative Agency".
+- AI Co-pilot system prompt (`web/api/ai/chat.ts`) now identifies itself as "Linkrunner Media".
+- `db.js` profile mapper: unassigned/agency role label flipped, initials "L+" → "LM".
+- The team-nav entry "L+R Team" → "Linkrunner Team".
+- Internal variable names (e.g. `window.LR_TWEAKS`, CSS class `lr-button-pulse`, storage keys `lr_copilot_conv_*`) deliberately left alone — they're identifiers, not brand-visible strings, and renaming would churn the codebase without any user benefit.
+
+**2) Removed the agency banner ("Working in X · L+R Agency").** The banner sat directly above the topbar on every agency-side surface and was redundant — the BrandPicker in the sidebar already shows which brand is active, and the new wordmark already says "Linkrunner Media". Killed the `agencyBanner` derivation in [App.jsx](web/src/App.jsx) and the `<div className="admin-banner">` render branch. The `.admin-banner` CSS class stays — `inviteBanner` (membership-invite acceptance) still uses it.
+
+**3) Removed the universal search bar from the topbar.** The "Search posts, ideas / ⌘K" input was non-functional — it had no submit handler, no suggestions, and no keyboard shortcut wired up. Shipping a placeholder UI for a feature that doesn't exist actively damaged trust ("the search doesn't work"). Removed the `<div className="topbar-search">` block from [App.jsx](web/src/App.jsx). The page-local search inputs in TasksView, LibraryView, LivePostsView, and BrandPicker are unaffected — those are scoped, functional inputs. Real cross-surface search is now an explicit roadmap item (see §14 Pending work).
+
+**4) "Add brand asset" CTA promoted to the top of Brand Intelligence.** Previously the upload button lived inside `ReferencesCard` deep in the Creative Library section near the bottom of the page — most users never scrolled that far. Refactored:
+- Extracted the asset state into a new `useBrandAssets(accountId)` hook (returns `{items, loading, uploading, err, uploadFiles, deleteItem}`). Lives in [BrandKitView.jsx](web/src/components/BrandKitView.jsx).
+- New `<AddBrandAssetButton/>` primitive that wraps a hidden `<input type="file" multiple accept="image/*,video/*,application/pdf">` and shows an "Add brand asset" pill. Consumes the shared hook so the button's `uploading` state is wired without extra plumbing.
+- `BrandKitView` calls `useBrandAssets()` once at the page level, mounts the button in the existing page-head `actions` row (alongside Fetch Brand + Export), and passes the hook result to `<ReferencesCard assets={assets}/>` at the bottom. The card kept its existing gallery + delete behaviour but no longer renders its own upload button.
+- Empty state and card subtitle now point users to the top of the page ("Use **Add brand asset** at the top of the page to upload images, videos, or PDFs").
+- File picker now also accepts `video/*` since (5) below makes video previews actually useful.
+
+**5) Video upload thumbnails — client-side frame extraction, sidecar JPEG in the same bucket.** Until today, uploading a `.mp4` produced a grid tile with just a generic paperclip icon — no visual context, hard to scan a folder of reels. Now we pull a real frame out of the video right before upload and store it as a sidecar at `<storage_path>.thumb.jpg` in the same bucket. The mapper layer surfaces `thumbnailUrl` on every video attachment so UI tiles render a real preview with a "▶" play badge overlaid.
+
+- **[web/src/lib/videoThumbnail.js](web/src/lib/videoThumbnail.js)** (new): `extractVideoThumbnail(file)` mounts a hidden `<video>` element, seeks to ~1s in (or 25% for very short clips — the first frame is often black/letterbox), draws the frame to a canvas, and returns a JPEG `Blob` at quality 0.82 with longest-side capped at 640px. 15-second timeout guard. Returns `null` on any failure (CORS, codec, hung load) so a failed thumbnail extraction never fails the parent upload. Also exports `isVideoFile(file)` and `thumbnailBlobToFile(blob, originalFilename)` helpers.
+- **[web/src/lib/db.js](web/src/lib/db.js)** — three internal helpers + wired into every attachment upload + delete path:
+  - `VIDEO_THUMBNAIL_SUFFIX = '.thumb.jpg'` — the sidecar naming convention. Storage `remove()` ignores missing keys silently, so we can always include the sidecar path in delete batches without checking the original mime first.
+  - `uploadVideoThumbnailSidecar({bucket, storagePath, file})` — extracts + uploads the sidecar to the same bucket alongside the original, `upsert: true`. Awaited before the DB-row insert so the thumbnail URL exists by the time the realtime INSERT lands in other clients. Logs and returns `null` on failure rather than throwing.
+  - `resolveVideoThumbnailUrl({bucket, storagePath, mimeType})` — returns the public URL of the sidecar if mime is `video/*`. Built unconditionally; if the sidecar upload failed at write time the browser falls back via `<SafeImage>` `onError`.
+  - Wired into: `addPostPlanAttachment`, `addPostPlanIdeaAttachment`, `uploadBrandAsset` (extract + upload + roll-back-on-DB-error includes the sidecar path).
+  - Mappers updated to surface `thumbnailUrl`: `mapPostPlanAttachmentRow`, `mapPostPlanIdeaAttachmentRow`, `listBrandAssets`, plus the rollup in `loadPostPlanListRollups` (calendar list-view popover).
+  - Delete paths updated to remove the sidecar alongside the original: `deletePostPlanAttachment`, `deletePostPlanIdeaAttachment`, `deleteBrandAsset`.
+  - `listBrandAssets` filters out the `.thumb.jpg` files from the gallery — they're shown implicitly as the preview for the matching video, not as their own tile.
+- **UI consumers updated** to render the thumbnail when a video has one:
+  - [PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx) — `AttachmentTile` now renders thumbnail + play-badge overlay for video uploads in both References and Final-assets cards.
+  - [BrandKitView.jsx](web/src/components/BrandKitView.jsx) — `ReferencesCard` gallery tiles render video thumbnails with the same overlay pattern.
+  - [CalendarView.jsx](web/src/components/CalendarView.jsx) — `AttachmentPopover` (paperclip-hover thumbnails in list view) shows the JPEG sidecar for video attachments.
+  - [LibraryView.jsx](web/src/components/LibraryView.jsx) — asset-grid tiles render video thumbnails with the play overlay; existing image-thumb logic untouched.
+  - [IdeateInboxView.jsx](web/src/components/IdeateInboxView.jsx) — idea-reference attachments now show video thumbnails inline.
+- **[web/api/daily-digest.ts](web/api/daily-digest.ts)** — the cron's per-plan thumbnail picker now accepts video finals: previously it only set a thumbnail URL when `mime_type starts with image/`; now it also checks `video/` and builds the sidecar URL. So tomorrow's email digest will show real video frames when the brand's final asset is a reel instead of a generic platform-tile fallback.
+- **No DB migration, no env vars, no storage policy changes.** The sidecar naming convention rides on the existing bucket RLS (the storage path's `accountId` prefix is the same as the parent video's), so the public read + agency/member write policies cover the thumbnail automatically.
+- **Trade-offs deliberately not addressed**:
+  - **No server-side thumbnail extraction**. Doing the extraction client-side means the user's browser pays the CPU cost (one frame decode + JPEG encode, ~50-200ms for typical files) but we don't need a video-processing pipeline anywhere on the server. The trade-off is that a user who closes the tab mid-upload uploads the video without a thumbnail; the UI shows the play-icon fallback in that case (acceptable).
+  - **No backfill for existing videos**. Anything uploaded before today renders with the generic play-icon fallback. If/when this becomes a real issue we'd add a one-shot batch job that reads each video, extracts a thumbnail server-side, and uploads the sidecar. Defer until asked.
+  - **One frame per video, no choice of timestamp**. The 1-second seek lands inside the action for most content (real recordings rarely have meaningful content in the literal first frame). If a brand asks for "thumbnail at this specific timestamp" we'd add a UI to pick — premature now.
+- **Sections touched:** Recent changes log; `Last updated`; doc title (Linkrunner Media); §6 Storage buckets (sidecar naming convention note); §10 `daily-digest` route (video-thumbnail picker change); §13 Known decisions (client-side-thumbnail-extraction-over-server-pipeline; sidecar-naming-over-DB-column-for-thumbnail-path); §14 Pending work (added: universal search; removed: nothing).
 
 ### 2026-05-11 — Daily-digest idempotency (+ deploy-churn-vs-cron RCA)
 Investigating "I didn't get the 6pm digest" on May 11. The `daily_digest_log` audit table showed zero rows from the 12:30 UTC scheduled fire — the route literally didn't run. Two other Claude session PRs (#56 at 12:29 UTC, #57 at 12:44 UTC) bracketed the cron's 12:30 UTC schedule on a busy merge day, putting Vercel into deploy churn through the entire flexible fire window (12:30–13:30 UTC on Hobby plan). The cron got silently skipped — known sharp edge of Vercel Hobby crons + busy deploy cadence.
@@ -30,7 +79,6 @@ But the system shouldn't depend on humans noticing and clicking Run. Idempotency
      and run_at <  date_trunc('day', now()) + interval '13 hours 35 minutes';
   ```
 - **Sections touched:** Last updated; Recent changes; §13 Known decisions (idempotency-keyed-on-window-start-utc + Vercel-Hobby-cron-fragility note).
-
 
 ### 2026-05-11 — AI Co-pilot PR 7: image-prompt ideation (directions → detailed prompt)
 The image-prompt surface the user asked for. Rather than a single random shot, the admin gets **3-5 image-direction ideas** to choose between first, then expands the chosen direction into a paste-ready prompt with any extra details. Sits above the Deliverables card on `PostPlanDetailView`. Agency-only, whitelisted-brands-only — same gate as the other AI surfaces.
@@ -1586,6 +1634,8 @@ Running log of "we considered X and chose Y because Z" — newest first.
 
 ## 14. Pending work / known issues
 
+- **Universal cross-surface search** *(roadmap, added 2026-05-11 when the topbar placeholder was removed)*: the topbar previously rendered a non-functional "Search posts, ideas / ⌘K" input which we pulled because shipping placeholder UI for a non-feature damaged trust. Real implementation should hit: post plans (concept, copy variants, status), ideas (body, kicker), brands (name, tagline), members (name, email), live posts (concept, URL, person), library assets (filename). Surfaces: ⌘K modal palette with fuzzy match + grouped sections + keyboard nav. RLS makes this server-cheap (just `or(...)` queries scoped to `accessible_account_ids()`). Defer until either (a) we hit a brand with 100+ plans where scrolling becomes painful or (b) two-plus users explicitly ask. The per-page search inputs in TasksView / LibraryView / LivePostsView / BrandPicker should NOT be removed when this lands — those are scoped, functional, and the user model is "narrow search inside the current surface."
+- **Backfill video thumbnails for pre-2026-05-11 uploads** *(script written 2026-05-11, ready to run)*: pre-existing videos in `post-plan-attachments` + `brand-assets` have no sidecar JPEG so the UI tile falls back to a clean play-icon (looks intentional but not as informative as a real frame). One-shot fix exists at [scripts/backfill-video-thumbnails.mjs](scripts/backfill-video-thumbnails.mjs); run via `npm run backfill:video-thumbnails` with `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` set. Uses vendored ffmpeg (`@ffmpeg-installer/ffmpeg`, no system install needed). Idempotent — re-running is safe. Supports `DRY_RUN=1`, `ONLY_BUCKET=...`, `LIMIT=N` flags for testing. Service-role only — RLS bypassed for the listing + uploads.
 - **Daily-digest cron reliability — three escalation paths ranked.** Vercel Hobby cron is best-effort against deploy churn (see May 11 18:00 IST miss). Idempotency now makes redundant triggers safe, but the underlying fragility remains. If misses become a pattern, in increasing order of cost/complexity:
   1. **External cron ping** (cron-job.org or GitHub Actions Scheduled Workflow): free, ~5-min granularity, decoupled from Vercel deploys. Pings `/api/daily-digest` at 12:30 + 12:35 UTC daily. Idempotency dedupes. Zero infra changes.
   2. **Supabase `pg_cron` + `pg_net.http_post`**: schedule in Postgres, immune to Vercel entirely. Need the `pg_net` extension + a small SQL function. More integrated with our existing infra.

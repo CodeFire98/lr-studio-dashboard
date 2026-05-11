@@ -40,6 +40,7 @@ import {
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { MarkAsPostedModal } from './MarkAsPostedModal.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 import { useLightbox } from './Lightbox.jsx';
 import { AICopyPreview } from './AICopyPreview.jsx';
@@ -111,9 +112,14 @@ const formatBytes = (n) => {
 };
 
 const isImageMime = (m) => typeof m === 'string' && m.startsWith('image/');
+const isVideoMime = (m) => typeof m === 'string' && m.startsWith('video/');
 
 const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
   const showImage = isImageMime(att.mimeType) && att.url;
+  // Video tiles use <VideoThumb>, which renders the sidecar JPEG when
+  // present and gracefully falls back to a clean play-icon tile for
+  // pre-2026-05-11 uploads (no sidecar yet) or extraction failures.
+  const isVideo = isVideoMime(att.mimeType);
   const lightbox = useLightbox();
   const openInLightbox = () => {
     if (!att.url) return;
@@ -181,6 +187,8 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
             loading="lazy"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
           />
+        ) : isVideo ? (
+          <VideoThumb thumbnailUrl={att.thumbnailUrl} alt={att.filename} badgeSize={36} />
         ) : (
           <div
             style={{

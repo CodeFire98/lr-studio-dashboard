@@ -1,6 +1,6 @@
 /* eslint-disable */
-/* Admin panel — reply-capable dashboard for L+R agency staff.
-   Renders the L+R Inbox (queue), and a creative uploader. */
+/* Admin panel — reply-capable dashboard for Linkrunner Media agency staff.
+   Renders the Linkrunner Inbox (queue), and a creative uploader. */
 import React, { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon.jsx';
 import { Art, Avatar, AvatarStack, StatusBadge, STATUS_LABELS } from './primitives.jsx';
@@ -45,7 +45,7 @@ const AdminHome = ({ tasks, setRoute }) => {
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>L+R Agency</div>
+          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>Linkrunner Media</div>
           <h1>Inbox</h1>
           <div className="sub">What needs your eyes today, {firstName}.</div>
         </div>
@@ -134,7 +134,7 @@ const AdminUploadView = ({ tasks }) => {
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>L+R Agency</div>
+          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>Linkrunner Media</div>
           <h1>Upload creatives</h1>
           <div className="sub">Deliver finished work to a client task. Versions and comments will be visible on their side.</div>
         </div>
@@ -199,7 +199,7 @@ const AdminClientsView = ({ onOpenClient }) => {
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>L+R Agency</div>
+          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>Linkrunner Media</div>
           <h1>Clients</h1>
           <div className="sub">All brands you manage across the agency. Click a row to open the client's workspace.</div>
         </div>
@@ -335,7 +335,7 @@ const AdminTeamView = ({ auth }) => {
   const handleRemoveMember = async (m) => {
     const ok = await confirmDialog({
       title: `Remove ${m.person.name}?`,
-      body: `They'll lose access to the L+R team. You can re-invite them anytime.`,
+      body: `They'll lose access to the Linkrunner team. You can re-invite them anytime.`,
       confirmText: 'Remove',
       cancelText: 'Keep them',
       danger: true,
@@ -363,9 +363,9 @@ const AdminTeamView = ({ auth }) => {
     <div className="view"><div className="view-inner">
       <div className="page-head">
         <div className="titles">
-          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>L+R Agency</div>
+          <div className="tiny" style={{marginBottom: 8, color: "var(--accent-ink)"}}>Linkrunner Media</div>
           <h1>Team</h1>
-          <div className="sub">Invite people to join the L+R agency workspace. Invitees sign up with the invited email and are auto-joined on their first sign-in.</div>
+          <div className="sub">Invite people to join the Linkrunner Media agency workspace. Invitees sign up with the invited email and are auto-joined on their first sign-in.</div>
         </div>
       </div>
 

@@ -8,6 +8,7 @@ import { Icon } from './Icon.jsx';
 import { Art } from './primitives.jsx';
 import { useLightbox } from './Lightbox.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 import { readAuth } from '../lib/auth.js';
 import {
   loadBrandKit,
@@ -611,33 +612,19 @@ async function exportBrandKit(kit) {
 // Generic visual library the brand uploads for the agency to draw from:
 // past creatives, mood images, packaging shots, etc. Stored in the public
 // 'brand-assets' bucket under the account UUID prefix.
-const ReferencesCard = ({ accountId, isAgency = false }) => {
-  const fileInputRef = useRef(null);
+//
+// State lives in `useBrandAssets` so the parent can mount an "Add asset"
+// button at the top of the page (where it's actually discoverable) while
+// the gallery card stays at the bottom alongside the other creative-library
+// blocks. Both surfaces share the same items + uploading state.
+function useBrandAssets(accountId) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState('');
-  const lightbox = useLightbox();
-
-  // Bare delete used by both the tile button (via handleDelete which
-  // confirms first) and the lightbox Delete button (which has its own
-  // confirm). Either path lands here.
-  const actuallyDelete = async (item) => {
-    await deleteBrandAsset(item.path);
-    setItems((prev) => prev.filter((x) => x.path !== item.path));
-  };
-
-  const openItem = (item) => lightbox.open({
-    src: item.url,
-    mimeType: item.mimeType,
-    name: item.name,
-    alt: item.name,
-    downloadUrl: item.url,
-    onDelete: isAgency ? () => actuallyDelete(item) : undefined,
-  });
 
   useEffect(() => {
-    if (!accountId) return;
+    if (!accountId) { setLoading(false); return; }
     let cancelled = false;
     setLoading(true);
     listBrandAssets(accountId)
@@ -647,9 +634,8 @@ const ReferencesCard = ({ accountId, isAgency = false }) => {
     return () => { cancelled = true; };
   }, [accountId]);
 
-  const handleUpload = async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
+  const uploadFiles = async (files) => {
+    if (!files.length || !accountId) return;
     setErr(''); setUploading(true);
     try {
       const next = [...items];
@@ -673,9 +659,61 @@ const ReferencesCard = ({ accountId, isAgency = false }) => {
       setErr(ex?.message || 'Upload failed.');
     } finally {
       setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
+
+  const deleteItem = async (item) => {
+    await deleteBrandAsset(item.path);
+    setItems((prev) => prev.filter((x) => x.path !== item.path));
+  };
+
+  return { items, loading, uploading, err, uploadFiles, deleteItem, setErr };
+}
+
+// Top-of-page "Add brand asset" trigger. Renders just the button +
+// hidden file input — no state of its own; calls the shared uploader.
+const AddBrandAssetButton = ({ assets, accountId, accept = 'image/*,video/*,application/pdf' }) => {
+  const fileInputRef = useRef(null);
+  const onChange = async (e) => {
+    const files = Array.from(e.target.files || []);
+    await assets.uploadFiles(files);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+  return (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={accept}
+        multiple
+        style={{ display: 'none' }}
+        onChange={onChange}
+      />
+      <button
+        type="button"
+        className="btn btn-primary"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={assets.uploading || !accountId}
+        title="Add references, past creatives, packaging shots, or any visual the team should see"
+      >
+        <Icon name="plus" size={14}/>{assets.uploading ? 'Uploading…' : 'Add brand asset'}
+      </button>
+    </>
+  );
+};
+
+const ReferencesCard = ({ accountId, isAgency = false, assets }) => {
+  const { items, loading, uploading, err, uploadFiles, deleteItem } = assets;
+  const lightbox = useLightbox();
+
+  const openItem = (item) => lightbox.open({
+    src: item.url,
+    mimeType: item.mimeType,
+    name: item.name,
+    alt: item.name,
+    downloadUrl: item.url,
+    onDelete: isAgency ? () => deleteItem(item) : undefined,
+  });
 
   const handleDelete = async (item) => {
     const ok = await confirmDialog({
@@ -687,7 +725,7 @@ const ReferencesCard = ({ accountId, isAgency = false }) => {
     });
     if (!ok) return;
     try {
-      await actuallyDelete(item);
+      await deleteItem(item);
     } catch (ex) {
       alert(ex?.message || 'Delete failed.');
     }
@@ -698,36 +736,21 @@ const ReferencesCard = ({ accountId, isAgency = false }) => {
       <div className="card-head">
         <div>
           <div className="card-title">References &amp; assets</div>
-          <div className="card-sub">Drop in past creatives, mood images, packaging shots — anything the team should see.</div>
+          <div className="card-sub">Drop in past creatives, mood images, packaging shots — anything the team should see. Use <strong>Add brand asset</strong> at the top of the page to upload.</div>
         </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*,application/pdf"
-          multiple
-          style={{ display: 'none' }}
-          onChange={handleUpload}
-        />
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading || !accountId}
-        >
-          <Icon name="plus" size={14}/>{uploading ? 'Uploading…' : 'Add asset'}
-        </button>
       </div>
       {err && <div style={{ padding: '0 16px 8px', color: 'var(--accent-ink)', fontSize: 12 }}>{err}</div>}
       {loading ? (
         <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--ink-4)' }}>Loading references…</div>
       ) : items.length === 0 ? (
         <div style={{ padding: '20px', fontSize: 13, color: 'var(--ink-4)' }}>
-          No references yet. Use <strong>Add asset</strong> to upload images or PDFs.
+          No references yet. Use <strong>Add brand asset</strong> at the top of the page to upload images or PDFs.
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10, padding: '4px 16px 16px' }}>
           {items.map((item) => {
             const isImage = (item.mimeType || '').startsWith('image/');
+            const isVideo = (item.mimeType || '').startsWith('video/');
             return (
               <div
                 key={item.path}
@@ -747,6 +770,14 @@ const ReferencesCard = ({ accountId, isAgency = false }) => {
                     style={{ display: 'block', height: '100%', width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'zoom-in' }}
                   >
                     <SafeImage src={item.url} alt={item.name} filename={item.name} caption="Preview unavailable" style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
+                  </button>
+                ) : isVideo ? (
+                  <button
+                    type="button"
+                    onClick={() => openItem(item)}
+                    style={{ display: 'block', height: '100%', width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'zoom-in' }}
+                  >
+                    <VideoThumb thumbnailUrl={item.thumbnailUrl} alt={item.name} badgeSize={36}/>
                   </button>
                 ) : (
                   <button
@@ -1772,6 +1803,12 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
   const [reenriching, setReenriching] = useState(false);
   const [reenrichErr, setReenrichErr] = useState('');
 
+  // Brand-assets state lives at the page level so the "Add brand asset"
+  // CTA can sit in the page-head actions (top of the page, discoverable)
+  // while the gallery card stays in the Creative Library section near the
+  // bottom. Both surfaces share the same hook.
+  const assets = useBrandAssets(accountId);
+
   useEffect(() => {
     if (!accountId) { setLoading(false); return; }
     let cancelled = false;
@@ -1897,7 +1934,7 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
         </div></div>
         <div className="empty" style={{ padding: 32 }}>
           <div className="big">No brand intelligence yet</div>
-          Brand intelligence is where L+R pulls your tagline, tone, palette, and references when we make work for you.
+          Brand intelligence is where Linkrunner Media pulls your tagline, tone, palette, and references when we make work for you.
           <div style={{ marginTop: 16 }}>
             <button className="btn btn-primary" disabled={creating} onClick={createKit}>
               <Icon name="plus" size={14}/>{creating ? 'Creating…' : 'Create brand intelligence'}
@@ -1927,11 +1964,12 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
         <div className="titles">
           <div className="tiny" style={{ marginBottom: 8 }}>Knowledge base</div>
           <h1>Brand Intelligence</h1>
-          <div className="sub">Everything L+R references when we make work for {brandName}. Built for the designer or copywriter who's about to make something.</div>
+          <div className="sub">Everything Linkrunner Media references when we make work for {brandName}. Built for the designer or copywriter who's about to make something.</div>
         </div>
         <div className="actions">
+          <AddBrandAssetButton assets={assets} accountId={accountId}/>
           <button
-            className="btn btn-primary"
+            className="btn"
             onClick={handleReenrich}
             disabled={reenriching}
             title={kit.websiteUrl
@@ -2076,14 +2114,14 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
 
       <BrandNotesSection accountId={accountId} isAgency={!!auth.isAgency} userId={auth?.id}/>
 
-      <ReferencesCard accountId={accountId} isAgency={!!auth.isAgency}/>
+      <ReferencesCard accountId={accountId} isAgency={!!auth.isAgency} assets={assets}/>
 
       {(inspiration.length > 0 || pastCreatives.length > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
           {inspiration.length > 0 && (
             <div className="card">
               <div className="card-head">
-                <div><div className="card-title">Inspiration pinboard</div><div className="card-sub">References L+R keeps close</div></div>
+                <div><div className="card-title">Inspiration pinboard</div><div className="card-sub">References Linkrunner Media keeps close</div></div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {inspiration.map((p, i) => (

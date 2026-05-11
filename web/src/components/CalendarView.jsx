@@ -10,6 +10,7 @@ import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import { PlatformChip, STATUS_CONFIG, StatusPill, getDisplayStatus } from './postPlanShared.jsx';
 import { SafeImage } from './SafeImage.jsx';
+import { VideoThumb } from './VideoThumb.jsx';
 import {
   createPostPlan,
   duplicatePostPlan,
@@ -31,10 +32,10 @@ const MAX_CHIPS_PER_CELL = 3;
 // brief-composer flavour; calendar is a planning surface so the tail
 // shifts to passive-observation).
 const GREETINGS = {
-  morning:   "it's a fresh morning at L+R",                 // 5 → 11
-  afternoon: "the afternoon's looking good at L+R",         // 12 → 16
-  evening:   "evening at L+R — checking what's shipped",    // 17 → 20
-  night:     "burning the late-night oil at L+R",           // 21 → 4
+  morning:   "it's a fresh morning at Linkrunner",                 // 5 → 11
+  afternoon: "the afternoon's looking good at Linkrunner",         // 12 → 16
+  evening:   "evening at Linkrunner — checking what's shipped",    // 17 → 20
+  night:     "burning the late-night oil at Linkrunner",           // 21 → 4
 };
 function greetingTail(now = new Date()) {
   const h = now.getHours();
@@ -527,6 +528,7 @@ const AttachmentPopover = ({ items }) => {
     <div className="cal-list-ref-popover" role="tooltip">
       {items.map((a) => {
         const isImage = (a.mimeType || '').startsWith('image/') && a.url;
+        const isVideo = (a.mimeType || '').startsWith('video/');
         const isFinal = a.kind === 'final';
         return (
           <div
@@ -536,6 +538,8 @@ const AttachmentPopover = ({ items }) => {
           >
             {isImage ? (
               <SafeImage src={a.url} alt={a.filename} filename={a.filename} caption="Preview unavailable" loading="lazy" />
+            ) : isVideo ? (
+              <VideoThumb thumbnailUrl={a.thumbnailUrl} alt={a.filename} badgeSize={18} />
             ) : (
               <div className="cal-list-ref-thumb-fallback">
                 <Icon name="paperclip" size={14} />
@@ -1055,7 +1059,7 @@ const CalendarView = ({
       <div className="page-head">
         <div className="titles">
           <div className="greeting" style={{ marginBottom: 8 }}>
-            {/* Override the legacy green status-dot to the L+R accent so
+            {/* Override the legacy green status-dot to the Linkrunner accent so
                 the greeting reads as a brand flourish, not a "system
                 online" indicator. */}
             <span
@@ -1067,7 +1071,7 @@ const CalendarView = ({
                 ? `Hello, ${auth.name.split(' ')[0]} — ${greetingTail()}`
                 : auth
                   ? `Hello — ${greetingTail()}`
-                  : 'Welcome to L+R — a calmer way to plan your social.'}
+                  : 'Welcome to Linkrunner Media — a calmer way to plan your social.'}
             </span>
           </div>
           <h1>Social Calendar</h1>

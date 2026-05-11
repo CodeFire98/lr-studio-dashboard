@@ -1,5 +1,5 @@
 /* =========================================================
-   L+R Design Tokens
+   Linkrunner Media Design Tokens
    Editorial, airy, confident. Deep coral accent.
    ========================================================= */
 
@@ -176,7 +176,7 @@
 }
 
 /* =========================================================
-   L+R — Application styles
+   Linkrunner Media — Application styles
    ========================================================= */
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -257,10 +257,12 @@ input, textarea { font: inherit; color: inherit; }
   letter-spacing: -0.01em;
 }
 .sidebar-brand .dot {
-  width: 7px; height: 7px; border-radius: 50%;
+  width: 8px; height: 8px; border-radius: 50%;
   background: var(--accent);
   display: inline-block;
-  transform: translateY(-3px);
+  flex-shrink: 0;
+  transform: translateY(-4px);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .sidebar-brand .wordmark-tail {
   font-family: var(--font-serif);
