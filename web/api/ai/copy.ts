@@ -203,12 +203,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     : "unscheduled";
   const conceptLine = plan.concept?.trim() || "(no concept provided yet — infer from the brand voice)";
 
+  // Cross-platform context: pull the OTHER platforms' existing copy on the
+  // same plan so the model writes something thematically consistent across
+  // platforms — same campaign angle, adapted format per channel. Caps
+  // each platform at 800 chars to keep input size predictable.
+  const copyVariants = plan.copy_variants && typeof plan.copy_variants === "object"
+    ? (plan.copy_variants as Record<string, string>)
+    : {};
+  const otherPlatformsCopy = Object.entries(copyVariants)
+    .filter(([k, v]) => k !== body.platform && typeof v === "string" && v.trim() && PLATFORM_LABEL[k])
+    .map(([k, v]) => `${PLATFORM_LABEL[k]}:\n"""\n${(v as string).slice(0, 800)}\n"""`)
+    .join("\n\n");
+  const crossPlatformSection = otherPlatformsCopy
+    ? `\n\nOTHER PLATFORMS' COPY ON THIS SAME PLAN (for thematic consistency — match the campaign angle/hook; adapt the format to the target platform's requirements):\n${otherPlatformsCopy}`
+    : "";
+
+  // Platform requirements ride at the TOP of the user message (not buried
+  // at the end) and use MUST-FOLLOW phrasing so Claude treats them as
+  // a hard constraint, not optional guidance. Caught a real regression:
+  // user reported IG drafts sometimes coming out LinkedIn-shaped because
+  // the platform guidance was the last thing in a long prompt.
+  const platformRequirementsHeader = `TARGET PLATFORM: ${platformLabel}
+PLATFORM REQUIREMENTS — MUST FOLLOW STRICTLY (these are non-negotiable; the brand voice adapts TO the platform, not the other way around):
+${platformGuide}`;
+
   let userMessage: string;
   if (mode === "improve") {
     const instructionLine = instruction
       ? instruction
       : "(no specific instruction — do a conservative single-pass improvement: tighten weak phrasing, fix awkward rhythm, lean further into the brand voice. Don't restructure or change the core message.)";
-    userMessage = `Revise the ${platformLabel} caption for this post based on the admin's instruction below.
+    userMessage = `${platformRequirementsHeader}
+
+---
+
+Revise the ${platformLabel} caption for this post based on the admin's instruction below.
 
 Post concept: ${conceptLine}
 Scheduled: ${scheduledLabel}
@@ -219,25 +247,24 @@ ${currentCopy}
 """
 
 ADMIN'S INSTRUCTION:
-${instructionLine}
+${instructionLine}${crossPlatformSection}
 
-Platform guidance:
-${platformGuide}
-
-Output the revised caption text only — no preamble, no quotes, no "Here's the revised version:".`;
+Output the revised caption text only — no preamble, no quotes, no "Here's the revised version:". The output MUST follow the ${platformLabel} format requirements above.`;
   } else {
     const instructionLine = instruction
       ? `\nADMIN'S DIRECTION (the primary signal for what this post should be about):\n${instruction}\n`
       : "";
-    userMessage = `Write the ${platformLabel} caption for this post.
+    userMessage = `${platformRequirementsHeader}
+
+---
+
+Write the ${platformLabel} caption for this post.
 
 Post concept: ${conceptLine}
 Scheduled: ${scheduledLabel}
-${instructionLine}
-Platform guidance:
-${platformGuide}
+${instructionLine}${crossPlatformSection}
 
-Output the caption text only — no preamble, no quotes.`;
+Output the caption text only — no preamble, no quotes. The output MUST follow the ${platformLabel} format requirements above.`;
   }
 
   try {

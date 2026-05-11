@@ -248,12 +248,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     : "unscheduled";
   const conceptLine = plan.concept?.trim() || "(no concept provided yet — infer from the brand voice)";
 
-  // Pull the platform-specific copy if it exists — useful context for the
-  // model to anchor the image direction to the actual caption tone.
+  // Cross-platform copy context: pull ALL platforms' existing copy on
+  // this plan (not just the active platform) so the image direction is
+  // informed by the whole campaign tone. The active platform is labelled
+  // explicitly so the model anchors the visual to that platform's
+  // aspect ratio / format while staying thematically coherent with the
+  // sibling captions. Caps each platform at 600 chars (was 800 for a
+  // single platform; tightened to keep total input predictable now that
+  // we can include up to 3 platforms).
   const copyVariants = plan.copy_variants && typeof plan.copy_variants === "object"
     ? (plan.copy_variants as Record<string, string>)
     : {};
-  const platformCopy = typeof copyVariants[body.platform] === "string" ? copyVariants[body.platform] : "";
+  const allPlatformCopy = Object.entries(copyVariants)
+    .filter(([k, v]) => typeof v === "string" && v.trim() && PLATFORM_LABEL[k])
+    .map(([k, v]) => {
+      const isActive = k === body.platform;
+      const marker = isActive ? " ← THIS PLATFORM" : "";
+      return `${PLATFORM_LABEL[k]}${marker}:\n"""\n${(v as string).slice(0, 600)}\n"""`;
+    })
+    .join("\n\n");
+  const copyContextSection = allPlatformCopy
+    ? `\n\nCAPTIONS ON THIS POST PLAN (for tonal + campaign context across platforms — match the angle/mood; visualise something cohesive with the captions, not contradictory):\n${allPlatformCopy}`
+    : "";
 
   let userMessage: string;
   if (mode === "ideas") {
@@ -263,12 +279,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     userMessage = `Propose 3-5 image direction concepts for this ${platformLabel} post.
 
 Post concept: ${conceptLine}
-Scheduled: ${scheduledLabel}${platformCopy ? `
-
-Caption (for tonal context):
-"""
-${platformCopy.slice(0, 800)}
-"""` : ""}${briefLine}`;
+Scheduled: ${scheduledLabel}${copyContextSection}${briefLine}`;
   } else {
     const ideaTitle = body.idea_title?.trim() || "";
     const ideaDescription = body.idea_description?.trim() || "";
@@ -279,12 +290,7 @@ ${platformCopy.slice(0, 800)}
     userMessage = `Write a detailed image-generation prompt for this ${platformLabel} post, building on the chosen direction below.
 
 Post concept: ${conceptLine}
-Scheduled: ${scheduledLabel}${platformCopy ? `
-
-Caption (for tonal context):
-"""
-${platformCopy.slice(0, 800)}
-"""` : ""}
+Scheduled: ${scheduledLabel}${copyContextSection}
 
 CHOSEN DIRECTION:
 Title: ${ideaTitle}
