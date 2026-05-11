@@ -1,44 +1,44 @@
 // =====================================================================
 // /api/ai/chat — Vercel serverless function — AI Co-pilot streaming chat
 //
-// First user-facing slice of the agency-side AI Co-pilot (PR 2). Streams
-// Claude responses over Server-Sent Events to the sidebar Co-pilot panel,
-// handles tool-use (read_brand_context, create_post_plan_draft), and
-// gates the entire surface behind a brand-id whitelist env var so we can
-// validate end-to-end with one brand before rolling out.
+// AI Co-pilot v2 Phase 1a: migrated from the raw @anthropic-ai/sdk + a
+// hand-rolled MAX_TURNS while-loop to the Vercel AI SDK's streamText +
+// tool primitives. The agentic loop, message threading, and Anthropic
+// prompt caching are now SDK-managed. Wire protocol on the response
+// stays IDENTICAL — same custom SSE event names (text / tool_call /
+// tool_result / usage / done / error) — so the existing CopilotPanel.jsx
+// keeps working untouched until Phase 2a swaps it to useChat.
 //
-// Auth model (mirrors find-competitors.ts):
-//   - Caller's JWT verified against Supabase auth via the anon-key client.
-//   - Caller must be agency staff (profiles.is_agency = true). Brand
-//     users can't reach this route by design — the feature is agency-only
-//     for now. (Brand Co-pilot is a later phase.)
-//   - The target accountId must be in the AI_COPILOT_BRAND_IDS whitelist.
-//     This is the rollout gate; expand the list as we widen the test set.
-//   - Writes (create_post_plan_draft) use the service-role client to
-//     bypass any membership-check ambiguity. The agency-staff + whitelist
-//     gates above are the real boundary.
+// Auth model (unchanged from v1):
+//   - Caller's JWT verified against Supabase auth via the anon-key client
+//   - Caller must be agency staff (profiles.is_agency = true)
+//   - The target accountId must be in the AI_COPILOT_BRAND_IDS whitelist
+//   - Writes (tool execute) use the service-role client to bypass
+//     membership-check ambiguity. Agency + whitelist gates are the real
+//     authz boundary.
 //
-// Env vars (set on the lr-studio-dashboard-3kkp Vercel project):
-//   ANTHROPIC_API_KEY         — required, sk-ant-...
-//   AI_COPILOT_BRAND_IDS      — comma-separated UUIDs of brands allowed
-//                               to use the Co-pilot. Empty = nobody can.
-//   SUPABASE_URL              — https://vmfwnfflhvskadkfnvds.supabase.co
+// Env vars (unchanged):
+//   ANTHROPIC_API_KEY         — required, sk-ant-... (read by @ai-sdk/anthropic)
+//   AI_COPILOT_BRAND_IDS      — comma-separated whitelisted brand UUIDs
+//   SUPABASE_URL              — https://...supabase.co
 //   SUPABASE_ANON_KEY         — for JWT verification
 //   SUPABASE_SERVICE_ROLE_KEY — for tool-call writes
 //
-// Cost notes (see project memory for the full breakdown):
+// Cost notes:
 //   - Brand-context blob is sent as a prompt-cached system message via
-//     cache_control. Cache TTL is 5 minutes; back-to-back chat turns
-//     for the same brand re-hit the cache and pay ~10% input-token rate.
-//   - Default model: claude-sonnet-4-6. Hard-coded for now; switch via
-//     env var only if we need to A/B.
-//   - Aggressive max_tokens caps per turn keep stray verbose runs from
-//     burning tokens we can't undo.
+//     providerOptions.anthropic.cacheControl. Cache TTL is 5 minutes;
+//     back-to-back chat turns for the same brand re-hit cache and pay
+//     ~10% input-token rate. Verified end-to-end by the PoC route.
+//   - Default model: claude-sonnet-4-6
+//   - Per-step output cap: 1500 tokens
+//   - Tool loop cap: 8 steps (stopWhen: stepCountIs(8))
 // =====================================================================
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import Anthropic from "@anthropic-ai/sdk";
+import { streamText, stepCountIs, tool } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
@@ -51,8 +51,8 @@ const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const MODEL = "claude-sonnet-4-6";
-const MAX_TURNS = 8;           // Cap on agentic tool-use loop iterations.
+const MODEL_ID = "claude-sonnet-4-6";
+const MAX_STEPS = 8;
 const MAX_TOKENS_PER_TURN = 1500;
 
 const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
@@ -79,69 +79,9 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social
 - Don't touch other brands. You're scoped to the active brand only.
 - Don't claim to schedule posts — you create drafts on a date; the agency owns the workflow.`;
 
-const TOOLS: Anthropic.Tool[] = [
-  {
-    name: "create_post_plan_draft",
-    description:
-      "Create a new post plan as an AI draft in this brand's calendar. The plan lands at status='drafting' with ai_generated=true. The admin reviews and edits in the existing post-plan detail view, then submits for review through the standard workflow. Use this whenever the admin asks you to plan a post or draft content — don't just describe the post, create it.",
-    input_schema: {
-      type: "object",
-      properties: {
-        scheduled_at: {
-          type: "string",
-          description:
-            "ISO 8601 datetime for when to schedule this post (e.g. '2026-05-15T09:00:00+05:30'). Default to 09:00 in the brand's local time on the requested date. If the admin doesn't specify a date, ask before guessing.",
-        },
-        platforms: {
-          type: "array",
-          description: "Platforms this post targets. Subset of ['instagram', 'linkedin', 'x'].",
-          items: { type: "string", enum: ["instagram", "linkedin", "x"] },
-        },
-        concept: {
-          type: "string",
-          description:
-            "Short (1-2 sentence) concept for the post — what it's about, what angle. The admin sees this as the post's headline.",
-        },
-        copy_variants: {
-          type: "object",
-          description:
-            "Per-platform draft copy keyed by platform slug. Each value is a string containing the actual caption / tweet / post body. Match the brand voice. Cap Instagram at ~2,200 chars, X at ~280 chars, LinkedIn at ~3,000 chars.",
-          properties: {
-            instagram: { type: "string" },
-            linkedin: { type: "string" },
-            x: { type: "string" },
-          },
-        },
-      },
-      required: ["scheduled_at", "platforms", "concept", "copy_variants"],
-    },
-  },
-  {
-    name: "write_brand_note",
-    description:
-      "Persist a fact about this brand to the brand_kit_notes table — the AI Co-pilot's long-term memory layer for this brand. Use this when the admin tells you to remember something: 'remember that…', 'from now on…', 'make a note that…', 'the founder hates the word X', 'no holiday content before Oct 15'. The note becomes part of the brand context on every future AI call (chat + inline copy generation). Set is_pinned=true for ALWAYS-true facts that should ride along on every call regardless of recency; leave is_pinned=false for time-bound or campaign-specific facts that decay out of the window over time. After calling, confirm to the admin in one short sentence what you wrote down.",
-    input_schema: {
-      type: "object",
-      properties: {
-        body: {
-          type: "string",
-          description:
-            "The note text — what to remember. Write it in declarative, action-oriented form (e.g. 'Always tag @sarahbamboo on milestone posts' not 'I should remember to tag @sarahbamboo'). Keep it to 1-3 sentences. Phrase it so a future AI reading it can act on it without further context.",
-        },
-        is_pinned: {
-          type: "boolean",
-          description:
-            "true for always-true facts ('founder's wife runs the brand', 'never use the word authentic'). false for time-bound or context-specific facts ('Q4 launch is the new onesie line', 'we're freezing holiday content till Oct 15'). When in doubt, leave false — pinned notes use up cache budget on every call.",
-        },
-      },
-      required: ["body"],
-    },
-  },
-];
-
 type ChatMessage = {
   role: "user" | "assistant";
-  content: string | Anthropic.ContentBlockParam[];
+  content: string | unknown[];
 };
 
 type RequestBody = {
@@ -157,94 +97,51 @@ function writeSseEvent(res: VercelResponse, type: string, data: unknown) {
   res.flush?.();
 }
 
-async function runToolCall(
-  serviceClient: SupabaseClient,
-  accountId: string,
-  userId: string,
-  toolName: string,
-  toolInput: Record<string, unknown>,
-): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
-  if (toolName === "create_post_plan_draft") {
-    const scheduledAt = typeof toolInput.scheduled_at === "string" ? toolInput.scheduled_at : "";
-    const platforms = Array.isArray(toolInput.platforms)
-      ? (toolInput.platforms as unknown[]).filter((p): p is string => typeof p === "string")
-      : [];
-    const concept = typeof toolInput.concept === "string" ? toolInput.concept : "";
-    const copyVariants =
-      toolInput.copy_variants && typeof toolInput.copy_variants === "object"
-        ? (toolInput.copy_variants as Record<string, unknown>)
-        : {};
+// Zod schemas — replace the hand-written Anthropic.Tool[] from v1.
+// Schema validation now happens at the SDK boundary; bad inputs from the
+// model surface as standard Zod errors instead of runtime undefineds.
+const createPostPlanDraftInput = z.object({
+  scheduled_at: z
+    .string()
+    .describe(
+      "ISO 8601 datetime for when to schedule this post (e.g. '2026-05-15T09:00:00+05:30'). Default to 09:00 in the brand's local time on the requested date. If the admin doesn't specify a date, ask before guessing.",
+    ),
+  platforms: z
+    .array(z.enum(["instagram", "linkedin", "x"]))
+    .min(1)
+    .describe("Platforms this post targets. Subset of ['instagram', 'linkedin', 'x']."),
+  concept: z
+    .string()
+    .describe(
+      "Short (1-2 sentence) concept for the post — what it's about, what angle. The admin sees this as the post's headline.",
+    ),
+  copy_variants: z
+    .object({
+      instagram: z.string().optional(),
+      linkedin: z.string().optional(),
+      x: z.string().optional(),
+    })
+    .describe(
+      "Per-platform draft copy keyed by platform slug. Each value is a string containing the actual caption / tweet / post body. Match the brand voice. Cap Instagram at ~2,200 chars, X at ~280 chars, LinkedIn at ~3,000 chars.",
+    ),
+});
 
-    if (!scheduledAt) return { ok: false, error: "scheduled_at is required" };
-    if (!platforms.length) return { ok: false, error: "platforms must be non-empty" };
+const writeBrandNoteInput = z.object({
+  body: z
+    .string()
+    .max(1000)
+    .describe(
+      "The note text — what to remember. Write it in declarative, action-oriented form (e.g. 'Always tag @sarahbamboo on milestone posts' not 'I should remember to tag @sarahbamboo'). Keep it to 1-3 sentences. Phrase it so a future AI reading it can act on it without further context.",
+    ),
+  is_pinned: z
+    .boolean()
+    .optional()
+    .describe(
+      "true for always-true facts ('founder's wife runs the brand', 'never use the word authentic'). false for time-bound or context-specific facts ('Q4 launch is the new onesie line', 'we're freezing holiday content till Oct 15'). When in doubt, leave false — pinned notes use up cache budget on every call.",
+    ),
+});
 
-    const insertRow = {
-      account_id: accountId,
-      scheduled_at: scheduledAt,
-      platforms,
-      concept,
-      copy_variants: copyVariants,
-      status: "drafting",
-      created_by: userId,
-      ai_generated: true,
-      ai_draft_payload: toolInput,
-    };
-
-    const { data, error } = await serviceClient
-      .from("post_plans")
-      .insert(insertRow)
-      .select("id, scheduled_at, platforms, concept, status")
-      .single();
-
-    if (error) return { ok: false, error: `insert failed: ${error.message}` };
-    return {
-      ok: true,
-      result: {
-        id: data.id,
-        scheduled_at: data.scheduled_at,
-        platforms: data.platforms,
-        concept: data.concept,
-        status: data.status,
-      },
-    };
-  }
-
-  if (toolName === "write_brand_note") {
-    const body = typeof toolInput.body === "string" ? toolInput.body.trim() : "";
-    const isPinned = toolInput.is_pinned === true;
-    if (!body) return { ok: false, error: "body is required" };
-    // Cap body length defensively — notes are meant to be short facts, not
-    // essays. If the model tries to write a 4000-char screed it likely
-    // misunderstood the tool's purpose.
-    if (body.length > 1000) {
-      return { ok: false, error: "body must be <= 1000 chars; notes are short facts" };
-    }
-
-    const { data, error } = await serviceClient
-      .from("brand_kit_notes")
-      .insert({
-        account_id: accountId,
-        body,
-        is_pinned: isPinned,
-        created_by: userId,
-      })
-      .select("id, body, is_pinned, created_at")
-      .single();
-
-    if (error) return { ok: false, error: `insert failed: ${error.message}` };
-    return {
-      ok: true,
-      result: {
-        id: data.id,
-        body: data.body,
-        is_pinned: data.is_pinned,
-        created_at: data.created_at,
-      },
-    };
-  }
-
-  return { ok: false, error: `Unknown tool: ${toolName}` };
-}
+type ToolExecResult = { ok: true; result: unknown } | { ok: false; error: string };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS — match the other API routes.
@@ -286,7 +183,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     "";
   if (!authHeader) return res.status(401).json({ error: "Missing Authorization header" });
 
-  // Verify caller's JWT and confirm they're agency staff.
   const userClient: SupabaseClient = createClient(SUPABASE_URL, ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
     auth: { persistSession: false, autoRefreshToken: false },
@@ -311,14 +207,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ error: "Co-pilot is agency-only for now" });
   }
 
-  // Whitelist gate — accountId must be in AI_COPILOT_BRAND_IDS.
   if (!WHITELIST.includes(body.accountId)) {
     return res.status(403).json({
       error: "This brand isn't on the Co-pilot allowlist yet. Add its UUID to AI_COPILOT_BRAND_IDS in Vercel env vars.",
     });
   }
 
-  // Compile the brand-context blob via service-role (full read access).
   let brandContext = "";
   try {
     brandContext = await loadAndCompileBrandContext(serviceClient, body.accountId);
@@ -332,127 +226,168 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // Set up SSE response.
+  // SSE response setup.
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.status(200);
-  // Initial flush so the client knows we're streaming.
   res.write(": stream open\n\n");
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  // Tool implementations live INSIDE the handler so they can close over
+  // accountId + user.id + serviceClient without globally-mutable plumbing.
+  // The AI SDK runs execute() automatically inside the agentic loop and
+  // appends the returned value as a tool-result message for the model.
+  const tools = {
+    create_post_plan_draft: tool({
+      description:
+        "Create a new post plan as an AI draft in this brand's calendar. The plan lands at status='drafting' with ai_generated=true. The admin reviews and edits in the existing post-plan detail view, then submits for review through the standard workflow. Use this whenever the admin asks you to plan a post or draft content — don't just describe the post, create it.",
+      inputSchema: createPostPlanDraftInput,
+      execute: async (input): Promise<ToolExecResult> => {
+        const insertRow = {
+          account_id: body.accountId,
+          scheduled_at: input.scheduled_at,
+          platforms: input.platforms,
+          concept: input.concept,
+          copy_variants: input.copy_variants,
+          status: "drafting",
+          created_by: user.id,
+          ai_generated: true,
+          ai_draft_payload: input,
+        };
 
-  // Build the cached system message. Two cache breakpoints — one on the
-  // fixed instruction prefix (rarely changes), one on the brand-context
-  // suffix (changes per brand mutation, stable per call).
-  const systemBlocks: Anthropic.TextBlockParam[] = [
-    {
-      type: "text",
-      text: SYSTEM_PROMPT,
-      cache_control: { type: "ephemeral" },
-    },
-    {
-      type: "text",
-      text: `\n\n---\n\n${brandContext}`,
-      cache_control: { type: "ephemeral" },
-    },
-  ];
+        const { data, error } = await serviceClient
+          .from("post_plans")
+          .insert(insertRow)
+          .select("id, scheduled_at, platforms, concept, status")
+          .single();
 
-  // Normalize messages — clients send string content; Anthropic accepts that.
-  const messages: Anthropic.MessageParam[] = body.messages.map((m) => ({
-    role: m.role,
-    content: m.content as never,
-  }));
+        if (error) return { ok: false, error: `insert failed: ${error.message}` };
+        return {
+          ok: true,
+          result: {
+            id: data.id,
+            scheduled_at: data.scheduled_at,
+            platforms: data.platforms,
+            concept: data.concept,
+            status: data.status,
+          },
+        };
+      },
+    }),
+    write_brand_note: tool({
+      description:
+        "Persist a fact about this brand to the brand_kit_notes table — the AI Co-pilot's long-term memory layer for this brand. Use this when the admin tells you to remember something: 'remember that…', 'from now on…', 'make a note that…', 'the founder hates the word X', 'no holiday content before Oct 15'. The note becomes part of the brand context on every future AI call (chat + inline copy generation). Set is_pinned=true for ALWAYS-true facts that should ride along on every call regardless of recency; leave is_pinned=false for time-bound or campaign-specific facts that decay out of the window over time. After calling, confirm to the admin in one short sentence what you wrote down.",
+      inputSchema: writeBrandNoteInput,
+      execute: async (input): Promise<ToolExecResult> => {
+        const noteBody = input.body.trim();
+        if (!noteBody) return { ok: false, error: "body is required" };
+
+        const { data, error } = await serviceClient
+          .from("brand_kit_notes")
+          .insert({
+            account_id: body.accountId,
+            body: noteBody,
+            is_pinned: input.is_pinned === true,
+            created_by: user.id,
+          })
+          .select("id, body, is_pinned, created_at")
+          .single();
+
+        if (error) return { ok: false, error: `insert failed: ${error.message}` };
+        return {
+          ok: true,
+          result: {
+            id: data.id,
+            body: data.body,
+            is_pinned: data.is_pinned,
+            created_at: data.created_at,
+          },
+        };
+      },
+    }),
+  };
 
   try {
-    let turn = 0;
-    while (turn < MAX_TURNS) {
-      turn += 1;
+    // Two cache breakpoints on the system prompt, same as v1:
+    //   1. Fixed instruction prefix (rarely changes)
+    //   2. Per-brand context blob (stable per call, changes on brand mutations)
+    // The AI SDK collapses consecutive system messages into a single Anthropic
+    // system param with multiple text blocks, each with its own cache_control.
+    // Verified by the PoC route — see AI_COPILOT_V2_MIGRATION.md PoC results.
+    const result = streamText({
+      model: anthropic(MODEL_ID),
+      maxOutputTokens: MAX_TOKENS_PER_TURN,
+      stopWhen: stepCountIs(MAX_STEPS),
+      tools,
+      messages: [
+        {
+          role: "system",
+          content: SYSTEM_PROMPT,
+          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+        },
+        {
+          role: "system",
+          content: `\n\n---\n\n${brandContext}`,
+          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+        },
+        ...body.messages.map((m) => ({
+          role: m.role,
+          content: m.content as string,
+        })),
+      ],
+    });
 
-      const stream = anthropic.messages.stream({
-        model: MODEL,
-        max_tokens: MAX_TOKENS_PER_TURN,
-        system: systemBlocks,
-        tools: TOOLS,
-        messages,
-      });
-
-      // Forward text deltas as `text` SSE events for the panel to render.
-      stream.on("text", (delta) => {
-        writeSseEvent(res, "text", { delta });
-      });
-
-      const finalMessage = await stream.finalMessage();
-
-      // Surface usage so the panel can show a small token counter / cache stats.
-      writeSseEvent(res, "usage", {
-        input_tokens: finalMessage.usage.input_tokens,
-        output_tokens: finalMessage.usage.output_tokens,
-        cache_creation_input_tokens: finalMessage.usage.cache_creation_input_tokens ?? 0,
-        cache_read_input_tokens: finalMessage.usage.cache_read_input_tokens ?? 0,
-      });
-
-      // Collect any tool_use blocks so we can run them and feed back results.
-      const toolUses = finalMessage.content.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
-      );
-
-      // Always append the assistant's full message to history before
-      // continuing — the SDK insists on this for tool-use turns.
-      messages.push({ role: "assistant", content: finalMessage.content });
-
-      if (finalMessage.stop_reason === "end_turn" || toolUses.length === 0) {
-        writeSseEvent(res, "done", { stop_reason: finalMessage.stop_reason });
-        break;
-      }
-
-      if (finalMessage.stop_reason !== "tool_use") {
-        // max_tokens, etc — bail cleanly so the panel can show a partial result.
-        writeSseEvent(res, "done", { stop_reason: finalMessage.stop_reason });
-        break;
-      }
-
-      // Run each tool call (sequentially — they're small and the order
-      // matters for the user-visible card stream), emit tool_call + tool_result
-      // events as we go, and build the tool_result blocks for the next turn.
-      const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
-      for (const toolUse of toolUses) {
+    // Drain the full event stream and translate to the existing custom SSE
+    // wire format. CopilotPanel.jsx's parseSse generator reads these exact
+    // event names; switching to AI SDK's data-stream protocol happens in
+    // Phase 2a alongside the useChat client rewrite.
+    for await (const part of result.fullStream) {
+      if (part.type === "text-delta") {
+        writeSseEvent(res, "text", { delta: part.text });
+      } else if (part.type === "tool-call") {
         writeSseEvent(res, "tool_call", {
-          id: toolUse.id,
-          name: toolUse.name,
-          input: toolUse.input,
+          id: part.toolCallId,
+          name: part.toolName,
+          input: part.input,
         });
-
-        const result = await runToolCall(
-          serviceClient,
-          body.accountId,
-          user.id,
-          toolUse.name,
-          (toolUse.input ?? {}) as Record<string, unknown>,
-        );
-
+      } else if (part.type === "tool-result") {
+        // The AI SDK wraps the tool's execute() return value as `output`.
+        // Our v1 protocol splits ok/result/error so the client renders
+        // the right card variant.
+        const output = part.output as ToolExecResult | undefined;
+        const ok = output && typeof output === "object" && "ok" in output ? output.ok : true;
         writeSseEvent(res, "tool_result", {
-          id: toolUse.id,
-          name: toolUse.name,
-          ok: result.ok,
-          result: result.ok ? result.result : undefined,
-          error: result.ok ? undefined : result.error,
+          id: part.toolCallId,
+          name: part.toolName,
+          ok,
+          result: ok && output && "result" in output ? output.result : ok ? output : undefined,
+          error: !ok && output && "error" in output ? output.error : undefined,
         });
-
-        toolResultBlocks.push({
-          type: "tool_result",
-          tool_use_id: toolUse.id,
-          content: result.ok ? JSON.stringify(result.result) : `error: ${result.error}`,
-          is_error: !result.ok,
+      } else if (part.type === "finish-step") {
+        // Per-step usage event — same shape (snake_case) as v1's
+        // post-finalMessage emit so the client's usage meter is unchanged.
+        // AI SDK exposes cache tokens at usage.inputTokenDetails.{cacheRead,cacheWrite}Tokens.
+        // See AI_COPILOT_V2_MIGRATION.md PoC results for the field-path source.
+        const u = part.usage as
+          | {
+              inputTokens?: number;
+              outputTokens?: number;
+              inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
+            }
+          | undefined;
+        writeSseEvent(res, "usage", {
+          input_tokens: u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0,
+          output_tokens: u?.outputTokens ?? 0,
+          cache_creation_input_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
+          cache_read_input_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
         });
+      } else if (part.type === "finish") {
+        writeSseEvent(res, "done", { stop_reason: part.finishReason });
+      } else if (part.type === "error") {
+        const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
+        writeSseEvent(res, "error", { error: errMsg });
       }
-
-      messages.push({ role: "user", content: toolResultBlocks });
-    }
-
-    if (turn >= MAX_TURNS) {
-      writeSseEvent(res, "done", { stop_reason: "max_turns_reached" });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
