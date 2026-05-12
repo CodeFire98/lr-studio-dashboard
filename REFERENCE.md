@@ -3,9 +3,11 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**AI Co-pilot v2 Phase 2b**: `AICopyPreview.jsx` rewritten around `useCompletion` from `@ai-sdk/react`; `/api/ai/copy` switches from manual SSE event translation to `result.pipeTextStreamToResponse(res)` (text-stream protocol). Request body shape changes — `instruction` → `prompt`. Inline token-usage meter dropped; cache observability moves to server logs (`[copy] usage account=… cache_read=…`). Bamboo-Bear-only allowlist scope unchanged.)
+**Last updated:** 2026-05-12 (**AI Co-pilot v2 Phase 2c**: `AIImagePromptPanel.jsx` rewritten around `experimental_useObject` (ideas) + `useCompletion` (prompt). `/api/ai/image` switched from manual SSE writers to `streamObject(...).pipeTextStreamToResponse(res)` + `streamText(...).pipeTextStreamToResponse(res)` — text-stream protocol on both modes. Request body shape changes on prompt mode (`details` → `prompt`). Idea cards now render PROGRESSIVELY as the JSON streams. All client-side AI routes are now on the AI SDK's native hooks + text-stream protocol; the bespoke `parseSse` async generator is fully retired across the codebase. Bamboo-Bear-only allowlist scope unchanged.)
 
-**Previous (2026-05-12):** AI Co-pilot v2 Phase 2a — `CopilotPanel.jsx` rewritten around `useChat` + AI Elements `MessageResponse`; `/api/ai/chat` switched to AI SDK UIMessage stream protocol; panel code-split via `React.lazy()`. Path-alias `@/*` added.
+**Previous (2026-05-12):** AI Co-pilot v2 Phase 2b — `AICopyPreview.jsx` rewritten around `useCompletion`; `/api/ai/copy` switched to text-stream protocol. Body shape change `instruction` → `prompt`. Also a cleanup PR moving the two cached system blocks across all three routes from `messages` into the dedicated `system` parameter (silences AI SDK prompt-injection warning).
+
+**Earlier (2026-05-12):** Phase 2a — `CopilotPanel.jsx` rewritten around `useChat` + AI Elements `MessageResponse`; `/api/ai/chat` switched to AI SDK UIMessage stream protocol; panel code-split via `React.lazy()`. Path-alias `@/*` added.
 
 **Earlier (2026-05-11):** AI Co-pilot v2 migration kickoff — PoC, Phase 0 (Tailwind + shadcn foundation), Phase 0 hotfix (`--accent` collision), Phase 1a (`/api/ai/chat`), Phase 1b (`/api/ai/copy`), Phase 1c (`/api/ai/image` + PoC retirement), Phase 1 polish (cross-platform context). All server-side migration complete; wire protocol preserved through Phase 1 so existing client kept working untouched until Phase 2a/2b swap. Earlier same-day: Rebrand to **Linkrunner Media** + UX polish pass; daily-digest idempotency check added. Tracked end-to-end in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md).
 
@@ -16,7 +18,27 @@
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
 
-### 2026-05-12 — AI Co-pilot v2 Phase 2b: AICopyPreview rewrite around useCompletion ([PR pending])
+### 2026-05-12 — AI Co-pilot v2 Phase 2c: AIImagePromptPanel rewrite around useObject + useCompletion ([PR pending])
+Client-side cutover for the two-step image-direction → image-prompt flow. Rewrote [AIImagePromptPanel.jsx](web/src/components/AIImagePromptPanel.jsx) around `experimental_useObject` (ideas mode, with a Zod schema mirrored from the server) + `useCompletion({ streamProtocol: 'text' })` (prompt mode). The v1's `parseSse` async generator, lenient `parseIdeasJson` (which stripped ```json fences and JSON.parsed on done), 7-phase explicit state machine (`'idle' → 'ideas_compose' → 'ideas_streaming' → 'ideas_picking' → 'prompt_compose' → 'prompt_streaming' → 'prompt_done'`), manual AbortController, and separate usage state all gone. Now: a `section` enum (`'idle' | 'ideas' | 'prompt'`) + sub-phase derived from each hook's `isLoading` / `error` / `object` / `completion`.
+
+**Wire protocol switch**: [/api/ai/image](web/api/ai/image.ts) switched both modes from manual SSE event writers (`writeSseEvent('text', { delta })` / `writeSseEvent('usage', {...})` / etc.) to native `result.pipeTextStreamToResponse(res)`. The streamObject text-stream emits raw JSON-as-text deltas; `useObject` parses them progressively via `parsePartialJson` into `DeepPartial<IDEAS_SCHEMA>`. The streamText text-stream emits text deltas; useCompletion accumulates them. Both replace the legacy SSE events (`text` / `usage` / `done` / `error`) — last route on the v1 wire protocol is retired with this PR.
+
+**Body shape change** (prompt mode only): `details` → `prompt`. Because `useCompletion` always sends the admin's free-form direction as `prompt` (the first arg to `complete()`), the server reads from `body.prompt` instead of `body.details`. Ideas mode body shape unchanged — `useObject.submit(input)` posts the input verbatim as JSON.
+
+**Progressive idea cards**: the v1 model was "wait for full JSON, then parse, then render 3-5 cards at once". Phase 2c renders cards LIVE as the JSON streams in — each card fills in title → description → keywords as the partial JSON resolves. Cards are click-gated until they have BOTH title + description AND `ideasHook.isLoading` is false. This is the actual point of `useObject` (vs `useCompletion` for arbitrary JSON), so we lean into it.
+
+**Inline usage meter dropped**: same tradeoff as Phase 2b's AICopyPreview — `useObject` / `useCompletion` don't surface usage to consumers. Cache observability moves to server logs — `streamObject({ onFinish })` + `streamText({ onFinish })` both log `[image] usage account=… plan=… platform=… mode=ideas|prompt input=… cache_read=… cache_write=… output=… finish=…` to Vercel Function Logs. Same monitoring path as `[copy] usage …` and `[chat]` (chat keeps its inline meter since `useChat`'s UIMessage protocol DOES surface usage via message metadata).
+
+**Auth wiring**: per-request Supabase session token injected via a shared `fetchWithAuth` wrapper passed to both hooks — mirrors AICopyPreview (Phase 2b) and DefaultChatTransport.headers() (Phase 2a) patterns.
+
+**Single endpoint preserved**: `/api/ai/image` keeps serving both modes from one route. They share auth (`is_agency` + allowlist), brand-context load, plan-load, and platform validation. Splitting into `/api/ai/image/ideas` and `/api/ai/image/prompt` would duplicate ~150 LoC of that pipeline for negligible benefit.
+
+- **Sections touched:** Recent changes log; `Last updated`; §13 Known decisions (entries: text-stream-protocol-on-both-modes-of-image-route, progressive-idea-card-rendering-with-useObject, single-endpoint-for-both-image-modes). §10 Edge functions (`/api/ai/image` wire-protocol cutover; body shape change on prompt mode).
+
+### 2026-05-12 — AI Co-pilot v2 cleanup: move system messages into streamText `system` param ([PR #71](https://github.com/CodeFire98/lr-studio-dashboard/pull/71))
+Small standalone refactor across all three AI routes (`chat.ts`, `copy.ts`, `image.ts`). The AI SDK emits a security warning when role:'system' entries appear in `messages` arrays — that's in principle a prompt-injection risk vector. Our usage was safe (system content is 100% server-controlled — fixed SYSTEM_PROMPT constants + the brand-context blob), but the warning had been firing across all three routes since Phase 1a/1b/1c. Fix: move the two cached system blocks from `messages: [...]` into the dedicated `system: [...]` parameter. The AI SDK accepts `Array<SystemModelMessage>` for `system`, and each entry keeps `providerOptions.anthropic.cacheControl = { type: 'ephemeral' }` — so both cache breakpoints stay intact. No behavior change.
+
+### 2026-05-12 — AI Co-pilot v2 Phase 2b: AICopyPreview rewrite around useCompletion ([PR #70](https://github.com/CodeFire98/lr-studio-dashboard/pull/70))
 Client-side cutover for the inline AI draft / AI redraft surface. Rewrote [AICopyPreview.jsx](web/src/components/AICopyPreview.jsx) around the `useCompletion` hook from `@ai-sdk/react` — manual `parseSse` async generator, the explicit `compose` | `streaming` | `done` | `error` state machine, the separate AbortController, and the SSE `usage`-event extractor all gone. The wire protocol on [/api/ai/copy](web/api/ai/copy.ts) switched to the AI SDK's text-stream protocol via `result.pipeTextStreamToResponse(res)` — the legacy SSE event names (`text` / `usage` / `done` / `error`) are retired for this route.
 
 **Body shape change**: `useCompletion` always posts `{ prompt, ...body }`, where `prompt` is the first arg to `complete()`. The admin's free-form instruction now rides as `prompt` instead of the v1 `instruction` field. Everything else (`accountId`, `plan_id`, `platform`, `mode`, `current_copy`) flows through the per-call `body` override.
@@ -1523,34 +1545,57 @@ Identical to `/api/ai/chat` and `/api/ai/copy`: JWT verification → `profiles.i
 
 #### Modes
 
-- **`ideas`**: returns 3-5 direction concepts as JSON streamed-as-text. Client parses on stream-complete and renders idea cards. System prompt instructs the model to output `{ideas: [{title, description, style_keywords: []}]}` with NO markdown fences and NO preamble. Lenient client-side parser strips stray fences if the model ignores. Brand voice + photography style + voice tags + pinned brand notes from the cached brand-context blob inform every direction.
-- **`prompt`**: given the chosen idea (title + description + keywords) + optional admin details, returns a single detailed image-gen prompt as text deltas. 100-250 words, covers subject / setting / composition / lighting / style / brand palette / texture. NO Midjourney `--ar` flags or other tool-specific syntax (admin adds those for their tool of choice).
+- **`ideas`**: returns 3-5 direction concepts via `streamObject` with a Zod schema enforcing `{ ideas: [{title, description, style_keywords: []}] }` (min 3, max 5). The Vercel AI SDK constrains Claude to produce schema-conforming JSON AND validates it server-side. Wire shape: text-stream of raw JSON deltas via `pipeTextStreamToResponse`. The client (`useObject({ schema })`) parses progressively via `parsePartialJson` into `DeepPartial<RESULT>` so cards render as fields land. Brand voice + photography style + voice tags + pinned brand notes from the cached brand-context blob inform every direction.
+- **`prompt`**: given the chosen idea (title + description + keywords) + the admin's free-form additional details (riding as `prompt` — see body shape below), returns a single detailed image-gen prompt via `streamText` as text deltas. 100-250 words, covers subject / setting / composition / lighting / style / brand palette / texture. NO Midjourney `--ar` flags or other tool-specific syntax (admin adds those for their tool of choice).
 
 #### Request shape
+
+Ideas mode (sent via `useObject.submit(input)` — body is the raw input object verbatim):
 
 ```js
 POST /api/ai/image
 Authorization: Bearer <user JWT>
 Content-Type: application/json
-Accept: text/event-stream
 {
   "accountId": "<brand uuid>",
   "plan_id": "<post_plans.id>",
   "platform": "instagram" | "linkedin" | "x",
-  "mode": "ideas" | "prompt",
+  "mode": "ideas",
+  "brief": "<optional brief — extra context beyond the post concept>"
+}
+// → 200 text/plain; charset=utf-8 — AI SDK text-stream protocol via streamObject.pipeTextStreamToResponse. JSON deltas streamed as the object is built; useObject parses progressively into DeepPartial<IDEAS_SCHEMA>.
+// → 4xx/5xx { error }   (JSON body for errors, before the stream starts)
+```
 
-  // ideas mode:
-  "brief": "<optional brief — extra context beyond the post concept>",
+Prompt mode (sent via `useCompletion.complete(prompt, { body })` — always sends `{ prompt, ...body }`):
 
-  // prompt mode:
+```js
+POST /api/ai/image
+Authorization: Bearer <user JWT>
+Content-Type: application/json
+{
+  "prompt": "<admin's free-form details for THIS prompt — was `details` pre-Phase-2c>",
+  "accountId": "<brand uuid>",
+  "plan_id": "<post_plans.id>",
+  "platform": "instagram" | "linkedin" | "x",
+  "mode": "prompt",
   "idea_title": "<chosen direction title>",
   "idea_description": "<chosen direction description>",
-  "idea_style_keywords": ["<keyword>", ...],
-  "details": "<optional admin details — specific elements, mood, etc.>"
+  "idea_style_keywords": ["<keyword>", ...]
 }
-// → 200 text/event-stream — same events as /api/ai/copy: text / usage / done / error
+// → 200 text/plain; charset=utf-8 — AI SDK text-stream protocol via streamText.pipeTextStreamToResponse. Text deltas accumulated by useCompletion.
 // → 4xx/5xx { error }
 ```
+
+**Pre-Phase-2c (history)**: both modes returned `text/event-stream` with custom SSE events (`text` / `usage` / `done` / `error`). The prompt-mode body used the field `details` — now `prompt` to match `useCompletion`'s convention.
+
+#### Observability
+
+No client-side usage meter (neither `useObject` nor `useCompletion` text-stream surfaces usage). Server logs every call:
+```
+[image] usage account=<uuid> plan=<uuid> platform=instagram mode=ideas|prompt input=… cache_read=… cache_write=… output=… finish=stop|n/a
+```
+Grep `[image] usage` in Vercel Function Logs to monitor cache hit rate. Same monitoring path as `[copy] usage`. If `cache_read=0` consistently across consecutive calls within 5 min for the same brand, the cache is broken — investigate per the breakage checklist in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md).
 
 #### Cost
 

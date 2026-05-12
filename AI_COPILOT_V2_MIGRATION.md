@@ -1,13 +1,14 @@
 # AI Co-pilot v2 migration — tracking doc
 
 > Single source of truth for the AI Co-pilot rebuild on **Vercel AI SDK + AI Elements**.
-> Last updated: 2026-05-12
+> Last updated: 2026-05-12 (Phase 2c)
 > Owner: Lakshith Dinesh (decisions) + Claude (implementation)
 > Worktree branch: `claude/eloquent-austin-f6dbf7`
 > Production Vercel project: `lr-studio-dashboard-3kkp` (agency.linkrunner.io)
 
 ## Recent changes log
 
+- **2026-05-12** (Phase 2c): `AIImagePromptPanel.jsx` rewritten around `experimental_useObject` (ideas) + `useCompletion` (prompt); `/api/ai/image.ts` switched from manual SSE event translation to `streamObject(...).pipeTextStreamToResponse(res)` + `streamText(...).pipeTextStreamToResponse(res)`. Request body shape change on prompt mode (`details` → `prompt`). Ideas cards now render PROGRESSIVELY as the JSON streams in. Inline usage meter dropped — cache observability logs to `[image] usage …` in Vercel Function Logs (same pattern as `[copy] usage …`).
 - **2026-05-12** (cleanup PR): All three AI routes (`chat.ts`, `copy.ts`, `image.ts`) moved their two cached system blocks from `streamText({ messages: [system, system, user, ...] })` into `streamText({ system: [...], messages: [user, ...] })`. Silences the AI SDK's prompt-injection warning ("System messages in the prompt or messages fields can be a security risk"). Behavior unchanged — `system` accepts `Array<SystemModelMessage>` so both cache breakpoints + `providerOptions.anthropic.cacheControl` survive.
 - **2026-05-12**: Phase 2b merged ([#70](https://github.com/CodeFire98/lr-studio-dashboard/pull/70)) — `AICopyPreview.jsx` rewritten around `useCompletion`; `/api/ai/copy.ts` switched from manual SSE translator to `pipeTextStreamToResponse`. Request body shape changes (`instruction` → `prompt`). Inline token-usage meter intentionally dropped — useCompletion's text-stream protocol doesn't surface usage; cache observability moves to server logs.
 - **2026-05-11**: PoC + Phase 0 + Hotfix + Phase 1a + Phase 1b + Phase 1c + Polish + Phase 2a all merged.
@@ -86,7 +87,7 @@ Mark a phase complete only when its PR is merged AND the Vercel preview has been
 | Polish | Cross-platform context inside a post plan: platform requirements at top of user message ("MUST FOLLOW STRICTLY"); `/api/ai/copy` includes OTHER platforms' copy; `/api/ai/image` includes ALL platforms' copy. Pre-existing issues surfaced during smoke testing — not v2 regressions. | ✅ merged | [#66](https://github.com/CodeFire98/lr-studio-dashboard/pull/66) |
 | 2a | Client: `CopilotPanel.jsx` → `useChat` + AI Elements `MessageResponse` (Streamdown markdown). Wire protocol switched to AI SDK UIMessage stream (`/api/ai/chat` now uses `pipeUIMessageStreamToResponse`). Panel lazy-loaded via `React.lazy()` so heavy markdown deps don't ship in eager bundle. Conversation/Message components from AI Elements intentionally dropped — scroll-overflow conflict + shadcn-gray bubbles. Custom tool cards retained. Path-alias foundation `@/*` added. **Two smoke-test regressions fixed in-flight**: (a) `--accent` collision — tight-scoped `.ai-elements` to wrap only MessageResponse, not the whole scroll surface; (b) Streamdown table fullscreen modal broken in panel layout — disabled via `controls.table.fullscreen: false`. | ✅ merged | [#68](https://github.com/CodeFire98/lr-studio-dashboard/pull/68) |
 | 2b | Client: `AICopyPreview.jsx` → `useCompletion` + AI SDK text-stream protocol. Server `/api/ai/copy` switched from manual `fullStream`-to-SSE translator to `result.pipeTextStreamToResponse(res)`. Request body shape changes (`instruction` → `prompt`). 292 → 260 LoC on the client, ~35 lines of manual stream-translation deleted from the server. Inline usage meter dropped — useCompletion text-protocol doesn't surface metadata; cache hits now logged server-side via `streamText({ onFinish })` and greppable as `[copy] usage …` in Vercel Function Logs. | ✅ merged | [#70](https://github.com/CodeFire98/lr-studio-dashboard/pull/70) |
-| 2c | Client: `AIImagePromptPanel.jsx` → `useObject` (ideas) + `useCompletion` (prompt) | ⏳ pending | — |
+| 2c | Client: `AIImagePromptPanel.jsx` → `experimental_useObject` (ideas, with Zod schema mirrored from server) + `useCompletion` (prompt, text-stream protocol). Server `/api/ai/image` switched from manual SSE writers (`writeSseEvent` / `emitUsageEvent`) to `streamObject(...).pipeTextStreamToResponse(res)` + `streamText(...).pipeTextStreamToResponse(res)` — text-stream protocol for both modes. Body shape change on prompt mode: `details` → `prompt`. Idea cards now render PROGRESSIVELY as the JSON streams (each card fills in title → description → keywords as the partial JSON resolves). 7-phase explicit state machine + `parseSse` generator + lenient `parseIdeasJson` parser all retired. Cache observability logs to `[image] usage …` in Vercel Function Logs. | 🟡 open | TBD |
 | 3 | Net-new: pick from {Reasoning panel surfacing, image attachments in chat, dynamic Suggestion chips from `recentApprovedPlans`, per-message cost in metadata} | ⏳ pending | — |
 | 4 | Optional: DB-backed conversation persistence (Supabase `copilot_conversations` table). Only if a user asks. | 🚫 not scheduled | — |
 
@@ -159,6 +160,14 @@ Mark a phase complete only when its PR is merged AND the Vercel preview has been
 - [ ] **/api/ai/copy ignores the admin's instruction** (Phase 2b body-shape regression). Symptom: every draft comes out identical, ignoring what the admin typed. Check the POST body the browser sends — should have `prompt: '<instruction>'` (NOT `instruction: '<instruction>'`).
   - Common cause: client reverted to pre-2b body shape, or server reads `body.instruction` instead of `body.prompt`.
   - Fix: `useCompletion` always sends `prompt` as the primary field; the v1 `instruction` key is gone. Server reads from `body.prompt`.
+- [ ] **/api/ai/image ideas cards don't render** (Phase 2c regression). Symptom: streaming dots forever, never transition to picker. Check Network tab — response Content-Type must be `text/plain; charset=utf-8` (NOT `text/event-stream`). Check `ideasHook.object` in React DevTools — should be `{ ideas: [...] }` progressively populating.
+  - Common cause: server reverted to SSE event writers (`writeSseEvent`), or `useObject` schema doesn't match what the server emits.
+  - Fix: confirm route ends with `result.pipeTextStreamToResponse(res)` and the client `IDEAS_SCHEMA` matches the server's exactly (modulo `.describe()` / `.min()` decorations).
+- [ ] **/api/ai/image prompt mode body shape** (Phase 2c regression). Symptom: prompt mode generates ignoring the admin's "additional details" textarea. Check the POST body — should have `prompt: '<details>'` (NOT `details: '<details>'`).
+  - Common cause: same as the copy.ts case — server reads the wrong field.
+  - Fix: server reads from `body.prompt` on prompt mode; useCompletion always sends `prompt` as primary.
+- [ ] **Idea cards click before they're ready** (Phase 2c progressive-rendering edge case). Symptom: clicking a half-streamed card sends an incomplete idea to the prompt phase. The picker should disable click when `!idea.title || !idea.description || ideasHook.isLoading`.
+  - Fix: confirm the `<button disabled={...}>` guard is still in place on the idea cards.
 
 ### Tool-use loop
 
@@ -238,6 +247,9 @@ Add a one-line entry every time we make a "we tried X, chose Y" call during the 
 - **2026-05-11**: System prompt stays brand-agnostic; all brand-specific tuning flows through `brand_kit_notes` per brand. Reason: every new brand inherits universal platform best-practices automatically without code changes. Brand specifics accumulate via the memory tool over time. — Lakshith
 - **2026-05-12** (Phase 2b): Use `streamProtocol: 'text'` + `pipeTextStreamToResponse` for /api/ai/copy instead of the data-stream protocol. Reason: copy generation is a single-shot text completion with no tools, no reasoning parts, no metadata-driven UI. `useCompletion` data-protocol consumers ignore `messageMetadata` anyway. Text protocol = simpler server, simpler client, same UX. — Claude
 - **2026-05-12** (Phase 2b): Drop the inline "X in (Y cached) · Z out" usage meter. Reason: useCompletion exposes no usage event to consumers; adding a side-channel (custom fetch + response header) just for an inline debug indicator wasn't worth the complexity. Cache observability shifts to server logs — `streamText({ onFinish })` logs `[copy] usage account=… cache_read=…` per call. Same monitoring story as the breakage-checklist already prescribes (Vercel Function Logs). — Claude
+- **2026-05-12** (Phase 2c): Use text-stream protocol on BOTH ideas + prompt modes of `/api/ai/image`, via `pipeTextStreamToResponse`. Reason: `experimental_useObject` consumes raw JSON-as-text deltas (parsed by `parsePartialJson` client-side), and `useCompletion` already uses text-stream from Phase 2b. Symmetric across both modes simplifies the server. — Claude
+- **2026-05-12** (Phase 2c): Render idea cards PROGRESSIVELY as the JSON streams in rather than waiting for stream completion + lenient-parse-on-done. Reason: this is the whole point of `useObject` — it surfaces `DeepPartial<RESULT>` updates as each field lands. Cards show title-then-description-then-keywords as the partial JSON resolves; click is gated until `isLoading` flips false AND the card has both title + description. v1's "wait then show all" model was a side-effect of the SSE-then-parse architecture; we're not preserving it. — Claude
+- **2026-05-12** (Phase 2c): Single endpoint `/api/ai/image` keeps serving both modes. Reason: they share auth, brand-context load, and platform validation. The two hooks send different body shapes (useObject posts the input verbatim; useCompletion always sends `{ prompt, ...body }`) but the server differentiates on `body.mode` and reads `body.prompt` only on prompt mode. Splitting into two endpoints would duplicate ~150 LoC of validation/load logic. — Claude
 
 ## Deferred / roadmap (out of the v2 migration but tracked here)
 
@@ -325,7 +337,7 @@ Run against Vercel preview for PR #60 with model `claude-sonnet-4-6` and a deter
 |---|---|---|
 | `web/src/components/CopilotPanel.jsx` | 474 LoC, manual SSE parser, hand-rolled message rendering, in-house ToolCard | ~200 LoC, `useChat()` + AI Elements components |
 | `web/src/components/AICopyPreview.jsx` | 292 LoC, state machine + manual SSE parser | 260 LoC, `useCompletion({ streamProtocol: 'text' })`. Header comments expanded vs. v1, so raw line count under-states the logic shrink — `parseSse` generator + 'compose'\|'streaming'\|'done'\|'error' state + AbortController + usage state all collapse to derived booleans. |
-| `web/src/components/AIImagePromptPanel.jsx` | ~400 LoC, 7-phase state machine + manual JSON parser | ~180 LoC, `useObject()` + `useCompletion()` |
+| `web/src/components/AIImagePromptPanel.jsx` | 592 LoC, 7-phase state machine + manual JSON parser + parseSse | 625 LoC (header comments expanded vs v1 — actual logic shrank significantly: parseSse + parseIdeasJson + 7-phase setter chains + AbortController + usage state all replaced with `experimental_useObject` + `useCompletion` + a derived sub-phase). Idea cards stream in progressively. |
 
 ### Untouched / minimal changes
 

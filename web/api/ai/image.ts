@@ -1,29 +1,42 @@
 // =====================================================================
 // /api/ai/image — Vercel serverless function — image-ideation pipeline
 //
-// AI Co-pilot v2 Phase 1c: migrated from raw @anthropic-ai/sdk to the
-// Vercel AI SDK. Two-step image-prompt flow:
+// AI Co-pilot v2 Phase 2c: wire protocol switched to the AI SDK's
+// text-stream protocol for BOTH modes — `streamObject(...).pipeTextStreamToResponse(res)`
+// for ideas (JSON deltas) and `streamText(...).pipeTextStreamToResponse(res)`
+// for prompt (text deltas). The custom SSE event names
+// (text / usage / done / error) are retired for this route.
+// AIImagePromptPanel.jsx in the same PR consumes the new protocols via
+// `useObject` (ideas) and `useCompletion` (prompt).
+//
+// Request body shape change (prompt mode only):
+//   `details` → `prompt`
+// Because `useCompletion` always sends the admin's freeform direction
+// as `prompt` (the first arg to `complete()`). The ideas-mode body
+// (which `useObject.submit(...)` posts verbatim) is unchanged.
+//
+// Two modes:
 //
 //   mode = 'ideas'  → uses streamObject with a Zod schema for
 //                     { ideas: [{title, description, style_keywords[]}] }.
-//                     Replaces the v1 lenient-JSON-parse-on-done hack —
-//                     Zod validates the output server-side and the SDK
-//                     constrains the model to produce schema-conforming
-//                     JSON.
+//                     The Zod schema constrains Claude to produce
+//                     schema-conforming JSON AND the SDK validates the
+//                     final result server-side. Client-side `useObject`
+//                     accumulates the partial JSON deltas into a typed
+//                     DeepPartial<RESULT> via parsePartialJson.
 //
 //   mode = 'prompt' → uses streamText for freeform image-gen prompt.
 //                     Same pattern as /api/ai/copy.
-//
-// Wire protocol UNCHANGED from v1 — both modes still emit text deltas
-// over SSE (event name "text") so the existing AIImagePromptPanel.jsx
-// keeps working untouched until Phase 2c. The client's lenient JSON
-// parser on stream-complete remains as defense-in-depth, but Zod
-// schema validation now makes it rarely needed.
 //
 // Same auth pipeline as the other AI routes (JWT → is_agency →
 // AI_COPILOT_BRAND_IDS allowlist). Same prompt-cached brand-context
 // blob — cache reads across chat / copy / image surfaces within the
 // 5-minute TTL.
+//
+// Observability: per-call cache hit / input / output counts log
+// server-side via `streamObject({ onFinish })` and
+// `streamText({ onFinish })` — greppable as `[image] usage …` in
+// Vercel Function Logs. Same monitoring pattern as /api/ai/copy.
 // =====================================================================
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -53,12 +66,11 @@ const PLATFORM_LABEL: Record<string, string> = {
   x: "X (Twitter)",
 };
 
-// Zod schema for the structured-output ideas mode. The shape mirrors v1's
-// hand-written JSON contract exactly so the existing client (which
-// accumulates text deltas into a JSON string and then parses) sees
-// identical output. streamObject also constrains Claude to produce
-// schema-conforming output AND validates the final result server-side —
-// the v1 lenient-fence-strip-then-parse hack is no longer needed here.
+// Zod schema for the structured-output ideas mode. The shape MUST match
+// the client's `useObject({ schema })` exactly — the client deserialises
+// into DeepPartial<infer<typeof IDEAS_SCHEMA>> as JSON streams in.
+// streamObject also constrains Claude to produce schema-conforming
+// output AND validates the final result server-side.
 const IDEAS_SCHEMA = z.object({
   ideas: z
     .array(
@@ -110,36 +122,15 @@ type RequestBody = {
   plan_id?: string;
   platform?: string;
   mode?: "ideas" | "prompt";
-  // ideas mode:
+  // ideas mode (sent via useObject.submit() — body is the raw input object):
   brief?: string;
-  // prompt mode:
+  // prompt mode (sent via useCompletion — `prompt` is the admin's free-form
+  // details/direction; the chosen idea rides as the structured body fields):
+  prompt?: string;
   idea_title?: string;
   idea_description?: string;
   idea_style_keywords?: string[];
-  details?: string;
 };
-
-function writeSseEvent(res: VercelResponse, type: string, data: unknown) {
-  res.write(`event: ${type}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
-  // @ts-expect-error — Node response has flush, types don't expose it.
-  res.flush?.();
-}
-
-type UsageShape = {
-  inputTokens?: number;
-  outputTokens?: number;
-  inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
-};
-
-function emitUsageEvent(res: VercelResponse, u: UsageShape | undefined) {
-  writeSseEvent(res, "usage", {
-    input_tokens: u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0,
-    output_tokens: u?.outputTokens ?? 0,
-    cache_creation_input_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
-    cache_read_input_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
-  });
-}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -229,17 +220,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(404).json({ error: "No brand kit found for this account." });
   }
 
-  // SSE setup
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
+  // Disable Vercel response buffering so deltas reach the browser as they're
+  // generated. pipeTextStreamToResponse sets Content-Type itself (text/plain).
   res.setHeader("X-Accel-Buffering", "no");
-  res.status(200);
-  res.write(": stream open\n\n");
 
-  // Two cache breakpoints (mode-specific instructions + brand context),
-  // same as chat.ts and copy.ts. Cache is shared across all three routes
-  // because brandContext is byte-stable per brand within the 5-min TTL.
   const systemInstructions = mode === "ideas" ? SYSTEM_IDEAS : SYSTEM_PROMPT_DETAILED;
 
   const platformLabel = PLATFORM_LABEL[body.platform];
@@ -253,9 +237,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // informed by the whole campaign tone. The active platform is labelled
   // explicitly so the model anchors the visual to that platform's
   // aspect ratio / format while staying thematically coherent with the
-  // sibling captions. Caps each platform at 600 chars (was 800 for a
-  // single platform; tightened to keep total input predictable now that
-  // we can include up to 3 platforms).
+  // sibling captions.
   const copyVariants = plan.copy_variants && typeof plan.copy_variants === "object"
     ? (plan.copy_variants as Record<string, string>)
     : {};
@@ -284,8 +266,10 @@ Scheduled: ${scheduledLabel}${copyContextSection}${briefLine}`;
     const ideaTitle = body.idea_title?.trim() || "";
     const ideaDescription = body.idea_description?.trim() || "";
     const keywords = Array.isArray(body.idea_style_keywords) ? body.idea_style_keywords.filter((k) => typeof k === "string" && k.trim()) : [];
-    const detailsLine = body.details?.trim()
-      ? `\n\nAdmin's additional details for THIS prompt:\n${body.details.trim()}`
+    // useCompletion sends the admin's "additional details" textarea as
+    // `prompt`. Treat empty string as "no extra details".
+    const detailsLine = body.prompt?.trim()
+      ? `\n\nAdmin's additional details for THIS prompt:\n${body.prompt.trim()}`
       : "";
     userMessage = `Write a detailed image-generation prompt for this ${platformLabel} post, building on the chosen direction below.
 
@@ -300,16 +284,10 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
   }
 
   // System messages array shared by both modes. Each block gets its own
-  // cache_control via providerOptions.anthropic.cacheControl. Both rides
-  // via the `system` parameter (Array<SystemModelMessage>) instead of
-  // being mixed into `messages` — the AI SDK emits a security warning
-  // when role:'system' entries appear in `messages` because — in
-  // principle — that's a prompt-injection vector. Our content is 100%
-  // server-controlled so the warning is informational, but using
-  // `system: [...]` is the cleaner API path AND keeps both cache
-  // breakpoints intact (SystemModelMessage supports providerOptions and
-  // the AI SDK collapses the array into a single Anthropic system
-  // param with multiple text blocks, each with its own cache_control).
+  // cache_control via providerOptions.anthropic.cacheControl. The two
+  // blocks ride via the `system` parameter (Array<SystemModelMessage>)
+  // instead of being mixed into `messages` — silences the AI SDK's
+  // prompt-injection warning AND keeps both cache breakpoints intact.
   const systemMessages = [
     {
       role: "system" as const,
@@ -323,31 +301,50 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
     },
   ];
 
+  // Shared onFinish observability logger for both modes. Drops the
+  // per-call usage into Vercel Function Logs as `[image] usage …` so we
+  // can grep cache hit rate the same way as `[copy] usage …`. Per-mode
+  // because streamObject and streamText pass slightly different event
+  // shapes (streamObject's `onFinish` has `usage` directly; streamText's
+  // has `totalUsage`).
+  const logUsage = (
+    label: "ideas" | "prompt",
+    u:
+      | {
+          inputTokens?: number;
+          outputTokens?: number;
+          inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
+        }
+      | undefined,
+    finishReason?: string,
+  ) => {
+    const cr = u?.inputTokenDetails?.cacheReadTokens ?? 0;
+    const cw = u?.inputTokenDetails?.cacheWriteTokens ?? 0;
+    const nc = u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0;
+    const out = u?.outputTokens ?? 0;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[image] usage account=${body.accountId} plan=${body.plan_id} platform=${body.platform} mode=${label} ` +
+        `input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason ?? "n/a"}`,
+    );
+  };
+
   try {
     if (mode === "ideas") {
-      // streamObject constrains Claude to produce schema-conforming JSON.
-      // The textStream emits raw JSON-token deltas as the object is built;
-      // the existing AIImagePromptPanel.jsx accumulates these into a
-      // string and lenient-parses on done — identical to v1 behaviour.
+      // streamObject constrains Claude to produce schema-conforming JSON
+      // and emits JSON-delta chunks. pipeTextStreamToResponse forwards
+      // them as text/plain chunks; `useObject` on the client parses
+      // them progressively into DeepPartial<{ ideas: [...] }>.
       const result = streamObject({
         model: anthropic(MODEL_ID),
         maxOutputTokens: MAX_TOKENS_IDEAS,
         schema: IDEAS_SCHEMA,
         system: systemMessages,
         messages: [{ role: "user", content: userMessage }],
+        onFinish: ({ usage }) => logUsage("ideas", usage),
       });
 
-      for await (const chunk of result.textStream) {
-        writeSseEvent(res, "text", { delta: chunk });
-      }
-
-      // streamObject exposes usage as a Promise that resolves when the
-      // stream completes. Mirror the legacy snake_case wire shape.
-      const usage = (await result.usage) as UsageShape;
-      emitUsageEvent(res, usage);
-
-      const finishReason = await result.finishReason;
-      writeSseEvent(res, "done", { stop_reason: finishReason });
+      result.pipeTextStreamToResponse(res);
     } else {
       // Freeform image-gen prompt — streamText, same pattern as copy.ts.
       const result = streamText({
@@ -355,25 +352,16 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         maxOutputTokens: MAX_TOKENS_PROMPT,
         system: systemMessages,
         messages: [{ role: "user", content: userMessage }],
+        onFinish: ({ totalUsage, finishReason }) => logUsage("prompt", totalUsage, finishReason),
       });
 
-      for await (const part of result.fullStream) {
-        if (part.type === "text-delta") {
-          writeSseEvent(res, "text", { delta: part.text });
-        } else if (part.type === "finish-step") {
-          emitUsageEvent(res, part.usage as UsageShape | undefined);
-        } else if (part.type === "finish") {
-          writeSseEvent(res, "done", { stop_reason: part.finishReason });
-        } else if (part.type === "error") {
-          const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
-          writeSseEvent(res, "error", { error: errMsg });
-        }
-      }
+      result.pipeTextStreamToResponse(res);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    writeSseEvent(res, "error", { error: msg });
-  } finally {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: msg });
+    }
     res.end();
   }
 }
