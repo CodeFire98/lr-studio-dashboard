@@ -2,117 +2,165 @@
 // AIImagePromptPanel — AI-driven image direction → prompt flow
 // =====================================================================
 //
-// Surface: PostPlanDetailView, sits above the Deliverables card. Lets
-// the admin generate detailed image prompts in two steps so they get
-// directional choice rather than one random shot:
+// AI Co-pilot v2 Phase 2c: rewritten around two AI SDK hooks —
+// `experimental_useObject` for the schema-driven ideas pass and
+// `useCompletion` for the freeform prompt expansion. The v1 implementation
+// kept a 7-phase state machine ('idle' → 'ideas_compose' → 'ideas_streaming'
+// → 'ideas_picking' → 'prompt_compose' → 'prompt_streaming' → 'prompt_done'),
+// hand-rolled `parseSse` async generator, a lenient `parseIdeasJson` parser
+// that stripped ```json fences and tried to JSON.parse on done, manual
+// abort controllers, and explicit usage state. All of that collapses
+// to a `section` enum + two hooks' state. Progressive disclosure on the
+// idea cards is a bonus — the cards render fields as the JSON streams in
+// rather than waiting for stream completion.
 //
-//   1) Ideas phase — admin types an optional brief, clicks "Generate
-//      ideas". AI returns 3-5 image direction cards (different angles).
-//   2) Prompt phase — admin clicks an idea card, optionally types extra
-//      details, clicks "Generate prompt". AI streams a detailed
-//      paste-ready image prompt for Midjourney / DALL-E / Imagen / etc.
+// Wire protocol on /api/ai/image switched in the same PR — both modes
+// now use the AI SDK's text-stream protocol via `pipeTextStreamToResponse`.
+// The ideas mode streams JSON deltas (parsed by `useObject`); the prompt
+// mode streams raw text (consumed by `useCompletion`).
 //
-// State machine:
-//   idle             → just the "✨ Image ideas" button + collapsed help
-//   ideas_compose    → optional brief textarea + Generate ideas
-//   ideas_streaming  → JSON streaming in (raw text accumulator)
-//   ideas_picking    → 3-5 idea cards, click to pick
-//   prompt_compose   → chosen idea shown + details textarea + Generate
-//   prompt_streaming → prompt text streaming
-//   prompt_done      → final prompt + Copy + Try-another-idea + Regen
-//   error            → error message + Retry
+// Request body shape change (prompt mode only): `details` → `prompt`.
+// useCompletion always sends the admin's free-form direction as `prompt`
+// (first arg to `complete()`); the server reads from `body.prompt`.
+// Ideas-mode body shape is unchanged (useObject.submit() posts the
+// input object verbatim).
 //
-// The admin can navigate freely between phases — "Try another direction"
-// from prompt_done goes back to ideas_picking; "Different brief" from
-// ideas_picking goes back to ideas_compose with the brief preserved.
+// Behavior preserved:
+//   - Two-step flow: ideas first, then expanded prompt for the chosen idea.
+//   - Free navigation between sections via "← Different brief" and
+//     "← Try another direction" buttons.
+//   - Stop mid-stream keeps partial output (useObject + useCompletion
+//     retain whatever streamed before abort).
+//   - Copy-to-clipboard with 2s "Copied" confirmation pill.
+//
+// Behavior tweaked (intentional improvements):
+//   - Idea cards render PROGRESSIVELY as the JSON streams (each card
+//     fills in title → description → keywords as the stream lands).
+//     v1 waited for the full stream then parsed-on-done.
+//   - The inline usage meter is dropped (same tradeoff as Phase 2b
+//     copy panel — useObject/useCompletion don't surface usage).
+//     Cache observability moves to server logs (`[image] usage …`
+//     in Vercel Function Logs).
 // =====================================================================
 
 /* eslint-disable */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { experimental_useObject as useObject, useCompletion } from '@ai-sdk/react';
+import { z } from 'zod';
 import { Icon } from './Icon.jsx';
 import { supabase } from '../lib/supabase.js';
 
-async function* parseSse(response) {
-  if (!response.body) return;
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let sep;
-    while ((sep = buffer.indexOf('\n\n')) !== -1) {
-      const chunk = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      let event = 'message';
-      let data = '';
-      for (const line of chunk.split('\n')) {
-        if (line.startsWith(':')) continue;
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) data += line.slice(5).trim();
-      }
-      if (!data) continue;
-      let parsed;
-      try { parsed = JSON.parse(data); }
-      catch { continue; }
-      yield { event, data: parsed };
-    }
-  }
-}
+// Mirror of the server's IDEAS_SCHEMA (web/api/ai/image.ts). useObject's
+// `schema` option drives the type-validation behaviour of the hook —
+// the streamed JSON deltas get parsed into DeepPartial<typeof schema>
+// via parsePartialJson, so the schema must match the server's exactly.
+// We intentionally drop the .min(3)/.max(5)/.describe() decorations from
+// the server schema here — those are server-side hints to Claude; the
+// client only needs the shape.
+const IDEAS_SCHEMA = z.object({
+  ideas: z.array(
+    z.object({
+      title: z.string(),
+      description: z.string(),
+      style_keywords: z.array(z.string()),
+    }),
+  ),
+});
 
-// Lenient JSON parse — model occasionally adds a stray newline / leading
-// space despite the system prompt; strip markdown fences if it ignored
-// our "no markdown" instruction.
-function parseIdeasJson(raw) {
-  if (!raw) return null;
-  let text = raw.trim();
-  // Strip ```json ... ``` fences if present.
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  try {
-    const parsed = JSON.parse(text);
-    if (!parsed || !Array.isArray(parsed.ideas)) return null;
-    return parsed.ideas
-      .filter((i) => i && typeof i === 'object')
-      .map((i, idx) => ({
-        id: `idea-${idx}`,
-        title: String(i.title || '').trim() || `Direction ${idx + 1}`,
-        description: String(i.description || '').trim(),
-        styleKeywords: Array.isArray(i.style_keywords)
-          ? i.style_keywords.map(String).filter(Boolean)
-          : [],
-      }));
-  } catch {
-    return null;
+// Custom fetch wrapper that resolves the Supabase session token at
+// request time and adds it as Authorization. Same pattern as
+// AICopyPreview.jsx (Phase 2b) and the DefaultChatTransport in
+// CopilotPanel.jsx (Phase 2a).
+async function fetchWithAuth(url, init) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers = new Headers(init?.headers);
+  if (session?.access_token) {
+    headers.set('Authorization', `Bearer ${session.access_token}`);
   }
+  return fetch(url, { ...init, headers });
 }
 
 const PLATFORM_LABEL = { instagram: 'Instagram', linkedin: 'LinkedIn', x: 'X' };
 
 const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }) => {
-  // Phase tracks where we are in the flow.
-  const [phase, setPhase] = useState(defaultOpen ? 'ideas_compose' : 'idle');
+  // Top-level navigation:
+  //   'idle'  — collapsed entry-point card with the launch button
+  //   'ideas' — ideas section (compose / streaming / picking sub-phases
+  //             derived from ideasHook state)
+  //   'prompt'— prompt section (compose / streaming / done sub-phases
+  //             derived from promptHook state)
+  // Note: there's no explicit 'error' section — hook errors render
+  // inline in whichever section is active, with a Retry affordance.
+  const [section, setSection] = useState(defaultOpen ? 'ideas' : 'idle');
+
+  // Composer state for the two textareas. Persisted across section
+  // changes so the admin's typing isn't lost if they navigate back.
   const [brief, setBrief] = useState('');
-  const [ideasRaw, setIdeasRaw] = useState('');
-  const [ideas, setIdeas] = useState([]);
-  const [chosenIdea, setChosenIdea] = useState(null);
   const [details, setDetails] = useState('');
-  const [promptText, setPromptText] = useState('');
-  const [usage, setUsage] = useState(null);
-  const [error, setError] = useState('');
+
+  // The idea the admin picked from the ideas grid. Cleared when they
+  // "← Try another direction" back to the picker, or close the panel.
+  const [chosenIdea, setChosenIdea] = useState(null);
+
+  // Copy-to-clipboard confirmation pill toggle.
   const [copied, setCopied] = useState(false);
-  const abortRef = useRef(null);
+
   const briefRef = useRef(null);
   const detailsRef = useRef(null);
 
-  // Cancel any in-flight stream on unmount.
-  useEffect(() => () => abortRef.current?.abort(), []);
+  // ----- ideas hook -----
+  // experimental_useObject expects the server to stream JSON deltas
+  // that match `schema` (text-stream protocol via pipeTextStreamToResponse
+  // server-side). `object` is DeepPartial<infer<schema>> and updates as
+  // the stream progresses — cards render progressively.
+  const ideasHook = useObject({
+    api: '/api/ai/image',
+    schema: IDEAS_SCHEMA,
+    fetch: fetchWithAuth,
+    onError: (err) => {
+      // eslint-disable-next-line no-console
+      console.error('[AIImagePromptPanel/ideas] error:', err);
+    },
+  });
 
-  // Autofocus the right input when we switch into a compose phase.
+  // ----- prompt hook -----
+  // useCompletion w/ streamProtocol: 'text' — same pattern as Phase 2b
+  // AICopyPreview. Sends `{ prompt, ...body }` where `prompt` is the
+  // admin's "additional details" input.
+  const promptHook = useCompletion({
+    api: '/api/ai/image',
+    streamProtocol: 'text',
+    fetch: fetchWithAuth,
+    onError: (err) => {
+      // eslint-disable-next-line no-console
+      console.error('[AIImagePromptPanel/prompt] error:', err);
+    },
+  });
+
+  // Cancel any in-flight streams on unmount. Capture stops via refs so
+  // the cleanup runs ONLY on unmount and sees the latest controllers.
+  // Same pattern as Phase 2b — useObject/useCompletion's stop closes
+  // over the active AbortController so the initial render's stop is a
+  // no-op.
+  const ideasStopRef = useRef(ideasHook.stop);
+  ideasStopRef.current = ideasHook.stop;
+  const promptStopRef = useRef(promptHook.stop);
+  promptStopRef.current = promptHook.stop;
+  useEffect(() => () => {
+    ideasStopRef.current();
+    promptStopRef.current();
+  }, []);
+
+  // Autofocus the right input when switching into a compose phase.
   useEffect(() => {
-    if (phase === 'ideas_compose') briefRef.current?.focus();
-    if (phase === 'prompt_compose') detailsRef.current?.focus();
-  }, [phase]);
+    if (section === 'ideas' && !ideasHook.isLoading && !hasParsedIdeas()) {
+      briefRef.current?.focus();
+    }
+    if (section === 'prompt' && chosenIdea && !promptHook.isLoading && !promptHook.completion) {
+      detailsRef.current?.focus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, chosenIdea, ideasHook.isLoading, promptHook.isLoading]);
 
   // Reset copy-confirmation pill after 2s.
   useEffect(() => {
@@ -121,177 +169,105 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
     return () => clearTimeout(t);
   }, [copied]);
 
-  const open = () => setPhase('ideas_compose');
+  // Derive the ideas list from useObject's DeepPartial output. Each
+  // entry may have undefined / empty fields while streaming — we
+  // preserve incomplete entries so the UI can show progressive cards.
+  // `hasParsedIdeas` is the gate that decides "show picker vs compose".
+  const ideas = useMemo(() => {
+    const arr = ideasHook.object?.ideas;
+    if (!Array.isArray(arr)) return [];
+    return arr.map((i, idx) => ({
+      id: `idea-${idx}`,
+      title: typeof i?.title === 'string' ? i.title.trim() : '',
+      description: typeof i?.description === 'string' ? i.description.trim() : '',
+      styleKeywords: Array.isArray(i?.style_keywords)
+        ? i.style_keywords.map(String).filter((k) => k.trim())
+        : [],
+    }));
+  }, [ideasHook.object]);
+
+  function hasParsedIdeas() {
+    return ideas.some((i) => i.title && i.description);
+  }
+
+  // ----- navigation handlers -----
+
+  const open = () => setSection('ideas');
+
   const reset = () => {
-    abortRef.current?.abort();
-    setPhase('idle');
+    ideasHook.stop();
+    promptHook.stop();
+    ideasHook.clear();
+    promptHook.setCompletion('');
+    setSection('idle');
     setBrief('');
-    setIdeasRaw('');
-    setIdeas([]);
-    setChosenIdea(null);
     setDetails('');
-    setPromptText('');
-    setUsage(null);
-    setError('');
+    setChosenIdea(null);
   };
 
-  const generateIdeas = useCallback(async () => {
-    setIdeasRaw('');
-    setIdeas([]);
-    setUsage(null);
-    setError('');
-    setPhase('ideas_streaming');
+  const generateIdeas = useCallback(() => {
+    setChosenIdea(null);
+    promptHook.setCompletion('');
+    ideasHook.submit({
+      accountId,
+      plan_id: planId,
+      platform,
+      mode: 'ideas',
+      brief: brief.trim(),
+    });
+  }, [accountId, planId, platform, brief, ideasHook, promptHook]);
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('Not signed in');
-
-      const resp = await fetch('/api/ai/image', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          accountId,
-          plan_id: planId,
-          platform,
-          mode: 'ideas',
-          brief: brief.trim(),
-        }),
-        signal: controller.signal,
-      });
-
-      if (!resp.ok) {
-        const errBody = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-        throw new Error(errBody.error || `HTTP ${resp.status}`);
-      }
-
-      let accum = '';
-      for await (const evt of parseSse(resp)) {
-        if (evt.event === 'text') {
-          accum += evt.data.delta || '';
-          setIdeasRaw(accum);
-        } else if (evt.event === 'usage') {
-          setUsage({
-            input: evt.data.input_tokens,
-            output: evt.data.output_tokens,
-            cacheRead: evt.data.cache_read_input_tokens,
-          });
-        } else if (evt.event === 'error') {
-          setError(evt.data.error || 'Unknown error');
-        }
-      }
-
-      const parsed = parseIdeasJson(accum);
-      if (!parsed || parsed.length === 0) {
-        setError("Couldn't parse the AI's response into idea cards. Try regenerating.");
-        setPhase('error');
-        return;
-      }
-      setIdeas(parsed);
-      setPhase('ideas_picking');
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        setPhase('ideas_compose');
-        return;
-      }
-      setError(err.message || String(err));
-      setPhase('error');
-    } finally {
-      abortRef.current = null;
-    }
-  }, [accountId, planId, platform, brief]);
+  const backToBrief = () => {
+    // "← Different brief" — clear the ideas state and the chosen idea,
+    // keep the brief textarea so admin can refine. The ideas grid
+    // disappears and the brief composer reappears.
+    ideasHook.clear();
+    setChosenIdea(null);
+    promptHook.setCompletion('');
+  };
 
   const pickIdea = (idea) => {
     setChosenIdea(idea);
+    promptHook.setCompletion('');
     setDetails('');
-    setPromptText('');
-    setUsage(null);
-    setError('');
-    setPhase('prompt_compose');
+    setSection('prompt');
   };
 
-  const generatePrompt = useCallback(async () => {
+  const generatePrompt = useCallback(() => {
     if (!chosenIdea) return;
-    setPromptText('');
-    setError('');
-    setUsage(null);
-    setPhase('prompt_streaming');
+    promptHook.complete(details.trim(), {
+      body: {
+        accountId,
+        plan_id: planId,
+        platform,
+        mode: 'prompt',
+        idea_title: chosenIdea.title,
+        idea_description: chosenIdea.description,
+        idea_style_keywords: chosenIdea.styleKeywords,
+      },
+    });
+  }, [accountId, planId, platform, chosenIdea, details, promptHook]);
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('Not signed in');
-
-      const resp = await fetch('/api/ai/image', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          accountId,
-          plan_id: planId,
-          platform,
-          mode: 'prompt',
-          idea_title: chosenIdea.title,
-          idea_description: chosenIdea.description,
-          idea_style_keywords: chosenIdea.styleKeywords,
-          details: details.trim(),
-        }),
-        signal: controller.signal,
-      });
-
-      if (!resp.ok) {
-        const errBody = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-        throw new Error(errBody.error || `HTTP ${resp.status}`);
-      }
-
-      for await (const evt of parseSse(resp)) {
-        if (evt.event === 'text') {
-          setPromptText((prev) => prev + (evt.data.delta || ''));
-        } else if (evt.event === 'usage') {
-          setUsage({
-            input: evt.data.input_tokens,
-            output: evt.data.output_tokens,
-            cacheRead: evt.data.cache_read_input_tokens,
-          });
-        } else if (evt.event === 'error') {
-          setError(evt.data.error || 'Unknown error');
-        }
-      }
-      setPhase((prev) => (prev === 'prompt_streaming' ? 'prompt_done' : prev));
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        setPhase((prev) => prev === 'prompt_streaming' && promptText.trim() ? 'prompt_done' : 'prompt_compose');
-        return;
-      }
-      setError(err.message || String(err));
-      setPhase('error');
-    } finally {
-      abortRef.current = null;
-    }
-  }, [accountId, planId, platform, chosenIdea, details, promptText]);
-
-  const handleStop = () => {
-    abortRef.current?.abort();
+  const backToPicking = () => {
+    // From prompt_compose OR prompt_done. Keep the ideas state intact
+    // so the user can pick a different one without regenerating.
+    promptHook.stop();
+    promptHook.setCompletion('');
+    setChosenIdea(null);
+    setSection('ideas');
   };
 
   const handleCopy = async () => {
-    if (!promptText.trim()) return;
+    const text = promptHook.completion?.trim();
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(promptText.trim());
+      await navigator.clipboard.writeText(text);
       setCopied(true);
     } catch {
-      // Fallback — old-school selection
+      // Old-school selection fallback for browsers that block
+      // clipboard API on insecure / iframe contexts.
       const ta = document.createElement('textarea');
-      ta.value = promptText.trim();
+      ta.value = text;
       document.body.appendChild(ta);
       ta.select();
       try { document.execCommand('copy'); setCopied(true); } catch {}
@@ -301,8 +277,25 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
 
   const platformLabel = PLATFORM_LABEL[platform] || platform;
 
-  // Render — collapsed entry point when idle, full card otherwise.
-  if (phase === 'idle') {
+  // ----- derived UI sub-phase -----
+  // The render path is determined by section + hook state. Kept in
+  // local vars (not state) so it can never drift out of sync with the
+  // hooks' isLoading / completion / error.
+  let subPhase = 'compose';
+  if (section === 'ideas') {
+    if (ideasHook.error) subPhase = 'error';
+    else if (ideasHook.isLoading && !hasParsedIdeas()) subPhase = 'streaming';
+    else if (hasParsedIdeas()) subPhase = 'picking';
+    else subPhase = 'compose';
+  } else if (section === 'prompt') {
+    if (promptHook.error) subPhase = 'error';
+    else if (promptHook.isLoading) subPhase = 'streaming';
+    else if (promptHook.completion) subPhase = 'done';
+    else subPhase = 'compose';
+  }
+
+  // ----- collapsed idle state -----
+  if (section === 'idle') {
     return (
       <div className="card ai-image-card-collapsed" style={{ marginBottom: 16 }}>
         <div className="card-head">
@@ -325,6 +318,27 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
     );
   }
 
+  // ----- full expanded card -----
+  const cardSub = (() => {
+    if (section === 'ideas') {
+      if (subPhase === 'compose') return `Tell us roughly what you have in mind — or just hit Generate to see ${platformLabel} directions from the brand voice + concept.`;
+      if (subPhase === 'streaming') return 'Generating directions…';
+      if (subPhase === 'picking') return ideasHook.isLoading
+        ? 'Picking up directions as they stream in — wait for them to finish, then choose one.'
+        : 'Pick a direction to expand into a detailed prompt.';
+      if (subPhase === 'error') return 'Something went wrong generating ideas.';
+    }
+    if (section === 'prompt') {
+      if (subPhase === 'compose') return 'Add any extra details, or hit Generate to write the prompt from the chosen direction.';
+      if (subPhase === 'streaming') return 'Writing the detailed prompt…';
+      if (subPhase === 'done') return 'Detailed prompt ready — copy it into your image tool.';
+      if (subPhase === 'error') return 'Something went wrong generating the prompt.';
+    }
+    return '';
+  })();
+
+  const activeError = section === 'ideas' ? ideasHook.error : promptHook.error;
+
   return (
     <div className="card ai-image-card" style={{ marginBottom: 16 }}>
       <div className="card-head">
@@ -333,22 +347,9 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
             <span aria-hidden style={{ marginRight: 6 }}>✨</span>
             AI image prompts
           </div>
-          <div className="card-sub">
-            {phase === 'ideas_compose' && `Tell us roughly what you have in mind — or just hit Generate to see ${platformLabel} directions from the brand voice + concept.`}
-            {phase === 'ideas_streaming' && 'Generating directions…'}
-            {phase === 'ideas_picking' && 'Pick a direction to expand into a detailed prompt.'}
-            {phase === 'prompt_compose' && 'Add any extra details, or hit Generate to write the prompt from the chosen direction.'}
-            {phase === 'prompt_streaming' && 'Writing the detailed prompt…'}
-            {phase === 'prompt_done' && 'Detailed prompt ready — copy it into your image tool.'}
-            {phase === 'error' && 'Something went wrong.'}
-          </div>
+          <div className="card-sub">{cardSub}</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {usage && (
-            <span className="ai-image-meta" title="input / output tokens">
-              {usage.input ?? 0} in {usage.cacheRead ? `(${usage.cacheRead} cached)` : ''} · {usage.output ?? 0} out
-            </span>
-          )}
           <button
             type="button"
             className="btn btn-sm btn-ghost"
@@ -361,8 +362,8 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
       </div>
 
       <div style={{ padding: '0 16px 16px' }}>
-        {/* IDEAS COMPOSE */}
-        {phase === 'ideas_compose' && (
+        {/* IDEAS — COMPOSE */}
+        {section === 'ideas' && subPhase === 'compose' && (
           <div className="ai-image-section">
             <label className="ai-image-label">Optional brief</label>
             <textarea
@@ -387,8 +388,8 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
           </div>
         )}
 
-        {/* IDEAS STREAMING */}
-        {phase === 'ideas_streaming' && (
+        {/* IDEAS — STREAMING (no cards parsed yet) */}
+        {section === 'ideas' && subPhase === 'streaming' && (
           <div className="ai-image-section">
             <div className="ai-image-streaming-row">
               <span className="copilot-dot"/>
@@ -400,60 +401,76 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
             </div>
             <div className="ai-image-actions">
               <span style={{ flex: 1 }}/>
-              <button type="button" className="btn btn-sm btn-ghost" onClick={handleStop}>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={ideasHook.stop}>
                 Stop
               </button>
             </div>
           </div>
         )}
 
-        {/* IDEAS PICKING */}
-        {phase === 'ideas_picking' && (
+        {/* IDEAS — PICKING (cards present; may still be streaming additional ones) */}
+        {section === 'ideas' && subPhase === 'picking' && (
           <div className="ai-image-section">
             <div className="ai-image-ideas-grid">
-              {ideas.map((idea) => (
-                <button
-                  key={idea.id}
-                  type="button"
-                  className="ai-image-idea-card"
-                  onClick={() => pickIdea(idea)}
-                >
-                  <div className="ai-image-idea-title">{idea.title}</div>
-                  <div className="ai-image-idea-desc">{idea.description}</div>
-                  {idea.styleKeywords.length > 0 && (
-                    <div className="ai-image-idea-keywords">
-                      {idea.styleKeywords.map((k, i) => (
-                        <span key={i} className="ai-image-idea-keyword">{k}</span>
-                      ))}
+              {ideas.map((idea) => {
+                const isComplete = idea.title && idea.description;
+                return (
+                  <button
+                    key={idea.id}
+                    type="button"
+                    className="ai-image-idea-card"
+                    onClick={() => isComplete && pickIdea(idea)}
+                    disabled={!isComplete || ideasHook.isLoading}
+                    title={isComplete ? undefined : 'Still streaming…'}
+                  >
+                    <div className="ai-image-idea-title">
+                      {idea.title || <span style={{ opacity: 0.4 }}>…</span>}
                     </div>
-                  )}
-                  <div className="ai-image-idea-cta">Use this direction →</div>
-                </button>
-              ))}
+                    <div className="ai-image-idea-desc">
+                      {idea.description || <span style={{ opacity: 0.4 }}>generating…</span>}
+                    </div>
+                    {idea.styleKeywords.length > 0 && (
+                      <div className="ai-image-idea-keywords">
+                        {idea.styleKeywords.map((k, i) => (
+                          <span key={i} className="ai-image-idea-keyword">{k}</span>
+                        ))}
+                      </div>
+                    )}
+                    {isComplete && <div className="ai-image-idea-cta">Use this direction →</div>}
+                  </button>
+                );
+              })}
             </div>
             <div className="ai-image-actions">
               <button
                 type="button"
                 className="btn btn-sm btn-ghost"
-                onClick={() => setPhase('ideas_compose')}
+                onClick={backToBrief}
+                disabled={ideasHook.isLoading}
               >
                 ← Different brief
               </button>
               <span style={{ flex: 1 }}/>
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost"
-                onClick={generateIdeas}
-                title="Get 3-5 fresh directions with the same brief"
-              >
-                Regenerate ideas
-              </button>
+              {ideasHook.isLoading ? (
+                <button type="button" className="btn btn-sm btn-ghost" onClick={ideasHook.stop}>
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={generateIdeas}
+                  title="Get 3-5 fresh directions with the same brief"
+                >
+                  Regenerate ideas
+                </button>
+              )}
             </div>
           </div>
         )}
 
-        {/* PROMPT COMPOSE */}
-        {phase === 'prompt_compose' && chosenIdea && (
+        {/* PROMPT — COMPOSE */}
+        {section === 'prompt' && subPhase === 'compose' && chosenIdea && (
           <div className="ai-image-section">
             <div className="ai-image-chosen">
               <div className="ai-image-chosen-label">Chosen direction</div>
@@ -482,7 +499,7 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
               <button
                 type="button"
                 className="btn btn-sm btn-ghost"
-                onClick={() => setPhase('ideas_picking')}
+                onClick={backToPicking}
               >
                 ← Pick a different direction
               </button>
@@ -499,8 +516,8 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
           </div>
         )}
 
-        {/* PROMPT STREAMING */}
-        {phase === 'prompt_streaming' && (
+        {/* PROMPT — STREAMING */}
+        {section === 'prompt' && subPhase === 'streaming' && (
           <div className="ai-image-section">
             {chosenIdea && (
               <div className="ai-image-chosen ai-image-chosen-compact">
@@ -509,7 +526,7 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
               </div>
             )}
             <div className="ai-image-prompt-box">
-              {promptText ? <pre>{promptText}</pre> : (
+              {promptHook.completion ? <pre>{promptHook.completion}</pre> : (
                 <div className="ai-image-streaming-row">
                   <span className="copilot-dot"/>
                   <span className="copilot-dot"/>
@@ -519,15 +536,15 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
             </div>
             <div className="ai-image-actions">
               <span style={{ flex: 1 }}/>
-              <button type="button" className="btn btn-sm btn-ghost" onClick={handleStop}>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={promptHook.stop}>
                 Stop
               </button>
             </div>
           </div>
         )}
 
-        {/* PROMPT DONE */}
-        {phase === 'prompt_done' && (
+        {/* PROMPT — DONE */}
+        {section === 'prompt' && subPhase === 'done' && (
           <div className="ai-image-section">
             {chosenIdea && (
               <div className="ai-image-chosen ai-image-chosen-compact">
@@ -536,13 +553,13 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
               </div>
             )}
             <div className="ai-image-prompt-box">
-              <pre>{promptText}</pre>
+              <pre>{promptHook.completion}</pre>
             </div>
             <div className="ai-image-actions">
               <button
                 type="button"
                 className="btn btn-sm btn-ghost"
-                onClick={() => setPhase('ideas_picking')}
+                onClick={backToPicking}
               >
                 ← Try another direction
               </button>
@@ -570,17 +587,33 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
           </div>
         )}
 
-        {/* ERROR */}
-        {phase === 'error' && (
+        {/* ERROR (inline; section determines the Retry path) */}
+        {subPhase === 'error' && (
           <div className="ai-image-section">
             <div className="ai-image-error">
-              <Icon name="alert" size={12}/> {error}
+              <Icon name="alert" size={12}/> {activeError?.message || String(activeError)}
             </div>
             <div className="ai-image-actions">
               <span style={{ flex: 1 }}/>
-              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPhase('ideas_compose')}>
-                Back to start
-              </button>
+              {section === 'ideas' ? (
+                <>
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={backToBrief}>
+                    Back to brief
+                  </button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={generateIdeas}>
+                    Retry
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={backToPicking}>
+                    Pick a different direction
+                  </button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={generatePrompt}>
+                    Retry
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}
