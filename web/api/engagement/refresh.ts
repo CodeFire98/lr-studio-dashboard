@@ -299,36 +299,44 @@ async function scrapeInstagram(liveUrl: string): Promise<{
 
 const LINKEDIN_ACTOR_ID = "supreme_coder/linkedin-post";
 
+// Schema confirmed via scripts/inspect-linkedin-actor.mjs run against
+// a real public post on 2026-05-12. Top-level keys are flat — author
+// info lives in 4 sibling fields (authorName / authorProfileId /
+// authorProfilePicture / authorProfileUrl), and there's an absolute
+// post timestamp via postedAtISO (so we can finally populate posted_at
+// instead of leaving it null as PR 6 originally did).
 type SupremeCoderLinkedInItem = {
   type?: string;                     // 'image' | 'video' | 'text' | 'document'
   images?: string[];                 // media.licdn.com URLs
   isActivity?: boolean;
   urn?: string;
   url?: string;
-  timeSincePosted?: string;          // "3 weeks ago" (no absolute ts)
+  timeSincePosted?: string;          // "1w" — relative; we prefer postedAtISO
   text?: string;
   numLikes?: number;
   numComments?: number;
   numShares?: number;
   reactions?: unknown;               // array of reactor objects, not a count
   comments?: unknown;                // array of comment objects, not a count
-  // Author info — supreme_coder returns it under `rootShare.actor`
-  // for re-shares, OR top-level `actor` for original posts. We try
-  // both paths in the normalizer; if neither exists we leave the
-  // author fields null and the tile renders the post anonymously.
-  actor?: { name?: string; vanityName?: string; profileUrl?: string; picture?: string };
-  rootShare?: { actor?: { name?: string; vanityName?: string; profileUrl?: string; picture?: string } };
-  // Catch-all for other shapes — log into raw_payload for debug.
-  [k: string]: unknown;
+  // Author fields — confirmed via real-data inspection. Flat top-level
+  // sibling fields, not nested. The `author` object also exists with
+  // firstName/lastName/publicId/picture but the flat fields are simpler
+  // and authoritative; we read those.
+  authorName?: string;               // "Shruti Mishra"
+  authorProfileId?: string;          // "theshrutimishra" (vanity handle)
+  authorProfilePicture?: string;     // media.licdn.com avatar URL
+  authorProfileUrl?: string;         // full linkedin.com/in/... URL
+  authorType?: string;               // "person" | "company"
+  authorUrn?: string;
+  postedAtISO?: string;              // ISO 8601 absolute post timestamp
+  postedAtTimestamp?: number;        // epoch ms fallback if ISO is absent
 };
 
 function extractLinkedInAuthor(item: SupremeCoderLinkedInItem) {
-  const a = item.actor || item.rootShare?.actor || null;
-  if (!a) return { handle: null, name: null, avatar: null };
   return {
-    handle: a.vanityName || null,
-    name: a.name || null,
-    avatar: a.picture || null,
+    handle: item.authorProfileId ?? null,
+    name: item.authorName ?? null,
+    avatar: item.authorProfilePicture ?? null,
   };
 }
 
@@ -434,7 +442,13 @@ async function scrapeLinkedIn(liveUrl: string): Promise<{
     media_url: images[0] ?? null,
     media_urls: images.length > 1 ? images : null,
     media_aspect_ratio: null,    // not in this actor's output
-    posted_at: null,             // `timeSincePosted` is a relative string, not parseable
+    // Prefer the ISO field; fall back to epoch-ms → ISO conversion;
+    // give up on the relative string ("1w") which we can't reverse.
+    posted_at:
+      item.postedAtISO ??
+      (typeof item.postedAtTimestamp === "number"
+        ? new Date(item.postedAtTimestamp).toISOString()
+        : null),
   };
 
   // "Partial" same definition as IG — counts present but the visible
