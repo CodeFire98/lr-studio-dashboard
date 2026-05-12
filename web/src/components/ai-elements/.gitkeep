@@ -1,1 +1,0 @@
-Placeholder so Tailwind's content glob has a directory to scan during Phase 0. Real AI Elements components land in Phase 2 via `npx ai-elements@latest add <name>` and replace this file.

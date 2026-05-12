@@ -2,74 +2,56 @@
 // CopilotPanel.jsx — Agency-side AI Co-pilot sidebar drawer
 // =====================================================================
 //
-// Right-edge slide-in panel for chatting with the AI Co-pilot. Triggered
-// from the topbar "✨ Co-pilot" button (App.jsx) when:
-//   - The user is agency staff
-//   - A brand is selected in BrandPicker (not All-clients mode)
-//   - The active brand is in VITE_AI_COPILOT_BRAND_IDS allowlist
+// AI Co-pilot v2 Phase 2a: rewritten around `useChat` from @ai-sdk/react +
+// selected AI Elements components (Conversation, Message, MessageResponse).
+// The custom SSE parser, manual message state, and abort logic from v1
+// are all replaced by useChat. Wire protocol on /api/ai/chat is now the
+// AI SDK's native UIMessage stream — see web/api/ai/chat.ts for the
+// server-side change that ships in the same PR.
 //
-// All chat state lives here — message history is in-memory, reset when
-// the panel unmounts (or the brand changes). No persistence in PR 2;
-// that's a follow-up if anyone asks.
+// Visual identity: panel chrome (header, footer with textarea/send) stays
+// on the hand-written `.copilot-*` CSS so it integrates with the rest of
+// the dashboard. The message-rendering area inside the scroll is wrapped
+// in `<div className="ai-elements">` so the shadcn-themed AI Elements
+// components pick up their CSS-variable tokens (scoped block lives in
+// web/src/styles/elements.css).
 //
-// Streaming: hits /api/ai/chat with the user's JWT, reads the SSE event
-// stream, dispatches to the right renderer (text deltas, tool_call cards,
-// tool_result cards, usage stats).
+// Persistence: messages persist to localStorage keyed by (userId, accountId)
+// under a v2 key (`lr_copilot_conv_v2_*`). v1 entries under the old key
+// are orphaned — admin starts fresh on first open after deploy. By design;
+// v1 message shape was incompatible with the new UIMessage `parts` model.
 //
-// Tools available in PR 2:
-//   - create_post_plan_draft — Co-pilot writes a real post_plans row
-//     with status='drafting', ai_generated=true. We render a card with
-//     an "Open plan" button that navigates the user there.
+// Triggered from App.jsx topbar "✨ Co-pilot" button. Visibility gated by:
+//   - User is agency staff
+//   - A brand is selected (not All-clients mode)
+//   - The brand is in VITE_AI_COPILOT_BRAND_IDS allowlist
+//
+// Tools rendered: create_post_plan_draft (with "Open plan →" navigation
+// CTA when the tool succeeds), write_brand_note. Both surfaced via the
+// UIMessage parts model — each tool call appears as a `tool-{name}` part
+// with `state` cycling through input-streaming → input-available →
+// output-available (or output-error).
 // =====================================================================
 
 /* eslint-disable */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Icon } from './Icon.jsx';
-import { supabase } from '../lib/supabase.js';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import { Icon } from "./Icon.jsx";
+import { supabase } from "../lib/supabase.js";
+// AI Elements' `Conversation` was intentionally dropped from Phase 2a —
+// its stick-to-bottom scroll behaviour conflicts with the existing
+// `.copilot-scroll` overflow logic. We keep manual auto-scroll via a
+// scrollRef + useEffect (same pattern as v1). Reconsider in Phase 3
+// if there's a stick-to-bottom UX win that justifies the layout rework.
+import { MessageResponse } from "@/components/ai-elements/message";
 
-// SSE-style event-stream reader. Vercel buffers serverless function
-// responses by default, so we set X-Accel-Buffering: no on the server.
-// Events arrive as:
-//   event: <type>\n
-//   data: <json>\n
-//   \n
-async function* parseSse(response) {
-  if (!response.body) return;
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let sep;
-    while ((sep = buffer.indexOf('\n\n')) !== -1) {
-      const chunk = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      let event = 'message';
-      let data = '';
-      for (const line of chunk.split('\n')) {
-        if (line.startsWith(':')) continue;
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) data += line.slice(5).trim();
-      }
-      if (!data) continue;
-      let parsed;
-      try { parsed = JSON.parse(data); }
-      catch { continue; }
-      yield { event, data: parsed };
-    }
-  }
-}
-
-// Conversations are persisted to localStorage so closing the panel — or
-// switching brands and switching back — doesn't lose history. Keyed by
-// (userId, accountId) so different agency staff on the same browser get
-// their own threads, and each brand has its own conversation context.
-// Capped at MAX_PERSISTED_MESSAGES to keep localStorage from growing
-// unboundedly; oldest user-message-and-response pairs drop off first.
+// localStorage key is v2-prefixed so v1 conversations (incompatible message
+// shape) don't crash on load. v1 entries become orphaned and the first
+// chat session after this deploy starts fresh — acceptable tradeoff per
+// AI_COPILOT_V2_MIGRATION.md.
 const MAX_PERSISTED_MESSAGES = 60;
-const storageKey = (userId, accountId) => `lr_copilot_conv_${userId}_${accountId}`;
+const storageKey = (userId, accountId) => `lr_copilot_conv_v2_${userId}_${accountId}`;
 
 function loadPersistedMessages(userId, accountId) {
   if (!userId || !accountId) return [];
@@ -91,62 +73,100 @@ function persistMessages(userId, accountId, messages) {
       : messages;
     localStorage.setItem(storageKey(userId, accountId), JSON.stringify(trimmed));
   } catch {
-    // localStorage full / unavailable — drop the persistence silently.
-    // Chat still works in-memory; only the cross-session continuity breaks.
+    // localStorage full / unavailable — silent drop. Chat still works in-memory.
   }
 }
 
-const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan, brandSlug }) => {
-  // Each message: { id, role, content, parts? }
-  //   role: 'user' | 'assistant' | 'system'
-  //   content: text for user; for assistant, the streamed text so far
-  //   parts: array of { type: 'tool_call' | 'tool_result', ... } interleaved with text
-  const [messages, setMessages] = useState(() => loadPersistedMessages(userId, accountId));
-  const [draft, setDraft] = useState('');
-  const [streaming, setStreaming] = useState(false);
-  const [error, setError] = useState('');
-  const [usage, setUsage] = useState(null); // { input, output, cacheRead, cacheWrite }
-  const scrollRef = useRef(null);
-  const textareaRef = useRef(null);
-  const abortRef = useRef(null);
+const EMPTY_SUGGESTIONS = [
+  "Draft an Instagram post about our newest product for next Tuesday at 10am",
+  "Plan three posts for next week across IG and LinkedIn",
+  "Brainstorm a campaign concept for the holiday season",
+];
 
-  // Auto-scroll to bottom on new content.
+const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan, brandSlug }) => {
+  // DefaultChatTransport handles auth header injection per request and
+  // appends accountId to the request body. Memoized on accountId so brand
+  // switches rebuild the transport (otherwise it closes over stale value).
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport({
+        api: "/api/ai/chat",
+        headers: async () => {
+          const { data: { session } } = await supabase.auth.getSession();
+          return session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {};
+        },
+        body: () => ({ accountId }),
+      }),
+    [accountId],
+  );
+
+  const {
+    messages,
+    sendMessage,
+    status,
+    error,
+    stop,
+    setMessages,
+  } = useChat({
+    transport,
+    onError: (err) => {
+      // useChat surfaces the error via the `error` state already; log
+      // for debugging without spamming the user.
+      // eslint-disable-next-line no-console
+      console.error("[Copilot] stream error:", err);
+    },
+  });
+
+  const [draft, setDraft] = useState("");
+  const textareaRef = useRef(null);
+  const scrollRef = useRef(null);
+
+  const isBusy = status === "streaming" || status === "submitted";
+
+  // Auto-scroll to bottom when messages or streaming state change.
+  // Same pattern as v1; simpler than the AI Elements Conversation
+  // stick-to-bottom approach, integrates cleanly with .copilot-scroll's
+  // overflow-y: auto.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, streaming]);
+  }, [messages, isBusy]);
 
-  // When the brand changes, swap to that brand's persisted conversation.
-  // (User changes are rare — same user keeps their threads — but we key on
-  // both so multi-staff sessions on the same browser stay separate.)
+  // Hydrate from localStorage on mount and whenever (userId, accountId)
+  // change — switching brands swaps to that brand's persisted thread.
   useEffect(() => {
-    setMessages(loadPersistedMessages(userId, accountId));
-    setError('');
-    setUsage(null);
-  }, [accountId, userId]);
+    const persisted = loadPersistedMessages(userId, accountId);
+    setMessages(persisted);
+  }, [userId, accountId, setMessages]);
 
-  // Persist on every message change. Trimmed in persistMessages.
+  // Persist on every messages-array change. Trimmed in persistMessages.
   useEffect(() => {
     persistMessages(userId, accountId, messages);
   }, [userId, accountId, messages]);
 
-  // Cancel in-flight request on unmount.
-  useEffect(() => () => abortRef.current?.abort(), []);
+  const handleSend = () => {
+    const text = draft.trim();
+    if (!text || isBusy) return;
+    setDraft("");
+    sendMessage({ text });
+  };
 
-  // "Start new" — clear the current brand's conversation. Confirms first
-  // since this is destructive (no undo).
-  const startNew = () => {
-    if (streaming) {
-      abortRef.current?.abort();
-      setStreaming(false);
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handleSend();
     }
-    if (messages.length > 0 && !window.confirm('Start a new conversation? The current one will be cleared.')) {
+  };
+
+  const startNew = () => {
+    if (isBusy) stop();
+    if (messages.length > 0 && !window.confirm("Start a new conversation? The current one will be cleared.")) {
       return;
     }
     setMessages([]);
-    setError('');
-    setUsage(null);
     try {
       localStorage.removeItem(storageKey(userId, accountId));
     } catch {
@@ -154,112 +174,17 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
     }
   };
 
-  const sendMessage = useCallback(async () => {
-    const text = draft.trim();
-    if (!text || streaming) return;
-
-    setDraft('');
-    setError('');
-    const userMsg = { id: `u-${Date.now()}`, role: 'user', content: text, parts: [] };
-    const assistantMsg = { id: `a-${Date.now()}`, role: 'assistant', content: '', parts: [] };
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
-    setStreaming(true);
-
-    // Build the payload — entire history except the empty placeholder we just pushed.
-    const history = [...messages, userMsg].map((m) => ({ role: m.role, content: m.content }));
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('Not signed in');
-
-      const resp = await fetch('/api/ai/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ accountId, messages: history }),
-        signal: controller.signal,
-      });
-
-      if (!resp.ok) {
-        const errBody = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-        throw new Error(errBody.error || `HTTP ${resp.status}`);
-      }
-
-      for await (const evt of parseSse(resp)) {
-        if (evt.event === 'text') {
-          setMessages((prev) => prev.map((m) =>
-            m.id === assistantMsg.id
-              ? { ...m, content: m.content + (evt.data.delta || '') }
-              : m
-          ));
-        } else if (evt.event === 'tool_call') {
-          setMessages((prev) => prev.map((m) =>
-            m.id === assistantMsg.id
-              ? {
-                  ...m,
-                  parts: [...m.parts, {
-                    type: 'tool_call',
-                    id: evt.data.id,
-                    name: evt.data.name,
-                    input: evt.data.input,
-                    status: 'running',
-                  }],
-                  // Pin position by inserting a text snapshot marker — tool cards render after the current text.
-                  contentAtToolCall: (m.contentAtToolCall || []).concat([{ id: evt.data.id, length: m.content.length }]),
-                }
-              : m
-          ));
-        } else if (evt.event === 'tool_result') {
-          setMessages((prev) => prev.map((m) =>
-            m.id === assistantMsg.id
-              ? {
-                  ...m,
-                  parts: m.parts.map((p) =>
-                    p.id === evt.data.id
-                      ? { ...p, type: 'tool_result', status: evt.data.ok ? 'ok' : 'error', result: evt.data.result, error: evt.data.error }
-                      : p
-                  ),
-                }
-              : m
-          ));
-        } else if (evt.event === 'usage') {
-          setUsage({
-            input: evt.data.input_tokens,
-            output: evt.data.output_tokens,
-            cacheRead: evt.data.cache_read_input_tokens,
-            cacheWrite: evt.data.cache_creation_input_tokens,
-          });
-        } else if (evt.event === 'error') {
-          setError(evt.data.error || 'Unknown error');
-        } else if (evt.event === 'done') {
-          // Just close the stream.
-        }
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') return;
-      setError(err.message || String(err));
-    } finally {
-      setStreaming(false);
-      abortRef.current = null;
+  // The token-usage meter reads from the LAST assistant message's metadata.
+  // The server attaches usage in messageMetadata on the `finish` event —
+  // see web/api/ai/chat.ts. Older messages have stale usage relative to
+  // the cumulative conversation, so we surface the most recent one.
+  const lastUsage = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role === "assistant" && m.metadata?.usage) return m.metadata.usage;
     }
-  }, [draft, streaming, accountId, messages]);
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
-
-  const cancel = () => {
-    abortRef.current?.abort();
-    setStreaming(false);
-  };
+    return null;
+  }, [messages]);
 
   return (
     <div className="copilot-panel" role="dialog" aria-label="AI Co-pilot">
@@ -269,7 +194,7 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
             <span className="copilot-spark" aria-hidden>✨</span>
             <span>Co-pilot</span>
           </h4>
-          <div className="copilot-sub">{brandName || 'Brand'}</div>
+          <div className="copilot-sub">{brandName || "Brand"}</div>
         </div>
         <div className="copilot-header-actions">
           {messages.length > 0 && (
@@ -287,21 +212,20 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
         </div>
       </header>
 
-      <div className="copilot-scroll" ref={scrollRef}>
+      <div className="copilot-scroll ai-elements" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="copilot-welcome">
-            <p>Hi! I'm your Co-pilot for <strong>{brandName || 'this brand'}</strong>.</p>
+            <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
             <p>Ask me to draft a post, plan next week's content, or brainstorm a campaign — I'll create real drafts in the Social Calendar that you can edit and submit.</p>
             <div className="copilot-suggestions">
-              {[
-                'Draft an Instagram post about our newest product for next Tuesday at 10am',
-                'Plan three posts for next week across IG and LinkedIn',
-                'Brainstorm a campaign concept for the holiday season',
-              ].map((s, i) => (
+              {EMPTY_SUGGESTIONS.map((s, i) => (
                 <button
                   key={i}
                   className="copilot-suggestion"
-                  onClick={() => { setDraft(s); textareaRef.current?.focus(); }}
+                  onClick={() => {
+                    setDraft(s);
+                    textareaRef.current?.focus();
+                  }}
                 >
                   {s}
                 </button>
@@ -312,20 +236,11 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
 
         {messages.map((m) => (
           <div key={m.id} className={`copilot-msg copilot-msg-${m.role}`}>
-            {m.role === 'user' ? (
-              <div className="copilot-bubble">{m.content}</div>
-            ) : (
-              <>
-                {m.content && <div className="copilot-prose">{renderProse(m.content)}</div>}
-                {m.parts.map((p) => (
-                  <ToolCard key={p.id} part={p} onNavigateToPlan={onNavigateToPlan} brandSlug={brandSlug} />
-                ))}
-              </>
-            )}
+            {m.parts.map((part, idx) => renderPart(part, idx, m.id, m.role, { onNavigateToPlan, brandSlug }))}
           </div>
         ))}
 
-        {streaming && messages.length > 0 && (
+        {isBusy && messages.length > 0 && (
           <div className="copilot-typing">
             <span className="copilot-dot" />
             <span className="copilot-dot" />
@@ -335,7 +250,7 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
 
         {error && (
           <div className="copilot-error">
-            <Icon name="alert" size={12} /> {error}
+            <Icon name="alert" size={12} /> {error.message || String(error)}
           </div>
         )}
       </div>
@@ -346,24 +261,24 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={streaming ? 'Generating…' : 'Message the Co-pilot…  (⌘↩ to send)'}
-          disabled={streaming}
+          placeholder={isBusy ? "Generating…" : "Message the Co-pilot…  (⌘↩ to send)"}
+          disabled={isBusy}
           rows={2}
         />
         <div className="copilot-input-row">
           <div className="copilot-meta">
-            {usage && (
+            {lastUsage && (
               <span title="input / output tokens (cache reads in parens)">
-                {usage.input ?? 0} in {usage.cacheRead ? `(${usage.cacheRead} cached)` : ''} · {usage.output ?? 0} out
+                {lastUsage.input_tokens ?? 0} in {lastUsage.cache_read_input_tokens ? `(${lastUsage.cache_read_input_tokens} cached)` : ""} · {lastUsage.output_tokens ?? 0} out
               </span>
             )}
           </div>
-          {streaming ? (
-            <button className="copilot-send copilot-cancel" onClick={cancel}>Stop</button>
+          {isBusy ? (
+            <button className="copilot-send copilot-cancel" onClick={stop}>Stop</button>
           ) : (
             <button
               className="copilot-send"
-              onClick={sendMessage}
+              onClick={handleSend}
               disabled={!draft.trim()}
             >
               Send
@@ -375,88 +290,125 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
   );
 };
 
-// Render assistant prose with minimal markdown — paragraphs + bold + inline code.
-// Deliberately conservative; we don't want a full markdown engine for this panel.
-function renderProse(text) {
-  const parts = text.split(/\n\n+/);
-  return parts.map((p, i) => (
-    <p key={i}>{inlineMd(p)}</p>
-  ));
-}
-
-function inlineMd(text) {
-  // Split on **bold** and `code` while preserving order.
-  const out = [];
-  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
-  let last = 0;
-  let m;
-  let key = 0;
-  while ((m = re.exec(text))) {
-    if (m.index > last) out.push(text.slice(last, m.index));
-    const token = m[0];
-    if (token.startsWith('**')) {
-      out.push(<strong key={`b-${key++}`}>{token.slice(2, -2)}</strong>);
-    } else {
-      out.push(<code key={`c-${key++}`}>{token.slice(1, -1)}</code>);
+// renderPart — dispatches a UIMessage `parts[]` entry to the right component.
+//
+// User messages keep v1's coral-on-white `.copilot-bubble` styling so they
+// integrate with the rest of the dashboard's coral palette. Assistant text
+// uses AI Elements MessageResponse (Streamdown-backed markdown — proper
+// support for headers, lists, code blocks, etc., something v1's tiny
+// inline-md parser couldn't do). Both render inside the `.ai-elements`
+// wrapper so the Conversation's stick-to-bottom + scroll behaviour works.
+//
+// Tool parts use our custom ToolCard which preserves v1's visual identity
+// (concept + platforms pills for create_post_plan_draft, note body for
+// write_brand_note, "Open plan →" CTA when applicable).
+function renderPart(part, idx, messageId, role, ctx) {
+  if (part.type === "text") {
+    if (role === "user") {
+      return <div key={`${messageId}-t${idx}`} className="copilot-bubble">{part.text}</div>;
     }
-    last = re.lastIndex;
+    return (
+      <div key={`${messageId}-t${idx}`} className="copilot-prose">
+        <MessageResponse>{part.text}</MessageResponse>
+      </div>
+    );
   }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
+  if (part.type === "step-start" || part.type === "step-end") {
+    return null; // SDK-internal step markers; we don't render these.
+  }
+  if (typeof part.type === "string" && part.type.startsWith("tool-")) {
+    const toolName = part.type.slice("tool-".length);
+    return (
+      <ToolCard
+        key={`${messageId}-${part.toolCallId || idx}`}
+        toolName={toolName}
+        state={part.state}
+        input={part.input}
+        output={part.output}
+        errorText={part.errorText}
+        onNavigateToPlan={ctx.onNavigateToPlan}
+        brandSlug={ctx.brandSlug}
+      />
+    );
+  }
+  return null;
 }
 
-const ToolCard = ({ part, onNavigateToPlan, brandSlug }) => {
-  const isPlan = part.name === 'create_post_plan_draft';
-  const isNote = part.name === 'write_brand_note';
-  const planId = isPlan && part.status === 'ok' ? part.result?.id : null;
+// ToolCard — preserves v1's visual identity (compact, headline + minimal
+// body, "Open plan →" CTA when the tool succeeded). Reads from the AI
+// SDK's UIMessage tool-part shape: `state` cycles through
+// 'input-streaming' → 'input-available' → 'output-available' | 'output-error'.
+// We treat 'input-streaming' / 'input-available' as "running" visually.
+function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan, brandSlug }) {
+  const isPlan = toolName === "create_post_plan_draft";
+  const isNote = toolName === "write_brand_note";
+
+  const isRunning = state === "input-streaming" || state === "input-available";
+  const isOk = state === "output-available";
+  const isError = state === "output-error" || state === "output-denied";
+
+  // Our v1 tool implementations return { ok: true, result } / { ok: false, error }
+  // as the execute() return value, which the SDK wraps as `output`. Unwrap
+  // for display.
+  const inner = output && typeof output === "object" && "ok" in output ? output : null;
+  const ok = inner ? inner.ok : isOk;
+  const result = inner && inner.ok ? inner.result : null;
+  const innerError = inner && !inner.ok ? inner.error : null;
+  const displayError = innerError || errorText;
+
+  const planId = isPlan && ok && result?.id ? result.id : null;
+
+  let statusKey = "running";
+  if (isError || !ok && inner) statusKey = "error";
+  else if (isOk) statusKey = "ok";
 
   let headline;
-  if (part.status === 'running') {
+  if (statusKey === "running") {
     headline = isPlan
-      ? 'Drafting a post plan…'
+      ? "Drafting a post plan…"
       : isNote
-        ? 'Saving a brand note…'
-        : `Running ${part.name}…`;
-  } else if (part.status === 'ok') {
+        ? "Saving a brand note…"
+        : `Running ${toolName}…`;
+  } else if (statusKey === "ok") {
     headline = isPlan
-      ? 'Created an AI draft plan'
+      ? "Created an AI draft plan"
       : isNote
-        ? (part.input?.is_pinned ? 'Saved a pinned brand note' : 'Saved a brand note')
-        : `Ran ${part.name}`;
+        ? (input?.is_pinned ? "Saved a pinned brand note" : "Saved a brand note")
+        : `Ran ${toolName}`;
   } else {
-    headline = `${part.name} failed`;
+    headline = `${toolName} failed`;
   }
 
   return (
-    <div className={`copilot-tool copilot-tool-${part.status}`}>
+    <div className={`copilot-tool copilot-tool-${statusKey}`}>
       <div className="copilot-tool-head">
-        <Icon name={part.status === 'running' ? 'sparkles' : part.status === 'ok' ? 'check' : 'alert'} size={12} />
+        <Icon name={statusKey === "running" ? "sparkles" : statusKey === "ok" ? "check" : "alert"} size={12} />
         <span>{headline}</span>
       </div>
-      {isPlan && part.input?.concept && (
+      {isPlan && input?.concept && (
         <div className="copilot-tool-body">
-          <div className="copilot-tool-concept">{part.input.concept}</div>
-          {Array.isArray(part.input.platforms) && (
+          <div className="copilot-tool-concept">{input.concept}</div>
+          {Array.isArray(input.platforms) && (
             <div className="copilot-tool-platforms">
-              {part.input.platforms.map((p) => (
+              {input.platforms.map((p) => (
                 <span key={p} className="copilot-tool-pill">{p}</span>
               ))}
             </div>
           )}
         </div>
       )}
-      {isNote && part.input?.body && (
+      {isNote && input?.body && (
         <div className="copilot-tool-body">
-          <div className="copilot-tool-note-body">"{part.input.body}"</div>
-          {part.input.is_pinned && (
+          <div className="copilot-tool-note-body">"{input.body}"</div>
+          {input.is_pinned && (
             <div className="copilot-tool-note-pinned">
-              <Icon name="check" size={10}/> Pinned — rides on every AI call
+              <Icon name="check" size={10} /> Pinned — rides on every AI call
             </div>
           )}
         </div>
       )}
-      {part.status === 'error' && part.error && (
-        <div className="copilot-tool-error">{part.error}</div>
+      {statusKey === "error" && displayError && (
+        <div className="copilot-tool-error">{displayError}</div>
       )}
       {planId && (
         <button
@@ -468,6 +420,10 @@ const ToolCard = ({ part, onNavigateToPlan, brandSlug }) => {
       )}
     </div>
   );
-};
+}
 
 export { CopilotPanel };
+// Default export so React.lazy() in App.jsx can code-split the entire panel
+// (and its heavy dependency tree — Streamdown, shiki language packs, mermaid)
+// behind admin clicking the topbar Co-pilot trigger.
+export default CopilotPanel;

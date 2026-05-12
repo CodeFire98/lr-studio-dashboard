@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-11 (**AI Co-pilot v2 migration kickoff**: PoC + Phase 0 + Phase 1a + hotfix shipped; Phase 1b open as PR #64. Migrating from raw `@anthropic-ai/sdk` + hand-rolled SSE/MAX_TURNS loop to the Vercel AI SDK + AI Elements component library. Wire protocol preserved through Phase 1 so existing client components keep working untouched until Phase 2. Bamboo-Bear-only allowlist scope. Tracked end-to-end in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md). Earlier same-day: Rebrand to **Linkrunner Media** + UX polish pass; daily-digest idempotency check added.)
+**Last updated:** 2026-05-12 (**AI Co-pilot v2 Phase 2a**: `CopilotPanel.jsx` rewritten around `useChat` from `@ai-sdk/react` + AI Elements `MessageResponse` for Streamdown-backed markdown. `/api/ai/chat` switches to the AI SDK's native UIMessage stream protocol — legacy custom SSE event names retired. Panel code-split via `React.lazy()` so the heavy markdown/syntax-highlighting deps don't ship in the eager bundle. Path-alias foundation `@/*` added to tsconfig + vite for shadcn-style imports. Bamboo-Bear-only allowlist scope unchanged.)
+
+**Previous (2026-05-11):** AI Co-pilot v2 migration kickoff — PoC, Phase 0 (Tailwind + shadcn foundation), Phase 0 hotfix (`--accent` collision), Phase 1a (`/api/ai/chat`), Phase 1b (`/api/ai/copy`), Phase 1c (`/api/ai/image` + PoC retirement), Phase 1 polish (cross-platform context). All server-side migration complete; wire protocol preserved through Phase 1 so existing client kept working untouched until Phase 2a swap. Earlier same-day: Rebrand to **Linkrunner Media** + UX polish pass; daily-digest idempotency check added. Tracked end-to-end in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md).
 
 ---
 
@@ -11,6 +13,18 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-12 — AI Co-pilot v2 Phase 2a: CopilotPanel rewrite around useChat + AI Elements ([PR pending])
+Client-side cutover for the chat surface. Rewrote [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx) around the `useChat` hook from `@ai-sdk/react` — manual `parseSse` async generator, manual messages state, manual abort controller, and the custom SSE event dispatcher all gone. The wire protocol on [/api/ai/chat](web/api/ai/chat.ts) switched to the AI SDK's native UIMessage data-stream protocol via `pipeUIMessageStreamToResponse` — the legacy custom SSE event names (`text` / `tool_call` / `tool_result` / `usage` / `done` / `error`) are retired for this route. The server's `messageMetadata` callback attaches per-message usage to UIMessage metadata; the client reads `message.metadata.usage` to power the token meter.
+
+Assistant prose now uses **AI Elements `MessageResponse`** (Streamdown-backed) — proper Markdown: headers, lists, code blocks (with syntax highlighting), tables, etc. Replaces v1's tiny inline `renderProse` / `inlineMd` parser (which only handled `**bold**` and `` `code` ``). User bubbles keep the coral-on-white v1 styling via `.copilot-bubble` — explicitly NOT routed through AI Elements' Message component because shadcn's neutral `--secondary` token would gray out the bubble. Tool cards keep v1's compact visual (concept + platform pills + "Open plan →" CTA) but now read from the UIMessage `parts` model — each tool call is a `tool-{name}` part with state cycling through `input-streaming` → `input-available` → `output-available` | `output-error`.
+
+**Bundle health**: AI Elements pulls in Streamdown + shiki language packs + mermaid (~1.7 MB total). The panel is **code-split via `React.lazy()`** in [App.jsx](web/src/App.jsx) so the eager bundle stays at the v1 baseline (735 KB main JS, gzip 202 KB — unchanged from pre-Phase-2a). The heavy AI Elements dependency tree only downloads when admin clicks the Co-pilot trigger.
+
+**Path alias foundation**: `@/*` path alias added to [tsconfig.json](web/tsconfig.json) (TypeScript) + [vite.config.js](web/vite.config.js) (Vite resolver) so the standard shadcn-style imports (`@/components/ai-elements/*`, `@/lib/utils`) resolve. Phase 0's `components.json` was originally configured with raw `src/` prefixes; corrected to `@/` here so future `npx ai-elements add` calls produce standard imports.
+
+**localStorage**: keyed under `lr_copilot_conv_v2_<userId>_<accountId>` (v2 prefix). v1 entries become orphaned — the v1 message shape (`{role, content, parts[]}` with custom tool-call objects) is incompatible with the new UIMessage shape (`{id, role, parts}` with SDK part discriminators). Admin starts fresh on first open after deploy; by design per AI_COPILOT_V2_MIGRATION.md's localStorage migration plan.
+- **Sections touched:** Recent changes log; `Last updated`; §4 Tech stack (path alias note); §5 Repo layout (new `web/src/components/ai-elements/` directory); §13 Known decisions (entries: lazy-load-Copilot-to-protect-eager-bundle, wire-protocol-cutover-server+client-atomic, hybrid-rendering-user-bubble-coral-+-assistant-Streamdown, drop-AI-Elements-Conversation-conflicts-with-existing-scroll-overflow).
 
 ### 2026-05-11 — AI Co-pilot polish: cross-platform context inside a post plan ([PR #66](https://github.com/CodeFire98/lr-studio-dashboard/pull/66))
 Three user-reported issues with how the AI routes use plan context, fixed together server-side. Pre-existing issues that surfaced clearly during v2 smoke testing — NOT v2 regressions.
