@@ -53,9 +53,12 @@ const truncate = (text, n = 220) => {
   return text.slice(0, n).trimEnd() + '…';
 };
 
-// Route IG / Facebook CDN URLs through the same-origin image proxy so
-// the browser doesn't trip on Meta's Cross-Origin-Resource-Policy.
-// Non-Meta hosts (eg. user-pasted X media URLs) pass through unchanged.
+// Route Meta + LinkedIn CDN URLs through the same-origin image proxy.
+// Meta sends `Cross-Origin-Resource-Policy: same-origin`; LinkedIn's
+// CDN behaves similarly enough that we route it through too for
+// consistency (also means the proxy's image-load fallback path is
+// exercised the same way regardless of platform). Other hosts pass
+// through unchanged.
 const proxiedUrl = (raw) => {
   if (!raw || typeof raw !== 'string') return raw;
   try {
@@ -64,7 +67,9 @@ const proxiedUrl = (raw) => {
     const needsProxy =
       host.endsWith('.cdninstagram.com') ||
       host.endsWith('.fbcdn.net') ||
-      host === 'cdninstagram.com';
+      host.endsWith('.licdn.com') ||
+      host === 'cdninstagram.com' ||
+      host === 'licdn.com';
     if (!needsProxy) return raw;
     return `/api/engagement/image-proxy?u=${encodeURIComponent(raw)}`;
   } catch {

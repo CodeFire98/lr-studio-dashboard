@@ -272,6 +272,186 @@ async function scrapeInstagram(liveUrl: string): Promise<{
   };
 }
 
+// ----------------------------------------------------- Apify — LinkedIn
+//
+// supreme_coder/linkedin-post — won the actor shootout on 2026-05-12.
+// 6.4M runs, 13k users on Apify Store. "No cookies · $1 per 1k" (so
+// ~$0.001 per scrape, well under our cost projection). Validated
+// against a real public LinkedIn post and returned:
+//   { type, images: [string], url, urn, text, timeSincePosted,
+//     numLikes, numComments, numShares, reactions: [...], comments: [...],
+//     canReact, canPostComments, canShare, ... }
+//
+// Notes:
+// - `numLikes` is the total reactions count (LinkedIn rolls
+//   like/celebrate/support/etc into one bucket for public scrapes).
+//   We map it to BOTH `like_count` and `reaction_count` so the metrics
+//   row's ♥ icon shows the headline number, AND a future "reactions"
+//   breakdown can use reaction_count without remapping.
+// - `timeSincePosted` is a relative string ("3 weeks ago"), not an
+//   ISO timestamp. We can't recover the exact post moment from that
+//   alone; `posted_at` stays null for now. The agency-marked
+//   `published_at` on `post_plan_publications` remains the source of
+//   truth for "when did this go live".
+// - Image URLs live under `images[]` and use `media.licdn.com`. That
+//   host needs to be on the `/api/engagement/image-proxy` allowlist
+//   (added in this PR).
+
+const LINKEDIN_ACTOR_ID = "supreme_coder/linkedin-post";
+
+type SupremeCoderLinkedInItem = {
+  type?: string;                     // 'image' | 'video' | 'text' | 'document'
+  images?: string[];                 // media.licdn.com URLs
+  isActivity?: boolean;
+  urn?: string;
+  url?: string;
+  timeSincePosted?: string;          // "3 weeks ago" (no absolute ts)
+  text?: string;
+  numLikes?: number;
+  numComments?: number;
+  numShares?: number;
+  reactions?: unknown;               // array of reactor objects, not a count
+  comments?: unknown;                // array of comment objects, not a count
+  // Author info — supreme_coder returns it under `rootShare.actor`
+  // for re-shares, OR top-level `actor` for original posts. We try
+  // both paths in the normalizer; if neither exists we leave the
+  // author fields null and the tile renders the post anonymously.
+  actor?: { name?: string; vanityName?: string; profileUrl?: string; picture?: string };
+  rootShare?: { actor?: { name?: string; vanityName?: string; profileUrl?: string; picture?: string } };
+  // Catch-all for other shapes — log into raw_payload for debug.
+  [k: string]: unknown;
+};
+
+function extractLinkedInAuthor(item: SupremeCoderLinkedInItem) {
+  const a = item.actor || item.rootShare?.actor || null;
+  if (!a) return { handle: null, name: null, avatar: null };
+  return {
+    handle: a.vanityName || null,
+    name: a.name || null,
+    avatar: a.picture || null,
+  };
+}
+
+async function scrapeLinkedIn(liveUrl: string): Promise<{
+  ok: boolean;
+  status: ScrapeStatus;
+  errorMessage: string | null;
+  metrics: NormalizedMetrics | null;
+  embed: NormalizedEmbed | null;
+  raw: unknown;
+  actorRunId: string | null;
+}> {
+  const url =
+    `https://api.apify.com/v2/acts/${encodeURIComponent(LINKEDIN_ACTOR_ID)}` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        // Input shape `urls` confirmed by 2026-05-12 dry-run.
+        urls: [liveUrl],
+      }),
+    });
+  } catch (ex) {
+    return {
+      ok: false, status: "failed",
+      errorMessage: `network: ${(ex as Error).message}`,
+      metrics: null, embed: null, raw: null, actorRunId: null,
+    };
+  }
+
+  const actorRunId =
+    res.headers.get("x-apify-act-run-id") ??
+    res.headers.get("x-apify-run-id") ??
+    null;
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const isBlocked =
+      res.status === 403 ||
+      text.includes("Monthly usage hard limit") ||
+      text.includes("usage-limit");
+    return {
+      ok: false,
+      status: isBlocked ? "blocked" : "failed",
+      errorMessage: `apify ${res.status}: ${text.slice(0, 300)}`,
+      metrics: null, embed: null, raw: null, actorRunId,
+    };
+  }
+
+  const items = (await res.json().catch(() => [])) as SupremeCoderLinkedInItem[];
+  const item = Array.isArray(items) ? items[0] : null;
+  if (!item) {
+    return {
+      ok: false, status: "failed",
+      errorMessage: "supreme_coder/linkedin-post returned no items for this URL",
+      metrics: null, embed: null, raw: items, actorRunId,
+    };
+  }
+
+  const likes    = numOrNull(item.numLikes);
+  const comments = numOrNull(item.numComments);
+  const shares   = numOrNull(item.numShares);
+
+  const metrics: NormalizedMetrics = {
+    // LinkedIn rolls reactions into one bucket on public scrapes —
+    // both fields point at the same number so future UIs that prefer
+    // either name read the same data.
+    like_count: likes,
+    reaction_count: likes,
+    comment_count: comments,
+    share_count: shares,
+    save_count: null,
+    view_count: null,        // not exposed for public posts
+    bookmark_count: null,
+    quote_count: null,
+    engagement_rate: null,   // can't compute without views
+    availability_notes:
+      "LinkedIn: like_count and reaction_count point at the same number (public scrapes return a single rolled-up reactions count). View counts not exposed for public posts.",
+  };
+
+  const images = Array.isArray(item.images) ? item.images.filter(Boolean) : [];
+  const mediaType: NormalizedEmbed["media_type"] =
+    item.type === "video"
+      ? "video"
+      : images.length > 1
+      ? "carousel"
+      : images.length === 1
+      ? "image"
+      : "text";
+
+  const author = extractLinkedInAuthor(item);
+
+  const embed: NormalizedEmbed = {
+    author_handle: author.handle,
+    author_display_name: author.name,
+    author_avatar_url: author.avatar,
+    caption: item.text ?? null,
+    media_type: mediaType,
+    media_url: images[0] ?? null,
+    media_urls: images.length > 1 ? images : null,
+    media_aspect_ratio: null,    // not in this actor's output
+    posted_at: null,             // `timeSincePosted` is a relative string, not parseable
+  };
+
+  // "Partial" same definition as IG — counts present but the visible
+  // card has nothing to render.
+  const partial = !embed.media_url && !embed.caption;
+
+  return {
+    ok: true,
+    status: partial ? "partial" : "ok",
+    errorMessage: null,
+    metrics,
+    embed,
+    raw: item,
+    actorRunId,
+  };
+}
+
 // ----------------------------------------------------- Handler
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -352,16 +532,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // -------- PLATFORM dispatch (IG only in PR 2)
+  // -------- PLATFORM dispatch
+  //
+  // IG       — apify/instagram-scraper (PR 2)
+  // LinkedIn — supreme_coder/linkedin-post (PR 6, this commit)
+  // X        — intentionally unsupported in MVP. Apify shootout on
+  //            2026-05-12 found no actor that returns real metrics
+  //            without hostile pricing. Route returns 501; the UI
+  //            renders the tile with a "not tracked" label so X
+  //            publications still show up in Live Posts.
+  //
+  // `actorId` is captured so the snapshot row's `actor_id` field
+  // accurately attributes which scraper produced the data.
 
-  if (pub.platform !== "instagram") {
+  let result;
+  let actorId: string;
+  if (pub.platform === "instagram") {
+    actorId = IG_ACTOR_ID;
+    result = await scrapeInstagram(pub.live_url);
+  } else if (pub.platform === "linkedin") {
+    actorId = LINKEDIN_ACTOR_ID;
+    result = await scrapeLinkedIn(pub.live_url);
+  } else {
+    // X (and anything else added later) — 501 with a stable message
+    // the client can branch on. UI doesn't fire the route for X, but
+    // a curl smoke test should get a clear answer.
     return res.status(501).json({
-      error: `Engagement refresh for ${pub.platform} ships in a follow-up PR. Only Instagram is supported in this release.`,
+      error: `Engagement refresh is not supported for ${pub.platform}. (X has no viable Apify actor as of 2026-05-12.)`,
       platform: pub.platform,
     });
   }
-
-  const result = await scrapeInstagram(pub.live_url);
 
   // -------- WRITE the snapshot (always — failures are part of the audit trail)
 
@@ -379,7 +579,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     engagement_rate: result.metrics?.engagement_rate ?? null,
     availability_notes: result.metrics?.availability_notes ?? null,
     raw_payload: result.raw ?? null,
-    actor_id: IG_ACTOR_ID,
+    actor_id: actorId,
     actor_run_id: result.actorRunId,
     scrape_status: result.status,
     error_message: result.errorMessage,

@@ -36,11 +36,13 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 const ALLOWED_HOST_SUFFIXES = [
   ".cdninstagram.com",
   ".fbcdn.net",
+  ".licdn.com",         // LinkedIn CDN (PR 6) — `media.licdn.com` etc.
 ];
 // Exact hostnames (no leading dot) that should also be allowed.
 const ALLOWED_HOSTS_EXACT = new Set([
   "cdninstagram.com",
   "scontent.cdninstagram.com",
+  "licdn.com",
 ]);
 
 function hostIsAllowed(host: string): boolean {
