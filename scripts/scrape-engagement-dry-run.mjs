@@ -13,9 +13,10 @@
  *   APIFY_API_TOKEN=apify_api_... node scripts/scrape-engagement-dry-run.mjs --samples
  *
  * Actors used (one per platform — same set the production route will use):
- *   instagram  apify/instagram-scraper           (we already use it in fetch-trends)
- *   x          apidojo/tweet-scraper             (cheapest stable pay-per-result)
- *   linkedin   apify/linkedin-post-scraper       (Apify-maintained, public posts)
+ *   instagram  apify/instagram-scraper                (we already use it in fetch-trends)
+ *   x          apidojo/tweet-scraper                  (cheapest stable pay-per-result)
+ *   linkedin   harvestapi/linkedin-post-scraper       (apify/linkedin-post-scraper
+ *                                                      doesn't exist — pivoted 2026-05-12)
  *
  * Output for each URL:
  *   - Platform detection
@@ -247,10 +248,19 @@ async function scrapeOne(url) {
   }
 
   if (platform === "x") {
+    // apidojo/tweet-scraper takes `tweetIDs` (an array of numeric IDs
+    // extracted from the URL path). The earlier `startUrls` field
+    // silently ran the actor's default search behavior on 2026-05-12,
+    // returning 10 `{noResults:true}` rows — pivoted to extracting
+    // the ID and passing it explicitly.
+    const tweetId = url.match(/\/status\/(\d+)/)?.[1];
+    if (!tweetId) {
+      return { url, error: "couldn't extract numeric tweet id from URL" };
+    }
     const { items, elapsedMs } = await runActor({
       actorId: "apidojo/tweet-scraper",
       body: {
-        startUrls: [url],
+        tweetIDs: [tweetId],
         maxItems: 1,
       },
     });
@@ -266,17 +276,22 @@ async function scrapeOne(url) {
   }
 
   if (platform === "linkedin") {
+    // `apify/linkedin-post-scraper` doesn't exist on Apify — replaced
+    // with `harvestapi/linkedin-post-scraper` after the dry-run on
+    // 2026-05-12 surfaced a 404 "Actor with this name was not found".
+    // Note tilde-syntax (`harvestapi~linkedin-post-scraper`) is what
+    // run-sync-get-dataset-items expects in the URL path.
     const { items, elapsedMs } = await runActor({
-      actorId: "apify/linkedin-post-scraper",
+      actorId: "harvestapi/linkedin-post-scraper",
       body: {
+        // harvestapi expects an array of post URLs under `urls`.
         urls: [url],
-        deepScrape: false,
       },
     });
     return {
       url,
       platform,
-      actorId: "apify/linkedin-post-scraper",
+      actorId: "harvestapi/linkedin-post-scraper",
       elapsedMs,
       rawSample: items[0],
       normalized: normalizeLinkedIn(items[0]),
