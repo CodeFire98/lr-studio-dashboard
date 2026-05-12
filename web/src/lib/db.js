@@ -1749,25 +1749,74 @@ export async function deletePostPlan(id) {
 // =====================================================================
 // AI Co-pilot — dynamic suggestion chips
 // =====================================================================
-// Builds 3-4 brand-aware suggestion strings for the Co-pilot's empty
-// state. The chips are pre-filled prompts the admin can click to drop
-// into the message box. v1 of the Co-pilot used a hardcoded array of
-// generic prompts; Phase 3 makes them reflect the brand's actual
-// recent activity (latest approved post concept) + brand-kit categories
-// + a date-aware brainstorm starter.
+// Builds 4 brand-aware suggestion strings for the Co-pilot's empty
+// welcome screen. The chips are pre-filled prompts the admin can click
+// to drop into the message box.
 //
-// Deliberately client-side template-driven (not AI-generated): no extra
-// Anthropic call, no new server route, no loading state in the UI.
-// Suggestions are affordances ("what CAN I ask?"), not recommendations,
-// so a templated approach is appropriate.
+// v1 of the Co-pilot used a hardcoded set of 3 generic prompts.
+// Phase 3 first slice templated chips from recent plan / category data.
+// Phase 3 second slice (this version) calls a dedicated AI route —
+// `/api/ai/suggestions` — which uses generateObject + temperature 0.9
+// to surface DIFFERENT angles each refresh. The user explicitly asked
+// for "give me new suggestions if these aren't relevant" → AI variation
+// is the right tool. Template fallback stays as a graceful degradation
+// path for offline / auth-failed / API-errored states.
 //
-// Returns up to 4 suggestion strings, capped, deduplicated. Always
-// returns something — falls back to v1's generic set if the brand has
-// no plans yet.
+// Returns 4 suggestion strings. Always returns something:
+//   - happy path: AI-generated, varied per call
+//   - degraded:   templated from Supabase data (same as Phase 3 first slice)
+//   - cold-start: COPILOT_GENERIC_SUGGESTIONS hardcoded set
 // =====================================================================
 export async function loadCopilotSuggestions({ accountId } = {}) {
   if (!accountId) return COPILOT_GENERIC_SUGGESTIONS.slice();
 
+  // Try the AI-backed primary path first.
+  try {
+    const aiResult = await fetchAiSuggestions(accountId);
+    if (Array.isArray(aiResult) && aiResult.length === 4) {
+      return aiResult;
+    }
+    // Fall through to templated fallback if the API responded but the
+    // shape wasn't right (defensive — schema enforces 4 items server-side).
+  } catch {
+    // AI route failed (network, auth, allowlist, brand-kit missing).
+    // Silent fall-through to template path — admin still gets useful
+    // chips, no console-spamming red error in the welcome state.
+  }
+
+  // Templated fallback — same logic as Phase 3 first slice. Uses
+  // recent approved plan + brand-kit categories to build deterministic
+  // brand-aware chips without needing the AI route.
+  return buildTemplatedSuggestions(accountId);
+}
+
+async function fetchAiSuggestions(accountId) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Not signed in');
+  const resp = await fetch('/api/ai/suggestions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ accountId }),
+  });
+  if (!resp.ok) {
+    // Surface auth / allowlist errors as thrown — caller catches and
+    // falls back. Keeps the welcome state graceful.
+    const errBody = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+    throw new Error(errBody.error || `HTTP ${resp.status}`);
+  }
+  const json = await resp.json();
+  if (!json || !Array.isArray(json.suggestions)) {
+    throw new Error('Malformed response');
+  }
+  return json.suggestions
+    .map((s) => (typeof s === 'string' ? s.trim() : ''))
+    .filter((s) => s.length > 0);
+}
+
+async function buildTemplatedSuggestions(accountId) {
   // Pull the last few approved plans + the brand-kit product_categories
   // in parallel. Tight column lists — we don't need the full POST_PLAN_SELECT.
   const [plansResult, kitResult] = await Promise.all([
@@ -1785,8 +1834,6 @@ export async function loadCopilotSuggestions({ accountId } = {}) {
       .maybeSingle(),
   ]);
 
-  // Best-effort — if either query fails, fall back to generics. No throw:
-  // the panel still works without dynamic chips.
   const plans = Array.isArray(plansResult.data) ? plansResult.data : [];
   const categories = Array.isArray(kitResult.data?.product_categories)
     ? kitResult.data.product_categories.filter((c) => typeof c === 'string' && c.trim())
@@ -1794,9 +1841,7 @@ export async function loadCopilotSuggestions({ accountId } = {}) {
 
   const suggestions = [];
 
-  // 1. Follow-up to the most recent approved post — cites the actual
-  //    concept so the admin sees "we know your brand". Only emit if the
-  //    concept is non-empty and short enough to fit in a chip cleanly.
+  // 1. Follow-up to the most recent approved post.
   const latest = plans[0];
   if (latest?.concept && latest.concept.trim().length > 0) {
     const conceptSnippet = truncateConcept(latest.concept);
@@ -1804,23 +1849,18 @@ export async function loadCopilotSuggestions({ accountId } = {}) {
     suggestions.push(`Draft a follow-up to "${conceptSnippet}" for ${nextWeekday} at 10am`);
   }
 
-  // 2. Plan-the-week starter — uses the platforms actually used recently
-  //    if we have data, otherwise the canonical IG + LinkedIn pairing.
+  // 2. Plan-the-week starter — platform-aware.
   const recentPlatforms = pickRecentPlatformsLabel(plans);
   suggestions.push(`Plan three posts for next week across ${recentPlatforms}`);
 
-  // 3. Campaign around a specific product/category if the brand has any.
+  // 3. Campaign around a specific product/category if available.
   if (categories.length > 0) {
-    // Pick the first listed — brand-kit ordering is meaningful (agency curates).
     suggestions.push(`Plan a campaign featuring our ${categories[0]} for next month`);
   }
 
-  // 4. Brainstorm / open-ended starter — date-aware so it doesn't feel
-  //    canned across the year. Always emit so we have a "talk to me about
-  //    creative direction" affordance.
+  // 4. Date-aware brainstorm starter.
   suggestions.push(`Brainstorm a campaign concept for ${formatBrainstormSeasonPhrase()}`);
 
-  // Trim to 4 max, dedupe (defensive — shouldn't fire in practice).
   const deduped = [];
   for (const s of suggestions) {
     if (!deduped.includes(s)) deduped.push(s);

@@ -34,7 +34,7 @@
 // =====================================================================
 
 /* eslint-disable */
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Icon } from "./Icon.jsx";
@@ -129,28 +129,45 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
   const textareaRef = useRef(null);
   const scrollRef = useRef(null);
 
-  // Dynamic suggestion chips reflecting the brand's recent activity.
-  // Starts as the v1 generic set (so the welcome screen renders
-  // instantly without a flash of empty state), then upgrades to the
-  // brand-aware set once loadCopilotSuggestions resolves. Reloads on
-  // accountId change so brand-switch swaps the chips in tandem with
-  // the rest of the panel.
+  // Dynamic suggestion chips. The welcome screen seeds with the v1
+  // generic set so the empty-state never shows a flash of nothing,
+  // then upgrades in place to brand-aware chips once
+  // loadCopilotSuggestions resolves (AI-generated with template
+  // fallback; see web/src/lib/db.js). Reloads on accountId change.
+  //
+  // `suggestionsLoading` powers the spinner inside the Refresh button.
+  // Refresh fires a fresh /api/ai/suggestions call — generateObject
+  // on the server uses temperature 0.9 so each refresh yields different
+  // angles even within the cached brand-context window.
   const [suggestions, setSuggestions] = useState(FALLBACK_SUGGESTIONS);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  // A token that bumps on each (auto-load + manual refresh) so we can
+  // bail out of stale fetches if the admin hits Refresh twice rapidly
+  // or switches brands mid-flight.
+  const suggestionsTokenRef = useRef(0);
+
+  const refreshSuggestions = useCallback(async (currentAccountId) => {
+    if (!currentAccountId) return;
+    const myToken = ++suggestionsTokenRef.current;
+    setSuggestionsLoading(true);
+    try {
+      const rows = await loadCopilotSuggestions({ accountId: currentAccountId });
+      // Bail if we're stale — newer refresh / brand-switch supersedes us.
+      if (myToken !== suggestionsTokenRef.current) return;
+      if (Array.isArray(rows) && rows.length > 0) setSuggestions(rows);
+    } catch {
+      // No user-facing error — keep whatever's currently shown.
+    } finally {
+      if (myToken === suggestionsTokenRef.current) {
+        setSuggestionsLoading(false);
+      }
+    }
+  }, []);
+
+  // Auto-load on accountId change (mount + brand switch).
   useEffect(() => {
-    if (!accountId) return;
-    let cancelled = false;
-    loadCopilotSuggestions({ accountId })
-      .then((rows) => {
-        if (cancelled) return;
-        if (Array.isArray(rows) && rows.length > 0) setSuggestions(rows);
-      })
-      .catch(() => {
-        // Best-effort — keep the fallback set on failure. No user-facing
-        // error: an empty welcome screen would be worse than showing
-        // generic chips.
-      });
-    return () => { cancelled = true; };
-  }, [accountId]);
+    refreshSuggestions(accountId);
+  }, [accountId, refreshSuggestions]);
 
   const isBusy = status === "streaming" || status === "submitted";
 
@@ -246,15 +263,34 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
           <div className="copilot-welcome">
             <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
             <p>Ask me to draft a post, plan next week's content, or brainstorm a campaign — I'll create real drafts in the Social Calendar that you can edit and submit.</p>
-            <div className="copilot-suggestions">
+            <div className="copilot-suggestions-head">
+              <span className="copilot-suggestions-label">Try one of these</span>
+              <button
+                type="button"
+                className="copilot-suggestions-refresh"
+                onClick={() => refreshSuggestions(accountId)}
+                disabled={suggestionsLoading || !accountId}
+                title="Generate fresh suggestions"
+                aria-label="Refresh suggestions"
+              >
+                {suggestionsLoading ? (
+                  <span className="copilot-suggestions-spinner" aria-hidden />
+                ) : (
+                  <Icon name="refresh" size={11} />
+                )}
+                <span>Refresh</span>
+              </button>
+            </div>
+            <div className={"copilot-suggestions" + (suggestionsLoading ? " is-loading" : "")}>
               {suggestions.map((s, i) => (
                 <button
-                  key={i}
+                  key={`${i}-${s.slice(0, 16)}`}
                   className="copilot-suggestion"
                   onClick={() => {
                     setDraft(s);
                     textareaRef.current?.focus();
                   }}
+                  disabled={suggestionsLoading}
                 >
                   {s}
                 </button>
