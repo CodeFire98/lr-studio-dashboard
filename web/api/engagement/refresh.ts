@@ -230,13 +230,19 @@ async function scrapeInstagram(liveUrl: string): Promise<{
       "IG: share / save / bookmark counts not exposed via apify/instagram-scraper",
   };
 
+  // Note: real-data dry-run on 2026-05-12 returned `type:"Image"` with
+  // a non-empty `childPosts` array whose entries' displayUrls were all
+  // missing. Treat "carousel with zero usable child URLs" as a single
+  // image so the badge + slide indicators don't render misleading "0".
+  const carouselUrls = carousel
+    ? carousel.map((c) => c.displayUrl ?? null).filter((s): s is string => Boolean(s))
+    : null;
+  const isRealCarousel = (carouselUrls?.length ?? 0) > 1;
   const mediaType: NormalizedEmbed["media_type"] =
-    carousel && carousel.length > 0
+    isRealCarousel
       ? "carousel"
       : item.type === "Video"
       ? "video"
-      : item.type === "Sidecar"
-      ? "carousel"
       : "image";
 
   const embed: NormalizedEmbed = {
@@ -246,9 +252,7 @@ async function scrapeInstagram(liveUrl: string): Promise<{
     caption: item.caption ?? null,
     media_type: mediaType,
     media_url: item.displayUrl ?? null,
-    media_urls: carousel
-      ? carousel.map((c) => c.displayUrl ?? null).filter((s): s is string => Boolean(s))
-      : null,
+    media_urls: isRealCarousel ? carouselUrls : null,
     media_aspect_ratio: aspect(item.dimensionsWidth, item.dimensionsHeight),
     posted_at: item.timestamp ?? null,
   };

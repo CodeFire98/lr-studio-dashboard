@@ -175,7 +175,7 @@ const MediaBlock = ({ embed, liveUrl }) => {
           </div>
         </div>
       )}
-      {mediaType === 'carousel' && (
+      {mediaType === 'carousel' && Array.isArray(embed?.mediaUrls) && embed.mediaUrls.length > 1 && (
         <div
           aria-hidden
           style={{
@@ -190,7 +190,7 @@ const MediaBlock = ({ embed, liveUrl }) => {
             fontWeight: 500,
           }}
         >
-          ◧ {Array.isArray(embed?.mediaUrls) ? embed.mediaUrls.length : ''}
+          ◧ {embed.mediaUrls.length}
         </div>
       )}
     </a>

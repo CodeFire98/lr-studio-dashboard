@@ -12,11 +12,24 @@
  *   # or with built-in samples:
  *   APIFY_API_TOKEN=apify_api_... node scripts/scrape-engagement-dry-run.mjs --samples
  *
- * Actors used (one per platform — same set the production route will use):
- *   instagram  apify/instagram-scraper                (we already use it in fetch-trends)
- *   x          apidojo/tweet-scraper                  (cheapest stable pay-per-result)
- *   linkedin   harvestapi/linkedin-post-scraper       (apify/linkedin-post-scraper
- *                                                      doesn't exist — pivoted 2026-05-12)
+ * Actors used:
+ *   instagram  apify/instagram-scraper                ✅ Validated 2026-05-12 with a
+ *                                                       real Bamboo Bear post — returns
+ *                                                       likes/comments + caption + IG-
+ *                                                       CDN image URL + author handle.
+ *   x          apidojo/tweet-scraper                  ⚠️  Returns {noResults:true} × 10
+ *                                                       for real tweet URLs — input
+ *                                                       shape still wrong. Needs real
+ *                                                       actor selection in PR 5.
+ *   linkedin   (none — placeholder)                   ⚠️  Both apify/linkedin-post-
+ *                                                       scraper AND harvestapi/linkedin-
+ *                                                       post-scraper return 404 record-
+ *                                                       not-found. Needs real actor
+ *                                                       selection in PR 6.
+ *
+ * X and LinkedIn entries are kept here so PRs 5/6 can iterate without
+ * relandng the script structure. Production route at api/engagement/
+ * refresh.ts only handles IG; X/LinkedIn return 501 there.
  *
  * Output for each URL:
  *   - Platform detection
@@ -95,6 +108,12 @@ function normalizeInstagram(item) {
   const comments     = numOrNull(item.commentsCount);
   const videoViews   = numOrNull(item.videoViewCount ?? item.videoPlayCount);
   const carousel     = Array.isArray(item.childPosts) ? item.childPosts : null;
+  // Real-data dry-run on 2026-05-12 returned type:"Image" with a
+  // non-empty childPosts array whose displayUrls were all missing.
+  // Filter to actual URLs, then only call it a carousel when there's
+  // more than one usable slide — otherwise treat as single image.
+  const carouselUrls = carousel ? carousel.map((c) => c.displayUrl).filter(Boolean) : null;
+  const isRealCarousel = (carouselUrls?.length ?? 0) > 1;
   return {
     metrics: {
       like_count: likes,
@@ -113,9 +132,9 @@ function normalizeInstagram(item) {
       author_display_name: item.ownerFullName || null,
       author_avatar_url: null, // not in this actor's output
       caption: item.caption || null,
-      media_type: carousel ? "carousel" : (item.type === "Video" ? "video" : "image"),
+      media_type: isRealCarousel ? "carousel" : (item.type === "Video" ? "video" : "image"),
       media_url: item.displayUrl || null,
-      media_urls: carousel ? carousel.map((c) => c.displayUrl).filter(Boolean) : null,
+      media_urls: isRealCarousel ? carouselUrls : null,
       media_aspect_ratio: aspect(item.dimensionsWidth, item.dimensionsHeight),
       posted_at: item.timestamp || null,
     },
