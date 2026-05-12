@@ -7,7 +7,8 @@
   "scripts": {
     "enrich:abcoffee": "node scripts/enrich-abcoffee.mjs",
     "firecrawl:init": "npx -y firecrawl-cli@latest init --all --browser",
-    "backfill:video-thumbnails": "node scripts/backfill-video-thumbnails.mjs"
+    "backfill:video-thumbnails": "node scripts/backfill-video-thumbnails.mjs",
+    "scrape:engagement-dry-run": "node scripts/scrape-engagement-dry-run.mjs"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
