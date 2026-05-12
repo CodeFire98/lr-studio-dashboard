@@ -1,10 +1,15 @@
 # AI Co-pilot v2 migration — tracking doc
 
 > Single source of truth for the AI Co-pilot rebuild on **Vercel AI SDK + AI Elements**.
-> Last updated: 2026-05-11
+> Last updated: 2026-05-12
 > Owner: Lakshith Dinesh (decisions) + Claude (implementation)
 > Worktree branch: `claude/eloquent-austin-f6dbf7`
 > Production Vercel project: `lr-studio-dashboard-3kkp` (agency.linkrunner.io)
+
+## Recent changes log
+
+- **2026-05-12**: Phase 2b PR opened — `AICopyPreview.jsx` rewritten around `useCompletion`; `/api/ai/copy.ts` switched from manual SSE translator to `pipeTextStreamToResponse`. Request body shape changes (`instruction` → `prompt`). Inline token-usage meter intentionally dropped — useCompletion's text-stream protocol doesn't surface usage; cache observability moves to server logs.
+- **2026-05-11**: PoC + Phase 0 + Hotfix + Phase 1a + Phase 1b + Phase 1c + Polish + Phase 2a all merged.
 
 This doc is the runbook for the full migration. Every PR in this effort links back here. When something breaks, **start here, not in the code.**
 
@@ -79,7 +84,7 @@ Mark a phase complete only when its PR is merged AND the Vercel preview has been
 | 1c | Server: `/api/ai/image` → `streamObject` (ideas mode, Zod schema replaces lenient JSON parser) + `streamText` (prompt mode). Also DELETES `web/api/ai/cache-poc.ts` (PoC retired). | ✅ merged | [#65](https://github.com/CodeFire98/lr-studio-dashboard/pull/65) |
 | Polish | Cross-platform context inside a post plan: platform requirements at top of user message ("MUST FOLLOW STRICTLY"); `/api/ai/copy` includes OTHER platforms' copy; `/api/ai/image` includes ALL platforms' copy. Pre-existing issues surfaced during smoke testing — not v2 regressions. | ✅ merged | [#66](https://github.com/CodeFire98/lr-studio-dashboard/pull/66) |
 | 2a | Client: `CopilotPanel.jsx` → `useChat` + AI Elements `MessageResponse` (Streamdown markdown). Wire protocol switched to AI SDK UIMessage stream (`/api/ai/chat` now uses `pipeUIMessageStreamToResponse`). Panel lazy-loaded via `React.lazy()` so heavy markdown deps don't ship in eager bundle. Conversation/Message components from AI Elements intentionally dropped — scroll-overflow conflict + shadcn-gray bubbles. Custom tool cards retained. Path-alias foundation `@/*` added. **Two smoke-test regressions fixed in-flight**: (a) `--accent` collision — tight-scoped `.ai-elements` to wrap only MessageResponse, not the whole scroll surface; (b) Streamdown table fullscreen modal broken in panel layout — disabled via `controls.table.fullscreen: false`. | ✅ merged | [#68](https://github.com/CodeFire98/lr-studio-dashboard/pull/68) |
-| 2b | Client: `AICopyPreview.jsx` → `useCompletion` | ⏳ pending | — |
+| 2b | Client: `AICopyPreview.jsx` → `useCompletion` + AI SDK text-stream protocol. Server `/api/ai/copy` switched from manual `fullStream`-to-SSE translator to `result.pipeTextStreamToResponse(res)`. Request body shape changes (`instruction` → `prompt`). 292 → 260 LoC on the client, ~35 lines of manual stream-translation deleted from the server. Inline usage meter dropped — useCompletion text-protocol doesn't surface metadata; cache hits now logged server-side via `streamText({ onFinish })` and greppable as `[copy] usage …` in Vercel Function Logs. | 🟡 open | [#70](https://github.com/CodeFire98/lr-studio-dashboard/pull/70) |
 | 2c | Client: `AIImagePromptPanel.jsx` → `useObject` (ideas) + `useCompletion` (prompt) | ⏳ pending | — |
 | 3 | Net-new: pick from {Reasoning panel surfacing, image attachments in chat, dynamic Suggestion chips from `recentApprovedPlans`, per-message cost in metadata} | ⏳ pending | — |
 | 4 | Optional: DB-backed conversation persistence (Supabase `copilot_conversations` table). Only if a user asks. | 🚫 not scheduled | — |
@@ -130,6 +135,7 @@ Mark a phase complete only when its PR is merged AND the Vercel preview has been
 - [ ] **Cache stops landing** — costs spike 4-10×. Check `cache_read_input_tokens` in `result.providerMetadata.anthropic` on every chat turn. Should be > 0 for every call after the first within a 5-min window for the same brand.
   - Common cause: cache breakpoint placement changed; provider version bump; system prompt mutated mid-call.
   - Fix: confirm `providerOptions.anthropic.cacheControl = { type: 'ephemeral' }` is set on both system blocks. Re-run the PoC.
+  - **For /api/ai/copy specifically** (Phase 2b+): no client-side meter. Grep Vercel Function Logs for `[copy] usage` — every completion logs `input=… cache_read=… cache_write=… output=…`. If `cache_read=0` repeatedly across consecutive calls to the same brand within 5 min, cache is broken. Same fix path.
 - [ ] **Wrong model silently being used** — sudden cost or quality change. Check `result.response.modelId` in the response. Should match `claude-sonnet-4-6`.
   - Common cause: AI SDK alias changed under a provider version bump.
   - Fix: pin provider to exact version in package.json.
@@ -146,6 +152,12 @@ Mark a phase complete only when its PR is merged AND the Vercel preview has been
   - Common cause: tool execute threw outside the SDK's catch; stream never sent finish event.
   - Fix: wrap tool `execute:` in try/catch and return `{ ok: false, error }`.
 - [ ] **Abort doesn't cancel** — clicking Stop costs full tokens. Server log shows the call completed despite `stop()`. Confirm `streamText` is given the `abortSignal: req.signal` if the Vercel handler exposes it.
+- [ ] **/api/ai/copy returns JSON, not text** (Phase 2b regression). Symptom: `useCompletion({ streamProtocol: 'text' })` errors with "Unexpected token" or completion stays empty. Check Network tab — response Content-Type must be `text/plain; charset=utf-8`, not `application/json`.
+  - Common cause: someone replaced `result.pipeTextStreamToResponse(res)` with `res.json(...)` or the legacy SSE writer.
+  - Fix: confirm route ends with `result.pipeTextStreamToResponse(res)`. The SDK sets the Content-Type itself; don't `res.setHeader('Content-Type', ...)` before calling it.
+- [ ] **/api/ai/copy ignores the admin's instruction** (Phase 2b body-shape regression). Symptom: every draft comes out identical, ignoring what the admin typed. Check the POST body the browser sends — should have `prompt: '<instruction>'` (NOT `instruction: '<instruction>'`).
+  - Common cause: client reverted to pre-2b body shape, or server reads `body.instruction` instead of `body.prompt`.
+  - Fix: `useCompletion` always sends `prompt` as the primary field; the v1 `instruction` key is gone. Server reads from `body.prompt`.
 
 ### Tool-use loop
 
@@ -223,6 +235,8 @@ Add a one-line entry every time we make a "we tried X, chose Y" call during the 
 - **2026-05-11**: PoC first before Phase 0. Reason: cache survival is the entire cost premise; 20-min verification de-risks the next 5 days. — Lakshith
 - **2026-05-11**: Stay on Bamboo Bear allowlist through all phases. Reason: blast radius minimization while changing the stack. — Lakshith
 - **2026-05-11**: System prompt stays brand-agnostic; all brand-specific tuning flows through `brand_kit_notes` per brand. Reason: every new brand inherits universal platform best-practices automatically without code changes. Brand specifics accumulate via the memory tool over time. — Lakshith
+- **2026-05-12** (Phase 2b): Use `streamProtocol: 'text'` + `pipeTextStreamToResponse` for /api/ai/copy instead of the data-stream protocol. Reason: copy generation is a single-shot text completion with no tools, no reasoning parts, no metadata-driven UI. `useCompletion` data-protocol consumers ignore `messageMetadata` anyway. Text protocol = simpler server, simpler client, same UX. — Claude
+- **2026-05-12** (Phase 2b): Drop the inline "X in (Y cached) · Z out" usage meter. Reason: useCompletion exposes no usage event to consumers; adding a side-channel (custom fetch + response header) just for an inline debug indicator wasn't worth the complexity. Cache observability shifts to server logs — `streamText({ onFinish })` logs `[copy] usage account=… cache_read=…` per call. Same monitoring story as the breakage-checklist already prescribes (Vercel Function Logs). — Claude
 
 ## Deferred / roadmap (out of the v2 migration but tracked here)
 
@@ -309,7 +323,7 @@ Run against Vercel preview for PR #60 with model `claude-sonnet-4-6` and a deter
 | File | Today | After Phase 2 |
 |---|---|---|
 | `web/src/components/CopilotPanel.jsx` | 474 LoC, manual SSE parser, hand-rolled message rendering, in-house ToolCard | ~200 LoC, `useChat()` + AI Elements components |
-| `web/src/components/AICopyPreview.jsx` | 292 LoC, state machine + manual SSE parser | ~120 LoC, `useCompletion()` |
+| `web/src/components/AICopyPreview.jsx` | 292 LoC, state machine + manual SSE parser | 260 LoC, `useCompletion({ streamProtocol: 'text' })`. Header comments expanded vs. v1, so raw line count under-states the logic shrink — `parseSse` generator + 'compose'\|'streaming'\|'done'\|'error' state + AbortController + usage state all collapse to derived booleans. |
 | `web/src/components/AIImagePromptPanel.jsx` | ~400 LoC, 7-phase state machine + manual JSON parser | ~180 LoC, `useObject()` + `useCompletion()` |
 
 ### Untouched / minimal changes

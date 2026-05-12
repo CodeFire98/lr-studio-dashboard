@@ -1,11 +1,31 @@
 // =====================================================================
 // /api/ai/copy — Vercel serverless function — AI inline copy generation
 //
-// AI Co-pilot v2 Phase 1b: migrated from raw @anthropic-ai/sdk to the
-// Vercel AI SDK's streamText primitive. Single-shot text generation,
-// no tools, no agentic loop — simpler than /api/ai/chat. Wire protocol
-// preserved (text / usage / done / error events) so AICopyPreview.jsx
-// keeps working untouched until Phase 2b.
+// AI Co-pilot v2 Phase 2b: wire protocol switched to the AI SDK's
+// text-stream protocol (raw text/plain chunks). AICopyPreview.jsx in
+// the same PR is rewritten around `useCompletion({ streamProtocol: 'text' })`
+// and consumes the stream natively. The legacy SSE event names
+// (text / usage / done / error) and the manual `fullStream` translator
+// are gone — `result.pipeTextStreamToResponse(res)` does the whole job.
+//
+// Request body shape changes accordingly. Was:
+//   { accountId, plan_id, platform, mode, instruction, current_copy? }
+// Now (useCompletion always sends `prompt` as its primary field, with
+// extra fields appended from the hook's per-call `body` option):
+//   { prompt: instruction, accountId, plan_id, platform, mode, current_copy? }
+// `prompt` carries the admin's free-form instruction. Everything else
+// flows alongside as before.
+//
+// (Phase 1b — merged earlier — moved from raw @anthropic-ai/sdk to
+// streamText + cache breakpoints but kept the legacy wire protocol via
+// a manual `fullStream` translation + SSE event writes. That translation
+// is gone now, same way Phase 2a unwound the chat translation.)
+//
+// Usage observability: per-call cache hit / input / output counts are
+// logged server-side via `streamText({ onFinish })` so we can monitor
+// cache landing in Vercel observability. No client-side meter — the
+// admin doesn't need a token count in the inline copy preview, and the
+// useCompletion data path doesn't surface usage anyway.
 //
 // Modes:
 //   - draft: generate fresh copy from concept + brand voice. Used when
@@ -74,20 +94,16 @@ Output the revised caption text ONLY. No preamble. No explanation. No quotes. No
 If the admin's instruction is empty or vague, make a conservative single-pass improvement: tighten weak phrasing, fix awkward rhythm, lean further into the brand voice. Don't restructure or change the core message.`;
 
 type RequestBody = {
+  // useCompletion sends the admin's instruction as `prompt` (always first
+  // arg to `complete()`). Empty string is allowed — server treats it as
+  // "no instruction, fall back to concept (draft) / conservative pass (improve)".
+  prompt?: string;
   accountId?: string;
   plan_id?: string;
   platform?: string;
   mode?: "draft" | "improve";
-  instruction?: string;
   current_copy?: string;
 };
-
-function writeSseEvent(res: VercelResponse, type: string, data: unknown) {
-  res.write(`event: ${type}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
-  // @ts-expect-error — Node response has flush, types don't expose it.
-  res.flush?.();
-}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -115,7 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "platform must be one of: instagram, linkedin, x" });
   }
   const mode: "draft" | "improve" = body.mode === "improve" ? "improve" : "draft";
-  const instruction = typeof body.instruction === "string" ? body.instruction.trim() : "";
+  const instruction = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const currentCopy = typeof body.current_copy === "string" ? body.current_copy : "";
   if (mode === "improve" && !currentCopy.trim()) {
     return res.status(400).json({ error: "current_copy is required for improve mode" });
@@ -181,13 +197,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(404).json({ error: "No brand kit found for this account." });
   }
 
-  // SSE setup — same headers as /api/ai/chat.
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
+  // Disable Vercel response buffering so deltas reach the browser as
+  // they're generated. pipeTextStreamToResponse sets Content-Type to
+  // text/plain; charset=utf-8 itself; we don't add Content-Type here.
   res.setHeader("X-Accel-Buffering", "no");
-  res.status(200);
-  res.write(": stream open\n\n");
 
   // Pick the right system prompt for the mode. The brand-context block is
   // identical across both, so it caches across draft + improve calls for
@@ -271,7 +284,9 @@ Output the caption text only — no preamble, no quotes. The output MUST follow 
     // Two cache breakpoints, same as chat.ts:
     //   1. Mode-specific system instructions
     //   2. Brand context blob
-    // Cache validated by the Phase 1a smoke test on /api/ai/chat.
+    // Cache survival is the entire cost premise; if cache_read_input_tokens
+    // is consistently 0 after the first call, costs spike 4-10×. Verified
+    // by the Phase 1a/1b smoke test on /api/ai/chat + /api/ai/copy.
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS,
@@ -288,38 +303,42 @@ Output the caption text only — no preamble, no quotes. The output MUST follow 
         },
         { role: "user", content: userMessage },
       ],
+      // Log usage server-side for cache observability. Per Vercel
+      // observability conventions, this lands in Function Logs and we
+      // can grep `[copy]` to track per-call cache hit rate. There is no
+      // client-side meter — useCompletion doesn't surface usage and
+      // the inline preview doesn't need a token counter.
+      onFinish: ({ totalUsage, finishReason }) => {
+        const cr = totalUsage.inputTokenDetails?.cacheReadTokens ?? 0;
+        const cw = totalUsage.inputTokenDetails?.cacheWriteTokens ?? 0;
+        const nc = totalUsage.inputTokenDetails?.noCacheTokens ?? totalUsage.inputTokens ?? 0;
+        const out = totalUsage.outputTokens ?? 0;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[copy] usage account=${body.accountId} plan=${body.plan_id} platform=${body.platform} mode=${mode} ` +
+            `input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason}`,
+        );
+      },
     });
 
-    // Drain fullStream and translate to the legacy wire protocol —
-    // same event names as chat.ts so AICopyPreview.jsx works untouched.
-    for await (const part of result.fullStream) {
-      if (part.type === "text-delta") {
-        writeSseEvent(res, "text", { delta: part.text });
-      } else if (part.type === "finish-step") {
-        const u = part.usage as
-          | {
-              inputTokens?: number;
-              outputTokens?: number;
-              inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
-            }
-          | undefined;
-        writeSseEvent(res, "usage", {
-          input_tokens: u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0,
-          output_tokens: u?.outputTokens ?? 0,
-          cache_creation_input_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
-          cache_read_input_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
-        });
-      } else if (part.type === "finish") {
-        writeSseEvent(res, "done", { stop_reason: part.finishReason });
-      } else if (part.type === "error") {
-        const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
-        writeSseEvent(res, "error", { error: errMsg });
-      }
-    }
+    // Pipe the AI SDK's native text-stream protocol directly to the
+    // Vercel ServerResponse. Each text delta lands as a separate chunk
+    // of `text/plain; charset=utf-8`. The client's
+    // useCompletion({ streamProtocol: 'text' }) hook consumes this
+    // natively — no SSE event names, no manual JSON parsing.
+    //
+    // pipeTextStreamToResponse also handles errors thrown by the model
+    // by closing the stream; useCompletion surfaces the truncation as a
+    // completion that just stops. For explicit error visibility on the
+    // client (so the user gets a "Retry" affordance instead of staring
+    // at a half-completed caption), we lean on Vercel server logs +
+    // useCompletion's `error` state for HTTP-level failures.
+    result.pipeTextStreamToResponse(res);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    writeSseEvent(res, "error", { error: msg });
-  } finally {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: msg });
+    }
     res.end();
   }
 }
