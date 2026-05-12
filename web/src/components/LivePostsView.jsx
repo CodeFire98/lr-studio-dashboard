@@ -324,6 +324,12 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
   const [err, setErr] = useState('');
   const [platformKey, setPlatformKey] = useState('all');
   const [q, setQ] = useState('');
+  // Sort mode for the tile list. Default = "recent" matches the
+  // pre-PR-7 behaviour (latest published first, grouped by month).
+  // "likes" + "engagement" sort flat (no month grouping) because
+  // intercalating sort + month-group reads strangely — if you want
+  // "most likes" you want a leaderboard, not a chronology.
+  const [sortMode, setSortMode] = useState('recent');
   // Engagement state — keyed by publication id. The bulk loaders below
   // run after publications resolve, and realtime keeps them in sync as
   // /api/engagement/refresh writes new rows.
@@ -446,7 +452,29 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
     });
   }, [rows, platformKey, q]);
 
-  const groups = useMemo(() => groupByMonth(filtered), [filtered]);
+  // For the leaderboard sort modes we skip month-grouping and render
+  // one flat section. `recent` keeps the existing grouped-by-month
+  // shape so chronology stays readable.
+  const sortedFlat = useMemo(() => {
+    if (sortMode === 'recent') return null;
+    const scored = filtered.map((r) => {
+      const s = snapshotsByPubId.get(r.id) || null;
+      let score = 0;
+      if (sortMode === 'likes') {
+        score = (s?.likeCount ?? 0);
+      } else if (sortMode === 'engagement') {
+        score = (s?.likeCount ?? 0) + (s?.commentCount ?? 0) + (s?.shareCount ?? 0);
+      }
+      return { row: r, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return scored.map((x) => x.row);
+  }, [filtered, sortMode, snapshotsByPubId]);
+
+  const groups = useMemo(
+    () => (sortMode === 'recent' ? groupByMonth(filtered) : null),
+    [filtered, sortMode],
+  );
   const counts = useMemo(() => {
     const out = { all: rows.length };
     for (const p of PLATFORMS) {
@@ -501,6 +529,27 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
           })}
         </div>
         <span style={{ flex: 1 }} />
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-3)' }}>
+          Sort:
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value)}
+            style={{
+              padding: '6px 8px',
+              border: '1px solid var(--line)',
+              borderRadius: 6,
+              background: 'var(--surface)',
+              color: 'var(--ink-1)',
+              fontSize: 13,
+              fontFamily: 'inherit',
+            }}
+            aria-label="Sort live posts"
+          >
+            <option value="recent">Recently posted</option>
+            <option value="likes">Most likes</option>
+            <option value="engagement">Most engagement</option>
+          </select>
+        </label>
         <div style={{ position: 'relative', minWidth: 220 }}>
           <Icon
             name="search"
@@ -544,7 +593,8 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
         <div className="empty" style={{ padding: 60, textAlign: 'center', color: 'var(--ink-4)' }}>
           <div style={{ fontSize: 13 }}>No live posts match this filter.</div>
         </div>
-      ) : (
+      ) : sortMode === 'recent' ? (
+        // Default chronological view — month-grouped.
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
           {groups.map((g) => (
             <section key={g.key}>
@@ -580,6 +630,42 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
               </div>
             </section>
           ))}
+        </div>
+      ) : (
+        // Leaderboard view (likes / total engagement) — flat list,
+        // tiles already render their metrics so no need for a separate
+        // ranking column.
+        <div>
+          <h3 style={{
+            margin: '0 0 12px',
+            fontSize: 13,
+            fontWeight: 500,
+            color: 'var(--ink-3)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+          }}>
+            {sortMode === 'likes' ? 'Most likes' : 'Most engagement'}
+            <span style={{ marginLeft: 8, color: 'var(--ink-4)', fontWeight: 400 }}>
+              · {sortedFlat?.length ?? 0}
+            </span>
+          </h3>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+            gap: 12,
+          }}>
+            {(sortedFlat ?? []).map((row) => (
+              <LiveTile
+                key={row.id}
+                row={row}
+                snapshot={snapshotsByPubId.get(row.id) || null}
+                embed={embedsByPubId.get(row.id) || null}
+                isAgency={!!isAgency}
+                onRefresh={handleRefresh}
+                onOpenPlan={openPlan}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div></div>
