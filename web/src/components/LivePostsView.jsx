@@ -238,7 +238,10 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
         <span style={{ flex: 1, minWidth: 0 }}>
           {refreshFooter({ snapshot, refreshing, lastError, embed })}
         </span>
-        {isAgency && row.platform === 'instagram' && (
+        {/* Refresh-now button: rendered for the platforms whose route
+            path is wired (IG and LinkedIn). For X, the route 501s and
+            the UI shows the "not tracked" badge below instead. */}
+        {isAgency && (row.platform === 'instagram' || row.platform === 'linkedin') && (
           <button
             type="button"
             onClick={handleRefresh}
@@ -258,7 +261,13 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
             {refreshing ? 'Refreshing…' : 'Refresh now'}
           </button>
         )}
-        {isAgency && row.platform !== 'instagram' && (
+        {/* X badge: permanent "not tracked" state. The Apify shootout
+            (2026-05-12) couldn't find an X actor that returns real
+            metrics without hostile pricing — the official X API at
+            $200/mo isn't worth the spend for one platform's stats in
+            MVP. Users can still mark plans as posted to X; the tile
+            shows the post exists but doesn't pretend to track metrics. */}
+        {row.platform === 'x' && (
           <span
             style={{
               padding: '3px 8px',
@@ -267,9 +276,9 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
               borderRadius: 4,
               color: 'var(--ink-4)',
             }}
-            title="X and LinkedIn refresh ship in a follow-up PR"
+            title="X engagement isn't tracked — Apify scrapers don't reliably support X. Track manually if needed."
           >
-            {platCfg?.label || row.platform} support coming soon
+            X engagement not tracked
           </span>
         )}
       </div>
