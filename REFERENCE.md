@@ -3,9 +3,11 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**AI Co-pilot v2 Phase 2a**: `CopilotPanel.jsx` rewritten around `useChat` from `@ai-sdk/react` + AI Elements `MessageResponse` for Streamdown-backed markdown. `/api/ai/chat` switches to the AI SDK's native UIMessage stream protocol — legacy custom SSE event names retired. Panel code-split via `React.lazy()` so the heavy markdown/syntax-highlighting deps don't ship in the eager bundle. Path-alias foundation `@/*` added to tsconfig + vite for shadcn-style imports. Bamboo-Bear-only allowlist scope unchanged.)
+**Last updated:** 2026-05-12 (**AI Co-pilot v2 Phase 2b**: `AICopyPreview.jsx` rewritten around `useCompletion` from `@ai-sdk/react`; `/api/ai/copy` switches from manual SSE event translation to `result.pipeTextStreamToResponse(res)` (text-stream protocol). Request body shape changes — `instruction` → `prompt`. Inline token-usage meter dropped; cache observability moves to server logs (`[copy] usage account=… cache_read=…`). Bamboo-Bear-only allowlist scope unchanged.)
 
-**Previous (2026-05-11):** AI Co-pilot v2 migration kickoff — PoC, Phase 0 (Tailwind + shadcn foundation), Phase 0 hotfix (`--accent` collision), Phase 1a (`/api/ai/chat`), Phase 1b (`/api/ai/copy`), Phase 1c (`/api/ai/image` + PoC retirement), Phase 1 polish (cross-platform context). All server-side migration complete; wire protocol preserved through Phase 1 so existing client kept working untouched until Phase 2a swap. Earlier same-day: Rebrand to **Linkrunner Media** + UX polish pass; daily-digest idempotency check added. Tracked end-to-end in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md).
+**Previous (2026-05-12):** AI Co-pilot v2 Phase 2a — `CopilotPanel.jsx` rewritten around `useChat` + AI Elements `MessageResponse`; `/api/ai/chat` switched to AI SDK UIMessage stream protocol; panel code-split via `React.lazy()`. Path-alias `@/*` added.
+
+**Earlier (2026-05-11):** AI Co-pilot v2 migration kickoff — PoC, Phase 0 (Tailwind + shadcn foundation), Phase 0 hotfix (`--accent` collision), Phase 1a (`/api/ai/chat`), Phase 1b (`/api/ai/copy`), Phase 1c (`/api/ai/image` + PoC retirement), Phase 1 polish (cross-platform context). All server-side migration complete; wire protocol preserved through Phase 1 so existing client kept working untouched until Phase 2a/2b swap. Earlier same-day: Rebrand to **Linkrunner Media** + UX polish pass; daily-digest idempotency check added. Tracked end-to-end in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md).
 
 ---
 
@@ -13,6 +15,18 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-12 — AI Co-pilot v2 Phase 2b: AICopyPreview rewrite around useCompletion ([PR pending])
+Client-side cutover for the inline AI draft / AI redraft surface. Rewrote [AICopyPreview.jsx](web/src/components/AICopyPreview.jsx) around the `useCompletion` hook from `@ai-sdk/react` — manual `parseSse` async generator, the explicit `compose` | `streaming` | `done` | `error` state machine, the separate AbortController, and the SSE `usage`-event extractor all gone. The wire protocol on [/api/ai/copy](web/api/ai/copy.ts) switched to the AI SDK's text-stream protocol via `result.pipeTextStreamToResponse(res)` — the legacy SSE event names (`text` / `usage` / `done` / `error`) are retired for this route.
+
+**Body shape change**: `useCompletion` always posts `{ prompt, ...body }`, where `prompt` is the first arg to `complete()`. The admin's free-form instruction now rides as `prompt` instead of the v1 `instruction` field. Everything else (`accountId`, `plan_id`, `platform`, `mode`, `current_copy`) flows through the per-call `body` override.
+
+**Inline usage meter dropped**: useCompletion's text-stream protocol doesn't surface usage to consumers, and adding a side-channel (custom fetch + response header trick) just for an inline debug indicator wasn't worth the complexity. Cache observability shifts to server logs — `streamText({ onFinish })` logs `[copy] usage account=… cache_read=… cache_write=… output=…` on every completion. Greppable in Vercel Function Logs. The breakage checklist in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md) is updated with the new monitoring path.
+
+**Auth wiring**: per-request Supabase session token injected via a custom `fetch` wrapper passed to `useCompletion` — mirrors the `DefaultChatTransport.headers()` async pattern from Phase 2a. No new env vars.
+
+**Behavior preserved**: autofocus on instruction textarea, ⌘↩ to generate from the textarea, Stop mid-stream keeps partial text and lets the admin "Use this", Regenerate re-fires with the current instruction, mode=improve still passes the in-flight draft as `current_copy`.
+- **Sections touched:** Recent changes log; `Last updated`; §13 Known decisions (entries: useCompletion-text-protocol-over-data-protocol-for-single-shot-completions, drop-inline-usage-meter-in-favor-of-server-log-observability). §10 Edge functions (`/api/ai/copy` wire-protocol cutover from custom-SSE to text-stream).
 
 ### 2026-05-12 — AI Co-pilot v2 Phase 2a: CopilotPanel rewrite around useChat + AI Elements ([PR pending])
 Client-side cutover for the chat surface. Rewrote [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx) around the `useChat` hook from `@ai-sdk/react` — manual `parseSse` async generator, manual messages state, manual abort controller, and the custom SSE event dispatcher all gone. The wire protocol on [/api/ai/chat](web/api/ai/chat.ts) switched to the AI SDK's native UIMessage data-stream protocol via `pipeUIMessageStreamToResponse` — the legacy custom SSE event names (`text` / `tool_call` / `tool_result` / `usage` / `done` / `error`) are retired for this route. The server's `messageMetadata` callback attaches per-message usage to UIMessage metadata; the client reads `message.metadata.usage` to power the token meter.
@@ -1429,7 +1443,7 @@ Same as the other Vercel routes: push to branch → preview deploy auto-builds; 
 
 ### `/api/ai/copy` (Vercel serverless route — inline copy generation)
 
-Single-shot text generator for the per-platform "✨ AI draft" button in [PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx). Streams a brand-voice caption suggestion via SSE; the client renders it in an inline preview block ([AICopyPreview.jsx](web/src/components/AICopyPreview.jsx)) and the user accepts / regenerates / discards. The server never writes to `post_plans.copy_variants` — the existing client-side persist flow owns DB writes.
+Single-shot text generator for the per-platform "✨ AI draft" button in [PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx). Streams a brand-voice caption suggestion as raw `text/plain` chunks (AI SDK text-stream protocol); the client renders it in an inline preview block ([AICopyPreview.jsx](web/src/components/AICopyPreview.jsx)) and the user accepts / regenerates / discards. The server never writes to `post_plans.copy_variants` — the existing client-side persist flow owns DB writes.
 
 #### Auth & gating
 
@@ -1437,22 +1451,33 @@ Identical to `/api/ai/chat`: JWT verification → `profiles.is_agency` check →
 
 #### Request shape
 
+`useCompletion` always sends the admin's instruction as `prompt` (the first arg to `complete()`); everything else flows in the per-call body override.
+
 ```js
 POST /api/ai/copy
 Authorization: Bearer <user JWT>
 Content-Type: application/json
-Accept: text/event-stream
 {
+  "prompt": "<free-form direction>",        // useCompletion's primary field — the admin's instruction. Optional but strongly used; primary signal for WHAT to write.
   "accountId": "<brand uuid>",
   "plan_id": "<post_plans.id>",
   "platform": "instagram" | "linkedin" | "x",
-  "mode": "draft" | "improve",      // default 'draft'
-  "instruction": "<free-form direction>",  // optional but strongly used; primary signal for what to generate
-  "current_copy": "<existing caption>"     // required for mode='improve'; the starting point the model preserves and only changes per the instruction
+  "mode": "draft" | "improve",              // default 'draft'
+  "current_copy": "<existing caption>"      // required for mode='improve'; the starting point the model preserves and only changes per the instruction
 }
-// → 200 text/event-stream — same SSE events as /api/ai/chat (text / usage / done / error), no tool_call events since this route doesn't use tools
-// → 4xx/5xx { error }
+// → 200 text/plain; charset=utf-8 — AI SDK text-stream protocol via pipeTextStreamToResponse. Each text delta is a separate chunk; client's useCompletion accumulates into a single string.
+// → 4xx/5xx { error }   (JSON body for errors, before the stream starts)
 ```
+
+**Pre-Phase-2b (history)**: the body field was `instruction` (not `prompt`) and the response was `text/event-stream` with custom SSE events (`text` / `usage` / `done` / `error`). All retired with Phase 2b.
+
+#### Observability
+
+No client-side usage meter (useCompletion's text protocol doesn't surface usage). Server logs every call:
+```
+[copy] usage account=<uuid> plan=<uuid> platform=instagram mode=draft input=… cache_read=… cache_write=… output=… finish=stop
+```
+Grep `[copy] usage` in Vercel Function Logs to monitor cache hit rate. If `cache_read=0` consistently across consecutive calls within 5 min for the same brand, the cache is broken — investigate per the breakage checklist in [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md).
 
 #### Modes
 
