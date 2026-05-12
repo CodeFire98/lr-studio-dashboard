@@ -212,7 +212,7 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
         </div>
       </header>
 
-      <div className="copilot-scroll ai-elements" ref={scrollRef}>
+      <div className="copilot-scroll" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="copilot-welcome">
             <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
@@ -307,9 +307,23 @@ function renderPart(part, idx, messageId, role, ctx) {
     if (role === "user") {
       return <div key={`${messageId}-t${idx}`} className="copilot-bubble">{part.text}</div>;
     }
+    // `.ai-elements` MUST be tight-scoped to JUST the Streamdown render area.
+    // If it covered the scroll surface or the whole message, shadcn's
+    // neutral `--accent: 0 0% 96.1%` would override the global coral
+    // `--accent: #E8553D` for any descendant using `var(--accent)` —
+    // most importantly `.copilot-bubble` (white text on coral). Same
+    // regression as Phase 0 hotfix; same fix: keep `.ai-elements` only
+    // where shadcn-token-aware components actually render.
+    //
+    // `controls.table.fullscreen: false` disables Streamdown's table
+    // expand-to-modal button — the modal's positioning broke in our
+    // panel context (overflowed below the chat with no backdrop). Copy
+    // + download buttons stay (useful when AI returns comparison tables).
     return (
-      <div key={`${messageId}-t${idx}`} className="copilot-prose">
-        <MessageResponse>{part.text}</MessageResponse>
+      <div key={`${messageId}-t${idx}`} className="copilot-prose ai-elements">
+        <MessageResponse controls={{ table: { copy: true, download: true, fullscreen: false } }}>
+          {part.text}
+        </MessageResponse>
       </div>
     );
   }
