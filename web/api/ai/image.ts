@@ -300,9 +300,16 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
   }
 
   // System messages array shared by both modes. Each block gets its own
-  // cache_control via providerOptions.anthropic.cacheControl. The AI SDK
-  // collapses contiguous system messages into a multi-block Anthropic
-  // system param so both cache breakpoints land.
+  // cache_control via providerOptions.anthropic.cacheControl. Both rides
+  // via the `system` parameter (Array<SystemModelMessage>) instead of
+  // being mixed into `messages` — the AI SDK emits a security warning
+  // when role:'system' entries appear in `messages` because — in
+  // principle — that's a prompt-injection vector. Our content is 100%
+  // server-controlled so the warning is informational, but using
+  // `system: [...]` is the cleaner API path AND keeps both cache
+  // breakpoints intact (SystemModelMessage supports providerOptions and
+  // the AI SDK collapses the array into a single Anthropic system
+  // param with multiple text blocks, each with its own cache_control).
   const systemMessages = [
     {
       role: "system" as const,
@@ -326,10 +333,8 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         model: anthropic(MODEL_ID),
         maxOutputTokens: MAX_TOKENS_IDEAS,
         schema: IDEAS_SCHEMA,
-        messages: [
-          ...systemMessages,
-          { role: "user", content: userMessage },
-        ],
+        system: systemMessages,
+        messages: [{ role: "user", content: userMessage }],
       });
 
       for await (const chunk of result.textStream) {
@@ -348,10 +353,8 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
       const result = streamText({
         model: anthropic(MODEL_ID),
         maxOutputTokens: MAX_TOKENS_PROMPT,
-        messages: [
-          ...systemMessages,
-          { role: "user", content: userMessage },
-        ],
+        system: systemMessages,
+        messages: [{ role: "user", content: userMessage }],
       });
 
       for await (const part of result.fullStream) {

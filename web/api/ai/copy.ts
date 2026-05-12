@@ -281,16 +281,24 @@ Output the caption text only — no preamble, no quotes. The output MUST follow 
   }
 
   try {
-    // Two cache breakpoints, same as chat.ts:
+    // Two cache breakpoints, same as chat.ts + image.ts:
     //   1. Mode-specific system instructions
     //   2. Brand context blob
-    // Cache survival is the entire cost premise; if cache_read_input_tokens
-    // is consistently 0 after the first call, costs spike 4-10×. Verified
-    // by the Phase 1a/1b smoke test on /api/ai/chat + /api/ai/copy.
+    // Both rides via the `system` parameter (as an array of
+    // SystemModelMessage) instead of being mixed into `messages`. The
+    // AI SDK emits a security warning when role:'system' entries appear
+    // in `messages` because — in principle — that's a prompt-injection
+    // vector (user content could leak into a system block). Our content
+    // is 100% server-controlled so the warning is informational, but
+    // using `system: [...]` is the cleaner API path AND keeps both
+    // cache breakpoints intact (SystemModelMessage supports
+    // providerOptions). Cache survival is the entire cost premise; if
+    // cache_read_input_tokens is consistently 0 after the first call,
+    // costs spike 4-10×. Verified by the Phase 1a/1b smoke tests.
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS,
-      messages: [
+      system: [
         {
           role: "system",
           content: systemInstructions,
@@ -301,6 +309,8 @@ Output the caption text only — no preamble, no quotes. The output MUST follow 
           content: `\n\n---\n\n${brandContext}`,
           providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
         },
+      ],
+      messages: [
         { role: "user", content: userMessage },
       ],
       // Log usage server-side for cache observability. Per Vercel

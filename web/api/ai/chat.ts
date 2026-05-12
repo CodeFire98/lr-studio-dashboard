@@ -44,7 +44,6 @@ import {
   stepCountIs,
   streamText,
   tool,
-  type ModelMessage,
   type UIMessage,
 } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
@@ -310,35 +309,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Two cache breakpoints on the system prompt, unchanged from Phase 1a:
     //   1. Fixed instruction prefix (rarely changes)
     //   2. Per-brand context blob (stable per call, changes on brand mutations)
-    // The AI SDK collapses consecutive system messages into a single Anthropic
-    // system param with multiple text blocks, each with its own cache_control.
+    // Both rides via the `system` parameter (as an array of
+    // SystemModelMessage) instead of being mixed into `messages`. The
+    // AI SDK emits a security warning when role:'system' entries appear
+    // in `messages` because — in principle — that's a prompt-injection
+    // vector (user content could leak into a system block). Our content
+    // is 100% server-controlled so the warning is informational, but
+    // using `system: [...]` is the cleaner API path AND keeps both
+    // cache breakpoints intact (SystemModelMessage supports providerOptions
+    // and the AI SDK collapses the array into a single Anthropic system
+    // param with multiple text blocks, each with its own cache_control).
     // Verified by the PoC route — see AI_COPILOT_V2_MIGRATION.md PoC results.
     //
     // UIMessage[] from the client is converted to ModelMessage[] via
     // convertToModelMessages — handles text + tool-call + tool-result
-    // parts uniformly. The system messages are prepended directly as
-    // ModelMessages (not UIMessages) since they never enter the chat
-    // history; they're injected per call.
-    const conversation: ModelMessage[] = [
-      {
-        role: "system",
-        content: SYSTEM_PROMPT,
-        providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
-      },
-      {
-        role: "system",
-        content: `\n\n---\n\n${brandContext}`,
-        providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
-      },
-      ...(await convertToModelMessages(body.messages)),
-    ];
-
+    // parts uniformly.
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS_PER_TURN,
       stopWhen: stepCountIs(MAX_STEPS),
       tools,
-      messages: conversation,
+      system: [
+        {
+          role: "system",
+          content: SYSTEM_PROMPT,
+          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+        },
+        {
+          role: "system",
+          content: `\n\n---\n\n${brandContext}`,
+          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+        },
+      ],
+      messages: await convertToModelMessages(body.messages),
     });
 
     // Pipe the AI SDK's native UIMessage stream protocol directly to the
