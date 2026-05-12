@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**AI Co-pilot Phase 3 — dynamic suggestion chips, streaming + Haiku**: replaced CopilotPanel's hardcoded `EMPTY_SUGGESTIONS` with brand-aware suggestions streamed from a new `/api/ai/suggestions` route using `streamObject` + Zod schema + temperature 0.9 on **claude-haiku-4-5** (~2× faster than Sonnet for this size). Chips render PROGRESSIVELY via `experimental_useObject` — same UX as the image-ideas panel. **Refresh button** re-fires submit(). Template-based logic stays in db.js as graceful fallback when the AI hook errors. Cost: ~$0.001-0.003 cached per refresh on Haiku.)
+**Last updated:** 2026-05-12 (**Chat system prompt — platform craft**: added a universal "Platform craft (applies to every brand)" section to the `/api/ai/chat` SYSTEM_PROMPT covering Instagram / LinkedIn / X copywriting conventions + cross-platform adaptation. Defers to brand voice on tension. Cached as part of the system block — only re-billed on cache invalidation, not per call. Brand-specific quirks still flow exclusively through `brand_kit_notes` (the memory tool), never pre-baked into the system prompt.)
+
+**Previous (2026-05-12):** AI Co-pilot Phase 3 — dynamic suggestion chips, streaming + Haiku. New `/api/ai/suggestions` route using `streamObject` + Zod schema + temperature 0.9 on **claude-haiku-4-5**. Chips render progressively via `experimental_useObject`. Refresh button re-fires submit(). Template-based logic stays in db.js as graceful fallback.
 
 **Previous (2026-05-12):** AI Co-pilot v2 Phase 2c — `AIImagePromptPanel.jsx` rewritten around `experimental_useObject` (ideas) + `useCompletion` (prompt). `/api/ai/image` switched to text-stream protocol on both modes. Body shape change on prompt mode (`details` → `prompt`). Idea cards now render PROGRESSIVELY as the JSON streams. **Track A complete** — all client-side AI surfaces on AI SDK native hooks; bespoke `parseSse` fully retired.
 
@@ -19,6 +21,23 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-12 — Chat system prompt: universal platform craft ([PR pending])
+Small standalone improvement to [`/api/ai/chat`](web/api/ai/chat.ts)'s `SYSTEM_PROMPT`. Adds a "Platform craft (applies to every brand)" section between "How to behave" and "Available tools" — universal copywriting conventions for Instagram / LinkedIn / X plus a cross-platform adaptation rule.
+
+What's in the new section:
+- **Instagram**: hook-in-first-line emphasis (above-the-fold visibility), sensory language, scannable line breaks, ~150-300 words sweet spot, CTA / non-generic question close, hashtags only-if-relevant on last line, emojis sparingly.
+- **LinkedIn**: authority + warmth opening (banning "I'm excited to share…" type clichés), 1-2-sentence paragraphs for mobile collapse, ~150-300 words, forward-looking insight / substantive question close, no emojis unless brand voice permits, hashtags on final line if any.
+- **X**: 280-char hard cap, ruthless trimming when over, hashtag/emoji guardrails, "only propose a thread if the admin asks".
+- **Cross-platform**: match the angle, adapt the format. Don't copy-paste captions across surfaces. If a platform genuinely doesn't fit, say so and propose a different angle rather than forcing a bad fit.
+
+Deliberately NOT pre-baking any brand-specific quirks (Bamboo Bear voice, Bamboo Bear hashtags, etc.) — those belong in `brand_kit_notes` so they're maintainable per brand without code changes. The system prompt is the universal baseline; the brand-context blob + notes is the per-brand layer; the brand voice wins when there's tension between them.
+
+Cost impact: ~400 tokens added to the system prompt — cached as part of the existing system block (`providerOptions.anthropic.cacheControl: { type: 'ephemeral' }`), so it only re-bills on cache miss. After the first call in a 5-min window for a brand, subsequent calls read the whole expanded prompt from cache at the cached rate. No measurable cost increase in practice.
+
+This was deferred during Track A (the AI Co-pilot v2 migration) — it was intentional to ship the v2 plumbing first without mixing in prompt-quality changes. Now's the moment.
+
+- **Sections touched:** Recent changes log; `Last updated`; §10 Edge functions / API routes (`/api/ai/chat` SYSTEM_PROMPT documented).
 
 ### 2026-05-12 — AI Co-pilot Phase 3: dynamic suggestion chips + Refresh ([PR pending])
 First post-Track-A net-new improvement to the Co-pilot. Replaced [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx)'s hardcoded `EMPTY_SUGGESTIONS` array (three generic prompt-starters that have shipped since the first Co-pilot PR) with **AI-generated brand-aware suggestion chips** + a **Refresh button** so the admin can get different angles when the current set isn't relevant.
