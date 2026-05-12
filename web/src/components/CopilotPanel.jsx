@@ -39,6 +39,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Icon } from "./Icon.jsx";
 import { supabase } from "../lib/supabase.js";
+import { loadCopilotSuggestions } from "../lib/db.js";
 // AI Elements' `Conversation` was intentionally dropped from Phase 2a —
 // its stick-to-bottom scroll behaviour conflicts with the existing
 // `.copilot-scroll` overflow logic. We keep manual auto-scroll via a
@@ -77,7 +78,12 @@ function persistMessages(userId, accountId, messages) {
   }
 }
 
-const EMPTY_SUGGESTIONS = [
+// Fallback suggestions used while the brand-aware set is loading OR if
+// the lookup fails. Same three strings as v1's hardcoded EMPTY_SUGGESTIONS
+// so a cold first-render (no Supabase round-trip done yet) doesn't show
+// a blank welcome state — it shows the generics, then upgrades to
+// brand-aware chips when loadCopilotSuggestions resolves.
+const FALLBACK_SUGGESTIONS = [
   "Draft an Instagram post about our newest product for next Tuesday at 10am",
   "Plan three posts for next week across IG and LinkedIn",
   "Brainstorm a campaign concept for the holiday season",
@@ -122,6 +128,29 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
   const [draft, setDraft] = useState("");
   const textareaRef = useRef(null);
   const scrollRef = useRef(null);
+
+  // Dynamic suggestion chips reflecting the brand's recent activity.
+  // Starts as the v1 generic set (so the welcome screen renders
+  // instantly without a flash of empty state), then upgrades to the
+  // brand-aware set once loadCopilotSuggestions resolves. Reloads on
+  // accountId change so brand-switch swaps the chips in tandem with
+  // the rest of the panel.
+  const [suggestions, setSuggestions] = useState(FALLBACK_SUGGESTIONS);
+  useEffect(() => {
+    if (!accountId) return;
+    let cancelled = false;
+    loadCopilotSuggestions({ accountId })
+      .then((rows) => {
+        if (cancelled) return;
+        if (Array.isArray(rows) && rows.length > 0) setSuggestions(rows);
+      })
+      .catch(() => {
+        // Best-effort — keep the fallback set on failure. No user-facing
+        // error: an empty welcome screen would be worse than showing
+        // generic chips.
+      });
+    return () => { cancelled = true; };
+  }, [accountId]);
 
   const isBusy = status === "streaming" || status === "submitted";
 
@@ -218,7 +247,7 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
             <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
             <p>Ask me to draft a post, plan next week's content, or brainstorm a campaign — I'll create real drafts in the Social Calendar that you can edit and submit.</p>
             <div className="copilot-suggestions">
-              {EMPTY_SUGGESTIONS.map((s, i) => (
+              {suggestions.map((s, i) => (
                 <button
                   key={i}
                   className="copilot-suggestion"

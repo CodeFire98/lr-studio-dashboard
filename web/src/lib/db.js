@@ -1746,6 +1746,163 @@ export async function deletePostPlan(id) {
   if (error) throw error;
 }
 
+// =====================================================================
+// AI Co-pilot — dynamic suggestion chips
+// =====================================================================
+// Builds 3-4 brand-aware suggestion strings for the Co-pilot's empty
+// state. The chips are pre-filled prompts the admin can click to drop
+// into the message box. v1 of the Co-pilot used a hardcoded array of
+// generic prompts; Phase 3 makes them reflect the brand's actual
+// recent activity (latest approved post concept) + brand-kit categories
+// + a date-aware brainstorm starter.
+//
+// Deliberately client-side template-driven (not AI-generated): no extra
+// Anthropic call, no new server route, no loading state in the UI.
+// Suggestions are affordances ("what CAN I ask?"), not recommendations,
+// so a templated approach is appropriate.
+//
+// Returns up to 4 suggestion strings, capped, deduplicated. Always
+// returns something — falls back to v1's generic set if the brand has
+// no plans yet.
+// =====================================================================
+export async function loadCopilotSuggestions({ accountId } = {}) {
+  if (!accountId) return COPILOT_GENERIC_SUGGESTIONS.slice();
+
+  // Pull the last few approved plans + the brand-kit product_categories
+  // in parallel. Tight column lists — we don't need the full POST_PLAN_SELECT.
+  const [plansResult, kitResult] = await Promise.all([
+    supabase
+      .from('post_plans')
+      .select('concept, platforms, scheduled_at, status')
+      .eq('account_id', accountId)
+      .eq('status', 'approved')
+      .order('scheduled_at', { ascending: false })
+      .limit(3),
+    supabase
+      .from('brand_kits')
+      .select('product_categories')
+      .eq('account_id', accountId)
+      .maybeSingle(),
+  ]);
+
+  // Best-effort — if either query fails, fall back to generics. No throw:
+  // the panel still works without dynamic chips.
+  const plans = Array.isArray(plansResult.data) ? plansResult.data : [];
+  const categories = Array.isArray(kitResult.data?.product_categories)
+    ? kitResult.data.product_categories.filter((c) => typeof c === 'string' && c.trim())
+    : [];
+
+  const suggestions = [];
+
+  // 1. Follow-up to the most recent approved post — cites the actual
+  //    concept so the admin sees "we know your brand". Only emit if the
+  //    concept is non-empty and short enough to fit in a chip cleanly.
+  const latest = plans[0];
+  if (latest?.concept && latest.concept.trim().length > 0) {
+    const conceptSnippet = truncateConcept(latest.concept);
+    const nextWeekday = formatNextWeekdayPhrase();
+    suggestions.push(`Draft a follow-up to "${conceptSnippet}" for ${nextWeekday} at 10am`);
+  }
+
+  // 2. Plan-the-week starter — uses the platforms actually used recently
+  //    if we have data, otherwise the canonical IG + LinkedIn pairing.
+  const recentPlatforms = pickRecentPlatformsLabel(plans);
+  suggestions.push(`Plan three posts for next week across ${recentPlatforms}`);
+
+  // 3. Campaign around a specific product/category if the brand has any.
+  if (categories.length > 0) {
+    // Pick the first listed — brand-kit ordering is meaningful (agency curates).
+    suggestions.push(`Plan a campaign featuring our ${categories[0]} for next month`);
+  }
+
+  // 4. Brainstorm / open-ended starter — date-aware so it doesn't feel
+  //    canned across the year. Always emit so we have a "talk to me about
+  //    creative direction" affordance.
+  suggestions.push(`Brainstorm a campaign concept for ${formatBrainstormSeasonPhrase()}`);
+
+  // Trim to 4 max, dedupe (defensive — shouldn't fire in practice).
+  const deduped = [];
+  for (const s of suggestions) {
+    if (!deduped.includes(s)) deduped.push(s);
+    if (deduped.length >= 4) break;
+  }
+  return deduped.length > 0 ? deduped : COPILOT_GENERIC_SUGGESTIONS.slice();
+}
+
+// Fallback set — matches v1's EMPTY_SUGGESTIONS exactly so brand-new
+// brands (zero plans, no product_categories) see the same chips they
+// saw pre-Phase-3.
+const COPILOT_GENERIC_SUGGESTIONS = [
+  'Draft an Instagram post about our newest product for next Tuesday at 10am',
+  'Plan three posts for next week across IG and LinkedIn',
+  'Brainstorm a campaign concept for the holiday season',
+];
+
+function truncateConcept(concept) {
+  // Concepts are usually a single sentence. Cap at ~60 chars so the
+  // chip stays tappable and the quote'd snippet doesn't dominate.
+  const trimmed = concept.trim();
+  if (trimmed.length <= 60) return trimmed;
+  return trimmed.slice(0, 57).trimEnd() + '…';
+}
+
+function formatNextWeekdayPhrase() {
+  // Pick the next occurrence of Tuesday OR Thursday — these tend to be
+  // good "draft and schedule" days for IG/LinkedIn. Avoids "Sunday" /
+  // "Saturday" which feel low-priority. Always future, never today.
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0=Sun..6=Sat
+  // 2=Tue, 4=Thu. Pick the closer of the two that's in the future.
+  const candidates = [2, 4];
+  let best = null;
+  for (const target of candidates) {
+    let delta = target - dayOfWeek;
+    if (delta <= 0) delta += 7;
+    if (best === null || delta < best.delta) best = { target, delta };
+  }
+  return best.target === 2 ? 'next Tuesday' : 'next Thursday';
+}
+
+function pickRecentPlatformsLabel(plans) {
+  const seen = new Set();
+  for (const p of plans) {
+    if (Array.isArray(p.platforms)) {
+      for (const platform of p.platforms) {
+        if (typeof platform === 'string') seen.add(platform);
+      }
+    }
+  }
+  const ordered = ['instagram', 'linkedin', 'x'].filter((p) => seen.has(p));
+  if (ordered.length === 0) return 'IG and LinkedIn'; // fallback
+  if (ordered.length === 1) return labelForPlatform(ordered[0]);
+  if (ordered.length === 2) {
+    return `${labelForPlatform(ordered[0])} and ${labelForPlatform(ordered[1])}`;
+  }
+  return `${labelForPlatform(ordered[0])}, ${labelForPlatform(ordered[1])}, and ${labelForPlatform(ordered[2])}`;
+}
+
+function labelForPlatform(platform) {
+  if (platform === 'instagram') return 'IG';
+  if (platform === 'linkedin') return 'LinkedIn';
+  if (platform === 'x') return 'X';
+  return platform;
+}
+
+function formatBrainstormSeasonPhrase() {
+  // Use next month's name. Always future-looking. Wraps "December" →
+  // "the new year" so the brainstorm chip in late December doesn't
+  // suggest January twice.
+  const now = new Date();
+  const monthIdx = now.getMonth();
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  if (monthIdx === 11) return 'the new year';
+  const nextMonth = monthNames[(monthIdx + 1) % 12];
+  return `next ${nextMonth}`;
+}
+
 export function subscribeToPostPlans(onChange, { accountId } = {}) {
   // Channel names MUST be unique per subscription. supabase-realtime-js
   // tracks subscribed topics globally; two channels with the same name
