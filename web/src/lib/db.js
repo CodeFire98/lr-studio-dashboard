@@ -2430,6 +2430,195 @@ export function subscribeToAllPostPlanPublications(onChange) {
 }
 
 // =====================================================================
+// Post-plan engagement: snapshots + embed cache
+// =====================================================================
+// `post_engagement_snapshots` is append-only — one row per Apify scrape.
+// We only read the LATEST per publication for the tile. Historical rows
+// power the future monthly-reports feature.
+//
+// `post_embed_cache` is 1:1 with publications. Holds the visible
+// content (author, caption, hero image) for the static embed card.
+//
+// Writes happen exclusively via /api/engagement/refresh (service-role)
+// — there's no client INSERT path. The db.js exports here are read-only
+// plus a tiny POST helper that calls the route.
+
+export function mapEngagementSnapshotRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    publicationId: row.publication_id,
+    fetchedAt: row.fetched_at,
+    likeCount: row.like_count,
+    commentCount: row.comment_count,
+    shareCount: row.share_count,
+    saveCount: row.save_count,
+    viewCount: row.view_count,
+    bookmarkCount: row.bookmark_count,
+    quoteCount: row.quote_count,
+    reactionCount: row.reaction_count,
+    engagementRate: row.engagement_rate,
+    availabilityNotes: row.availability_notes,
+    actorId: row.actor_id,
+    actorRunId: row.actor_run_id,
+    scrapeStatus: row.scrape_status, // 'ok' | 'partial' | 'failed' | 'blocked'
+    errorMessage: row.error_message,
+    createdAt: row.created_at,
+  };
+}
+
+export function mapEmbedCacheRow(row) {
+  if (!row) return null;
+  return {
+    publicationId: row.publication_id,
+    authorHandle: row.author_handle,
+    authorDisplayName: row.author_display_name,
+    authorAvatarUrl: row.author_avatar_url,
+    caption: row.caption,
+    mediaType: row.media_type, // 'image' | 'video' | 'carousel' | 'text' | 'unknown'
+    mediaUrl: row.media_url,
+    mediaUrls: Array.isArray(row.media_urls) ? row.media_urls : null,
+    mediaAspectRatio: row.media_aspect_ratio,
+    postedAt: row.posted_at,
+    oembedHtml: row.oembed_html,
+    lastRefreshedAt: row.last_refreshed_at,
+    refreshStatus: row.refresh_status, // 'ok' | 'failed' | 'stale'
+  };
+}
+
+// Bulk loader — returns Map<publicationId, latestSnapshot>. The
+// schema indexes (publication_id, fetched_at desc) so the
+// distinct-on emulation here is cheap: fetch in order, keep first
+// hit per publication_id.
+export async function loadLatestEngagementSnapshots(publicationIds) {
+  if (!Array.isArray(publicationIds) || publicationIds.length === 0) return new Map();
+  const { data, error } = await supabase
+    .from('post_engagement_snapshots')
+    .select('*')
+    .in('publication_id', publicationIds)
+    .order('fetched_at', { ascending: false });
+  if (error) throw error;
+  const out = new Map();
+  for (const row of data || []) {
+    if (!out.has(row.publication_id)) {
+      out.set(row.publication_id, mapEngagementSnapshotRow(row));
+    }
+  }
+  return out;
+}
+
+export async function loadEmbedCacheForPublications(publicationIds) {
+  if (!Array.isArray(publicationIds) || publicationIds.length === 0) return new Map();
+  const { data, error } = await supabase
+    .from('post_embed_cache')
+    .select('*')
+    .in('publication_id', publicationIds);
+  if (error) throw error;
+  const out = new Map();
+  for (const row of data || []) {
+    out.set(row.publication_id, mapEmbedCacheRow(row));
+  }
+  return out;
+}
+
+// Subscribe to ALL engagement-snapshot changes project-wide. LivePostsView
+// re-filters by the publication ids it knows about. Mirrors the
+// subscribeToAllPostPlanPublications pattern — cheaper than per-publication
+// channels at this row count.
+export function subscribeToAllEngagementSnapshots(onChange) {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const channel = supabase
+    .channel(`lr_post_engagement_snapshots_stream_${suffix}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'post_engagement_snapshots' },
+      async (payload) => {
+        try {
+          if (payload.eventType === 'DELETE') {
+            onChange({ type: 'DELETE', id: payload.old.id, publicationId: payload.old.publication_id });
+            return;
+          }
+          // Fetch the full row — payload.new strips some columns under RLS.
+          const { data } = await supabase
+            .from('post_engagement_snapshots')
+            .select('*')
+            .eq('id', payload.new.id)
+            .maybeSingle();
+          if (data) {
+            onChange({ type: payload.eventType, snapshot: mapEngagementSnapshotRow(data) });
+          }
+        } catch (e) {
+          console.warn('post_engagement_snapshots realtime failed', e);
+        }
+      }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+export function subscribeToAllEmbedCache(onChange) {
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const channel = supabase
+    .channel(`lr_post_embed_cache_stream_${suffix}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'post_embed_cache' },
+      async (payload) => {
+        try {
+          if (payload.eventType === 'DELETE') {
+            onChange({ type: 'DELETE', publicationId: payload.old.publication_id });
+            return;
+          }
+          const { data } = await supabase
+            .from('post_embed_cache')
+            .select('*')
+            .eq('publication_id', payload.new.publication_id)
+            .maybeSingle();
+          if (data) {
+            onChange({ type: payload.eventType, embed: mapEmbedCacheRow(data) });
+          }
+        } catch (e) {
+          console.warn('post_embed_cache realtime failed', e);
+        }
+      }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// Fires the production /api/engagement/refresh route for a single
+// publication. Server-side gates the call to is_agency=true; this client
+// helper just forwards the JWT and reads the response.
+//
+// Returns the parsed JSON body on 2xx. Throws an Error with a useful
+// message on non-2xx (including 403 for brand users hitting "Refresh now"
+// — surface that as a "agency-only for now" toast at the call site).
+export async function refreshEngagement(publicationId) {
+  if (!publicationId) throw new Error('refreshEngagement: publicationId is required');
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Not authenticated');
+  const res = await fetch('/api/engagement/refresh', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ publicationId }),
+  });
+  const text = await res.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : null; } catch { payload = { raw: text }; }
+  if (!res.ok) {
+    const msg = payload?.error || `Engagement refresh failed: HTTP ${res.status}`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.payload = payload;
+    throw err;
+  }
+  return payload;
+}
+
+// =====================================================================
 // Post-plan unread tracking (post_plan_views)
 // =====================================================================
 // A comment counts as "unread" for user U if either there's no view row

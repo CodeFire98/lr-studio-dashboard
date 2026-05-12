@@ -7,6 +7,9 @@
   "functions": {
     "api/fetch-trends.ts": {
       "maxDuration": 300
+    },
+    "api/engagement/refresh.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [

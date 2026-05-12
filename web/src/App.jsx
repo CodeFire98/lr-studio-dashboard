@@ -987,7 +987,7 @@ const App = () => {
       return <IdeateView auth={auth} accountId={calendarAccountId}/>;
     }
     if (route.view === "library") return <LibraryView auth={auth} accountId={calendarAccountId} setRoute={setRoute}/>;
-    if (route.view === "posts") return <LivePostsView accountId={calendarAccountId} accountName={calendarAccountName} setRoute={setRoute}/>;
+    if (route.view === "posts") return <LivePostsView accountId={calendarAccountId} accountName={calendarAccountName} setRoute={setRoute} isAgency={!!auth?.isAgency}/>;
     if (route.view === "performance") return <PerformanceView accountId={calendarAccountId}/>;
     if (route.view === "team") return <TeamView overrideAccountId={auth?.isAgency ? calendarAccountId : null} />;
     if (route.view === "brand") return <BrandKitView accountId={calendarAccountId}/>;

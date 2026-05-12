@@ -12,16 +12,22 @@
 
    Empty state nudges the agency / brand to mark plans as posted from
    the detail view; that's the only way rows land here. */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import {
   PLATFORMS,
   PLATFORM_BY_KEY,
   PlatformChip,
 } from './postPlanShared.jsx';
+import { LivePostEmbed } from './LivePostEmbed.jsx';
 import {
   loadBrandPublications,
   subscribeToAllPostPlanPublications,
+  loadLatestEngagementSnapshots,
+  loadEmbedCacheForPublications,
+  subscribeToAllEngagementSnapshots,
+  subscribeToAllEmbedCache,
+  refreshEngagement,
 } from '../lib/db.js';
 
 const PLATFORM_FILTERS = [
@@ -58,14 +64,119 @@ const groupByMonth = (rows) => {
   return Array.from(groups.values());
 };
 
-const LiveTile = ({ row, onOpenPlan }) => {
+// Format a count for the metrics row: 1234 → "1.2k", 1_200_000 → "1.2M".
+// Returns "—" when the count is null/undefined (the platform doesn't
+// expose this metric or we haven't scraped yet).
+const formatCount = (n) => {
+  if (n === null || n === undefined) return '—';
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
+  if (n < 1000) return String(n);
+  if (n < 10000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+  if (n < 1_000_000) return Math.round(n / 1000) + 'k';
+  return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+};
+
+const formatRelative = (iso) => {
+  if (!iso) return '';
+  try {
+    const then = new Date(iso).getTime();
+    if (!Number.isFinite(then)) return '';
+    const diff = Date.now() - then;
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return 'just now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const d = Math.floor(hr / 24);
+    return `${d}d ago`;
+  } catch {
+    return '';
+  }
+};
+
+// Metrics row — only renders fields the platform exposes (per
+// availability_notes on the snapshot). Null counts render "—" instead
+// of "0" so the user can tell "metric not exposed" from "really zero".
+const MetricsRow = ({ snapshot }) => {
+  const items = [
+    { key: 'like_count',     icon: '♥', label: 'likes',     value: snapshot?.likeCount },
+    { key: 'comment_count',  icon: '💬', label: 'comments', value: snapshot?.commentCount },
+    { key: 'share_count',    icon: '↗',  label: 'shares',   value: snapshot?.shareCount },
+    { key: 'bookmark_count', icon: '🔖', label: 'saves',    value: snapshot?.bookmarkCount ?? snapshot?.saveCount },
+    { key: 'view_count',     icon: '👁', label: 'views',    value: snapshot?.viewCount },
+  ];
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 14,
+        padding: '8px 4px 0',
+        fontSize: 12,
+        color: 'var(--ink-2)',
+      }}
+    >
+      {items.map((m) => (
+        <div
+          key={m.key}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          title={`${formatCount(m.value)} ${m.label}`}
+        >
+          <span aria-hidden style={{ opacity: 0.8 }}>{m.icon}</span>
+          <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
+            {formatCount(m.value)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// One-liner reflecting refresh state — drives the "Refreshed 2h ago"
+// footer below the metrics row.
+const refreshFooter = ({ snapshot, refreshing, lastError, embed }) => {
+  if (refreshing) return 'Fetching metrics…';
+  if (lastError) return `Refresh failed: ${lastError}`;
+  if (!snapshot) return 'No metrics yet';
+  if (snapshot.scrapeStatus === 'blocked') {
+    return 'Metrics paused — Apify monthly quota exhausted';
+  }
+  if (snapshot.scrapeStatus === 'failed') {
+    return snapshot.errorMessage ? `Last refresh failed: ${snapshot.errorMessage}` : 'Last refresh failed';
+  }
+  const ts = formatRelative(snapshot.fetchedAt);
+  const note = snapshot.scrapeStatus === 'partial' ? ' (partial)' : '';
+  // Embed staleness flag: when the actor returned counts but no media,
+  // the metrics are real but the card may be using an older image.
+  const stale = embed?.refreshStatus === 'stale' ? ' · embed stale' : '';
+  return ts ? `Refreshed ${ts}${note}${stale}` : `Refreshed${note}${stale}`;
+};
+
+const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => {
   const platCfg = PLATFORM_BY_KEY[row.platform];
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastError, setLastError] = useState('');
+
+  const handleRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setLastError('');
+    try {
+      await onRefresh(row.id);
+    } catch (e) {
+      setLastError(e?.message || String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, onRefresh, row.id]);
+
   return (
     <div
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: 8,
+        gap: 10,
         padding: 14,
         border: '1px solid var(--line)',
         borderRadius: 10,
@@ -100,6 +211,68 @@ const LiveTile = ({ row, onOpenPlan }) => {
       >
         {row.plan?.concept || 'Untitled post'}
       </button>
+
+      {/* Embed card — only when the embed cache has been populated for
+          this publication. Until /api/engagement/refresh writes one, the
+          slot stays empty (the metrics row + link below already convey
+          the post identity). */}
+      {embed && (
+        <LivePostEmbed embed={embed} platform={row.platform} liveUrl={row.liveUrl} />
+      )}
+
+      {/* Metrics row — always renders, with "—" for null fields so the
+          tile reads the same shape whether scraped or not. */}
+      <MetricsRow snapshot={snapshot} />
+
+      {/* Refresh state + agency-only "Refresh now" affordance */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 11,
+          color: 'var(--ink-4)',
+          flexWrap: 'wrap',
+        }}
+      >
+        <span style={{ flex: 1, minWidth: 0 }}>
+          {refreshFooter({ snapshot, refreshing, lastError, embed })}
+        </span>
+        {isAgency && row.platform === 'instagram' && (
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            style={{
+              padding: '3px 8px',
+              fontSize: 11,
+              border: '1px solid var(--line)',
+              borderRadius: 4,
+              background: 'transparent',
+              color: refreshing ? 'var(--ink-4)' : 'var(--ink-2)',
+              cursor: refreshing ? 'wait' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+            title="Re-scrape engagement metrics from Apify"
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh now'}
+          </button>
+        )}
+        {isAgency && row.platform !== 'instagram' && (
+          <span
+            style={{
+              padding: '3px 8px',
+              fontSize: 11,
+              border: '1px dashed var(--line)',
+              borderRadius: 4,
+              color: 'var(--ink-4)',
+            }}
+            title="X and LinkedIn refresh ship in a follow-up PR"
+          >
+            {platCfg?.label || row.platform} support coming soon
+          </span>
+        )}
+      </div>
 
       {row.liveUrl ? (
         <a
@@ -136,12 +309,17 @@ const LiveTile = ({ row, onOpenPlan }) => {
   );
 };
 
-const LivePostsView = ({ accountId, accountName, setRoute }) => {
+const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [platformKey, setPlatformKey] = useState('all');
   const [q, setQ] = useState('');
+  // Engagement state — keyed by publication id. The bulk loaders below
+  // run after publications resolve, and realtime keeps them in sync as
+  // /api/engagement/refresh writes new rows.
+  const [snapshotsByPubId, setSnapshotsByPubId] = useState(() => new Map());
+  const [embedsByPubId, setEmbedsByPubId] = useState(() => new Map());
 
   useEffect(() => {
     if (!accountId) {
@@ -178,6 +356,74 @@ const LivePostsView = ({ accountId, accountName, setRoute }) => {
     });
     return () => unsub?.();
   }, [accountId]);
+
+  // Bulk-load engagement once we know the publication ids in view. Two
+  // round-trips: latest-snapshot-per-publication and the embed cache.
+  // Both are cheap (skinny rows, indexed by publication_id).
+  useEffect(() => {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      setSnapshotsByPubId(new Map());
+      setEmbedsByPubId(new Map());
+      return undefined;
+    }
+    const pubIds = rows.map((r) => r.id);
+    let cancelled = false;
+    Promise.all([
+      loadLatestEngagementSnapshots(pubIds).catch((e) => { console.warn('snapshots load failed', e); return new Map(); }),
+      loadEmbedCacheForPublications(pubIds).catch((e) => { console.warn('embed cache load failed', e); return new Map(); }),
+    ]).then(([snaps, embeds]) => {
+      if (cancelled) return;
+      setSnapshotsByPubId(snaps);
+      setEmbedsByPubId(embeds);
+    });
+    return () => { cancelled = true; };
+  }, [rows]);
+
+  // Realtime — snapshot inserts and embed-cache upserts both write to
+  // tables that are in `supabase_realtime`. Project-wide subscribe +
+  // re-filter on receive matches the publications-stream pattern.
+  useEffect(() => {
+    if (!accountId) return undefined;
+    const unsubSnap = subscribeToAllEngagementSnapshots((evt) => {
+      if (evt.type === 'DELETE' || !evt.snapshot) return; // append-only; deletes rare
+      setSnapshotsByPubId((prev) => {
+        const pubId = evt.snapshot.publicationId;
+        // Only update if this snapshot is newer than what we have (or first one).
+        const existing = prev.get(pubId);
+        if (existing && existing.fetchedAt && evt.snapshot.fetchedAt &&
+            existing.fetchedAt > evt.snapshot.fetchedAt) {
+          return prev;
+        }
+        const next = new Map(prev);
+        next.set(pubId, evt.snapshot);
+        return next;
+      });
+    });
+    const unsubEmbed = subscribeToAllEmbedCache((evt) => {
+      if (evt.type === 'DELETE') {
+        setEmbedsByPubId((prev) => {
+          const next = new Map(prev);
+          next.delete(evt.publicationId);
+          return next;
+        });
+        return;
+      }
+      if (!evt.embed) return;
+      setEmbedsByPubId((prev) => {
+        const next = new Map(prev);
+        next.set(evt.embed.publicationId, evt.embed);
+        return next;
+      });
+    });
+    return () => { unsubSnap?.(); unsubEmbed?.(); };
+  }, [accountId]);
+
+  // Agency-only "Refresh now" handler — POSTs to /api/engagement/refresh.
+  // Realtime picks up the new snapshot + embed; the tile re-renders
+  // without us having to merge anything optimistically here.
+  const handleRefresh = useCallback(async (publicationId) => {
+    await refreshEngagement(publicationId);
+  }, []);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -312,7 +558,15 @@ const LivePostsView = ({ accountId, accountName, setRoute }) => {
                 gap: 12,
               }}>
                 {g.rows.map((row) => (
-                  <LiveTile key={row.id} row={row} onOpenPlan={openPlan} />
+                  <LiveTile
+                    key={row.id}
+                    row={row}
+                    snapshot={snapshotsByPubId.get(row.id) || null}
+                    embed={embedsByPubId.get(row.id) || null}
+                    isAgency={!!isAgency}
+                    onRefresh={handleRefresh}
+                    onOpenPlan={openPlan}
+                  />
                 ))}
               </div>
             </section>
