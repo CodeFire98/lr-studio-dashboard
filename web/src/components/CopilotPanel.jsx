@@ -34,11 +34,13 @@
 // =====================================================================
 
 /* eslint-disable */
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useChat } from "@ai-sdk/react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useChat, experimental_useObject as useObject } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import { z } from "zod";
 import { Icon } from "./Icon.jsx";
 import { supabase } from "../lib/supabase.js";
+import { buildTemplatedCopilotSuggestions } from "../lib/db.js";
 // AI Elements' `Conversation` was intentionally dropped from Phase 2a —
 // its stick-to-bottom scroll behaviour conflicts with the existing
 // `.copilot-scroll` overflow logic. We keep manual auto-scroll via a
@@ -77,11 +79,25 @@ function persistMessages(userId, accountId, messages) {
   }
 }
 
-const EMPTY_SUGGESTIONS = [
+// Fallback suggestions used while the AI stream hasn't produced its first
+// chip yet AND when both AI + templated paths fail. Same three strings
+// as v1's hardcoded EMPTY_SUGGESTIONS so a cold first-render doesn't
+// show a blank welcome state.
+const FALLBACK_SUGGESTIONS = [
   "Draft an Instagram post about our newest product for next Tuesday at 10am",
   "Plan three posts for next week across IG and LinkedIn",
   "Brainstorm a campaign concept for the holiday season",
 ];
+
+// Mirror of the server's SUGGESTIONS_SCHEMA (web/api/ai/suggestions.ts).
+// experimental_useObject parses the streaming JSON deltas into a
+// DeepPartial<typeof this>. Schema drops the server-side .describe()
+// hints (those are for the model) and the .min(8)/.max(150)/.length(4)
+// constraints (those are enforced server-side; the client just needs
+// the shape to extract partials).
+const SUGGESTIONS_SCHEMA = z.object({
+  suggestions: z.array(z.string()),
+});
 
 const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan, brandSlug }) => {
   // DefaultChatTransport handles auth header injection per request and
@@ -122,6 +138,97 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
   const [draft, setDraft] = useState("");
   const textareaRef = useRef(null);
   const scrollRef = useRef(null);
+
+  // Suggestion chips for the welcome screen.
+  //
+  // PRIMARY path: experimental_useObject streams JSON deltas from
+  // /api/ai/suggestions (server uses streamObject + Haiku 4.5 +
+  // temperature 0.9 for variety). The chips render PROGRESSIVELY as
+  // each entry's string lands in the partial JSON — same UX pattern
+  // as the image-ideas panel. Refresh button re-fires submit().
+  //
+  // FALLBACK path: when the hook errors (offline, auth, allowlist,
+  // brand-kit missing), we fire `buildTemplatedCopilotSuggestions`
+  // for deterministic brand-aware chips from Supabase data alone.
+  // No AI cost, no streaming, no spinner — just a graceful safety net.
+  //
+  // FINAL FALLBACK: FALLBACK_SUGGESTIONS hardcoded set, so the welcome
+  // screen never renders blank even on Supabase outage.
+  const suggestionsHook = useObject({
+    api: "/api/ai/suggestions",
+    schema: SUGGESTIONS_SCHEMA,
+    fetch: async (url, init) => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers = new Headers(init?.headers);
+      if (session?.access_token) {
+        headers.set("Authorization", `Bearer ${session.access_token}`);
+      }
+      return fetch(url, { ...init, headers });
+    },
+    onError: (err) => {
+      // eslint-disable-next-line no-console
+      console.error("[Copilot/suggestions] stream error:", err);
+    },
+  });
+
+  // Templated fallback — fires only when the AI hook errors. Stored
+  // separately so we can prefer the (more recent) hook output if it
+  // recovers on a subsequent refresh.
+  const [templatedSuggestions, setTemplatedSuggestions] = useState(null);
+
+  // Auto-submit on accountId change (mount + brand switch). Brand
+  // switching also clears the templated fallback so we don't show a
+  // previous brand's chips while the new brand's hook is in flight.
+  useEffect(() => {
+    if (!accountId) return;
+    setTemplatedSuggestions(null);
+    suggestionsHook.submit({ accountId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+
+  // On hook error, kick off the templated fallback. Best-effort — if
+  // even Supabase fails, the FALLBACK_SUGGESTIONS hardcoded set wins
+  // via the derived `suggestions` below.
+  useEffect(() => {
+    if (!suggestionsHook.error || !accountId) return;
+    let cancelled = false;
+    buildTemplatedCopilotSuggestions({ accountId })
+      .then((rows) => {
+        if (cancelled) return;
+        if (Array.isArray(rows) && rows.length > 0) setTemplatedSuggestions(rows);
+      })
+      .catch(() => { /* swallow — FALLBACK_SUGGESTIONS will render */ });
+    return () => { cancelled = true; };
+  }, [suggestionsHook.error, accountId]);
+
+  // Derived suggestion list — preference order:
+  //   1. AI hook output (even partial — chips fill in progressively)
+  //   2. Templated fallback (after hook error)
+  //   3. Hardcoded FALLBACK_SUGGESTIONS (cold start / total outage)
+  const suggestions = useMemo(() => {
+    const fromHook = suggestionsHook.object?.suggestions;
+    if (Array.isArray(fromHook)) {
+      // Filter out undefined entries (DeepPartial — server hasn't
+      // emitted that slot yet) and empty strings. As soon as we have
+      // at least one valid chip, prefer the live stream over fallbacks.
+      const cleaned = fromHook
+        .map((s) => (typeof s === "string" ? s.trim() : ""))
+        .filter((s) => s.length > 0);
+      if (cleaned.length > 0) return cleaned;
+    }
+    if (Array.isArray(templatedSuggestions) && templatedSuggestions.length > 0) {
+      return templatedSuggestions;
+    }
+    return FALLBACK_SUGGESTIONS;
+  }, [suggestionsHook.object, templatedSuggestions]);
+
+  const suggestionsLoading = suggestionsHook.isLoading;
+
+  const refreshSuggestions = useCallback(() => {
+    if (!accountId) return;
+    setTemplatedSuggestions(null); // re-attempt AI path; drop stale fallback
+    suggestionsHook.submit({ accountId });
+  }, [accountId, suggestionsHook]);
 
   const isBusy = status === "streaming" || status === "submitted";
 
@@ -217,10 +324,28 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
           <div className="copilot-welcome">
             <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
             <p>Ask me to draft a post, plan next week's content, or brainstorm a campaign — I'll create real drafts in the Social Calendar that you can edit and submit.</p>
+            <div className="copilot-suggestions-head">
+              <span className="copilot-suggestions-label">Try one of these</span>
+              <button
+                type="button"
+                className="copilot-suggestions-refresh"
+                onClick={refreshSuggestions}
+                disabled={suggestionsLoading || !accountId}
+                title="Generate fresh suggestions"
+                aria-label="Refresh suggestions"
+              >
+                {suggestionsLoading ? (
+                  <span className="copilot-suggestions-spinner" aria-hidden />
+                ) : (
+                  <Icon name="refresh" size={11} />
+                )}
+                <span>Refresh</span>
+              </button>
+            </div>
             <div className="copilot-suggestions">
-              {EMPTY_SUGGESTIONS.map((s, i) => (
+              {suggestions.map((s, i) => (
                 <button
-                  key={i}
+                  key={`${i}-${s.slice(0, 16)}`}
                   className="copilot-suggestion"
                   onClick={() => {
                     setDraft(s);

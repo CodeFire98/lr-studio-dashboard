@@ -4682,11 +4682,61 @@ input, textarea { font: inherit; color: inherit; }
 }
 .copilot-welcome p { margin: 0 0 8px; }
 .copilot-welcome strong { color: var(--ink-2); font-weight: 500; }
-.copilot-suggestions {
+.copilot-suggestions-head {
   margin-top: var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.copilot-suggestions-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-4);
+  font-weight: 500;
+}
+.copilot-suggestions-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--ink-3);
+  cursor: pointer;
+  line-height: 1;
+}
+.copilot-suggestions-refresh:hover:not(:disabled) {
+  border-color: var(--line);
+  color: var(--accent);
+}
+.copilot-suggestions-refresh:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.copilot-suggestions-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--ink-5, rgba(0,0,0,0.15));
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: copilot-suggestions-spin 0.8s linear infinite;
+}
+@keyframes copilot-suggestions-spin {
+  to { transform: rotate(360deg); }
+}
+.copilot-suggestions {
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: opacity 150ms ease;
+}
+.copilot-suggestions.is-loading {
+  opacity: 0.55;
 }
 .copilot-suggestion {
   text-align: left;
@@ -4699,7 +4749,10 @@ input, textarea { font: inherit; color: inherit; }
   cursor: pointer;
   line-height: 1.35;
 }
-.copilot-suggestion:hover {
+.copilot-suggestion:disabled {
+  cursor: progress;
+}
+.copilot-suggestion:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }

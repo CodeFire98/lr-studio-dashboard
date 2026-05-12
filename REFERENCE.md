@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**AI Co-pilot v2 Phase 2c**: `AIImagePromptPanel.jsx` rewritten around `experimental_useObject` (ideas) + `useCompletion` (prompt). `/api/ai/image` switched from manual SSE writers to `streamObject(...).pipeTextStreamToResponse(res)` + `streamText(...).pipeTextStreamToResponse(res)` — text-stream protocol on both modes. Request body shape changes on prompt mode (`details` → `prompt`). Idea cards now render PROGRESSIVELY as the JSON streams. All client-side AI routes are now on the AI SDK's native hooks + text-stream protocol; the bespoke `parseSse` async generator is fully retired across the codebase. Bamboo-Bear-only allowlist scope unchanged.)
+**Last updated:** 2026-05-12 (**AI Co-pilot Phase 3 — dynamic suggestion chips, streaming + Haiku**: replaced CopilotPanel's hardcoded `EMPTY_SUGGESTIONS` with brand-aware suggestions streamed from a new `/api/ai/suggestions` route using `streamObject` + Zod schema + temperature 0.9 on **claude-haiku-4-5** (~2× faster than Sonnet for this size). Chips render PROGRESSIVELY via `experimental_useObject` — same UX as the image-ideas panel. **Refresh button** re-fires submit(). Template-based logic stays in db.js as graceful fallback when the AI hook errors. Cost: ~$0.001-0.003 cached per refresh on Haiku.)
+
+**Previous (2026-05-12):** AI Co-pilot v2 Phase 2c — `AIImagePromptPanel.jsx` rewritten around `experimental_useObject` (ideas) + `useCompletion` (prompt). `/api/ai/image` switched to text-stream protocol on both modes. Body shape change on prompt mode (`details` → `prompt`). Idea cards now render PROGRESSIVELY as the JSON streams. **Track A complete** — all client-side AI surfaces on AI SDK native hooks; bespoke `parseSse` fully retired.
 
 **Previous (2026-05-12):** AI Co-pilot v2 Phase 2b — `AICopyPreview.jsx` rewritten around `useCompletion`; `/api/ai/copy` switched to text-stream protocol. Body shape change `instruction` → `prompt`. Also a cleanup PR moving the two cached system blocks across all three routes from `messages` into the dedicated `system` parameter (silences AI SDK prompt-injection warning).
 
@@ -18,7 +20,35 @@
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
 
-### 2026-05-12 — AI Co-pilot v2 Phase 2c: AIImagePromptPanel rewrite around useObject + useCompletion ([PR pending])
+### 2026-05-12 — AI Co-pilot Phase 3: dynamic suggestion chips + Refresh ([PR pending])
+First post-Track-A net-new improvement to the Co-pilot. Replaced [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx)'s hardcoded `EMPTY_SUGGESTIONS` array (three generic prompt-starters that have shipped since the first Co-pilot PR) with **AI-generated brand-aware suggestion chips** + a **Refresh button** so the admin can get different angles when the current set isn't relevant.
+
+**New server route**: [/api/ai/suggestions](web/api/ai/suggestions.ts). One-shot `generateObject` call with a Zod schema (`{ suggestions: z.array(z.string().min(8).max(150)).length(4) }`), temperature 0.9 for variety between calls. Reuses the cached brand-context blob (same cache pool as chat / copy / image — one 5-min TTL). Anthropic cost: ~$0.005-0.010 first call (cache miss), ~$0.001-0.003 cached. Refresh-heavy admin (10 clicks in a session) ≈ $0.01-0.03 total. Logs `[suggestions] usage account=… cache_read=…` for observability.
+
+**Client wiring**: [db.js](web/src/lib/db.js)'s `loadCopilotSuggestions({ accountId })` now tries the AI route first, falls back to the **templated logic** (still in db.js) if the call errors. Templated fallback uses recent approved plans + brand-kit categories + date-aware brainstorm starter to build chips deterministically — preserves brand-awareness even when the AI route is unreachable.
+
+**Refresh affordance**: CopilotPanel's welcome screen has a small "Refresh" pill above the chips. Clicking calls a fresh /api/ai/suggestions; spinner replaces the icon during the round-trip; suggestions fade slightly (`is-loading` class) until the new set lands. A `suggestionsTokenRef` cancels stale fetches if the admin double-clicks Refresh or switches brands mid-flight.
+
+**Cache behavior**: brand-context blob is byte-stable per brand, so consecutive refreshes for the same brand hit the Anthropic 5-min cache reliably. The user-message-side carries a per-call entropy signal (the ISO date) so the model isn't strictly tempted to repeat itself — temperature 0.9 + entropy in the user message generates fresh angles each refresh.
+
+**Behavior preserved**: clicking a chip drops its text into the textarea and focuses (same as v1). Only renders on `messages.length === 0`. Empty welcome state never flashes — chip state seeds with the v1 generic set, then upgrades in place once the AI route resolves.
+
+- **Sections touched:** Recent changes log; `Last updated`; §10 Edge functions / API routes (new `/api/ai/suggestions` subsection); §13 Known decisions (AI-generated suggestions over deterministic templates for refresh variety).
+
+**Previous template-only approach (replaced same-day)**: an earlier version of this PR shipped client-side template logic only — same 4 chips for the same brand state, no variation per session. The user pointed out that without variation, "refresh me a fresh angle" wasn't possible. Pivoted to AI-generation while keeping the templates as graceful fallback. Templated suggestions:
+
+1. **Follow-up to the latest approved plan** (if any) — cites the actual concept truncated to 60 chars, e.g. `Draft a follow-up to "Mother's Day spotlight on small-biz moms" for next Tuesday at 10am`. The weekday rotates between Tuesday and Thursday based on whichever is closer.
+2. **Plan the week** — uses the platforms actually used recently if we have data (e.g. `Plan three posts for next week across IG and LinkedIn`), otherwise the canonical IG + LinkedIn pairing.
+3. **Campaign around a category** (if `brand_kits.product_categories[0]` exists) — e.g. `Plan a campaign featuring our cotton onesies for next month`.
+4. **Brainstorm starter** — date-aware: `Brainstorm a campaign concept for next June`. December rolls over to "the new year" instead of suggesting January twice.
+
+**Architecture choice**: client-side template-driven, NOT AI-generated. Reasons (logged in db.js header): suggestions are affordances ("what CAN I ask?"), not recommendations, so templates are appropriate. Zero Anthropic cost. Zero loading state visible in UI — chips upgrade in place from the v1 generic set (still used as fallback during the Supabase round-trip and on lookup failure) to the brand-aware set once `loadCopilotSuggestions` resolves. Suggestions reload on accountId change so brand-switch keeps the chips in sync.
+
+**Behavior preserved**: clicking a chip drops its text into the message textarea and focuses (same as v1). Only renders when `messages.length === 0` — empty welcome state. No surface area outside the welcome panel.
+
+- **Sections touched:** Recent changes log; `Last updated`; §10 (no new route, but db.js gets a new helper documented inline).
+
+### 2026-05-12 — AI Co-pilot v2 Phase 2c: AIImagePromptPanel rewrite around useObject + useCompletion ([PR #72](https://github.com/CodeFire98/lr-studio-dashboard/pull/72))
 Client-side cutover for the two-step image-direction → image-prompt flow. Rewrote [AIImagePromptPanel.jsx](web/src/components/AIImagePromptPanel.jsx) around `experimental_useObject` (ideas mode, with a Zod schema mirrored from the server) + `useCompletion({ streamProtocol: 'text' })` (prompt mode). The v1's `parseSse` async generator, lenient `parseIdeasJson` (which stripped ```json fences and JSON.parsed on done), 7-phase explicit state machine (`'idle' → 'ideas_compose' → 'ideas_streaming' → 'ideas_picking' → 'prompt_compose' → 'prompt_streaming' → 'prompt_done'`), manual AbortController, and separate usage state all gone. Now: a `section` enum (`'idle' | 'ideas' | 'prompt'`) + sub-phase derived from each hook's `isLoading` / `error` / `object` / `completion`.
 
 **Wire protocol switch**: [/api/ai/image](web/api/ai/image.ts) switched both modes from manual SSE event writers (`writeSseEvent('text', { delta })` / `writeSseEvent('usage', {...})` / etc.) to native `result.pipeTextStreamToResponse(res)`. The streamObject text-stream emits raw JSON-as-text deltas; `useObject` parses them progressively via `parsePartialJson` into `DeepPartial<IDEAS_SCHEMA>`. The streamText text-stream emits text deltas; useCompletion accumulates them. Both replace the legacy SSE events (`text` / `usage` / `done` / `error`) — last route on the v1 wire protocol is retired with this PR.
