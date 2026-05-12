@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 1 of 9**: new migration `0041_post_engagement.sql` adding `post_engagement_snapshots` (append-only) + `post_embed_cache` (1:1 with publications). Reads open to agency + brand; writes service-role-only via `/api/engagement/refresh` (route lands in PR 2). New dry-run script `scripts/scrape-engagement-dry-run.mjs` validates the three Apify actors — `apify/instagram-scraper`, `apidojo/tweet-scraper`, `apify/linkedin-post-scraper` — before the production route is wired. Migration is **agency-side runnable via Supabase dashboard before PR 2 deploys**. See §13 entry on Apify-over-official-APIs and the snapshots-vs-combined-table decision.)
+**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 2 of 9**: new Vercel API route [web/api/engagement/refresh.ts](web/api/engagement/refresh.ts). POST `{ publicationId }` → loads the publication via service-role, dispatches to `apify/instagram-scraper` (IG only in PR 2; X and LinkedIn return 501 until PRs 5/6), normalizes the response, INSERTs a snapshot row, UPSERTs the embed cache. Auth: JWT → `profiles.is_agency = true` → 403 if brand. Hardened against the Apify monthly-cap 403 by stamping `scrape_status='blocked'` on the snapshot row so the UI can distinguish quota exhaustion from a genuine scrape failure. `vercel.json` gets a per-function `maxDuration: 60`. See §13 entry on Apify-over-official-APIs.)
+
+**Previous (2026-05-12):** Live Posts engagement — PR 1 of 9 — new migration `0041_post_engagement.sql` adding `post_engagement_snapshots` (append-only) + `post_embed_cache` (1:1 with publications). Reads open to agency + brand; writes service-role-only. New dry-run script `scripts/scrape-engagement-dry-run.mjs` validates the three Apify actors — `apify/instagram-scraper`, `apidojo/tweet-scraper`, `apify/linkedin-post-scraper` — before the production route is wired.
 
 **Previous (2026-05-12):** AI Co-pilot session wrap-up — Track A (v2 migration) is fully complete; three post-Track-A items also shipped — Phase 3a suggestion chips + Refresh button ([#74](https://github.com/CodeFire98/lr-studio-dashboard/pull/74)), brand notes restructure with RLS tighten + dedicated `/c/:slug/notes` view ([#75](https://github.com/CodeFire98/lr-studio-dashboard/pull/75)), chat system prompt platform-craft section ([#76](https://github.com/CodeFire98/lr-studio-dashboard/pull/76)). Supabase migration `0040_brand_kit_notes_agency_only_rls.sql` applied. **Parked**: Phase 3b image attachments in chat, Phase 3c per-message cost meter, Phase 4 DB-backed conversation persistence. See [AI_COPILOT_V2_MIGRATION.md](AI_COPILOT_V2_MIGRATION.md).
 
@@ -27,6 +29,16 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-12 — Live Posts engagement: `/api/engagement/refresh` route — IG only (PR 2 of 9)
+First production write path for the engagement snapshots + embed cache shipped in PR 1.
+
+- **[web/api/engagement/refresh.ts](web/api/engagement/refresh.ts)** — POST `{ publicationId: "<uuid>" }`. Validates the caller's JWT, looks up `profiles.is_agency` via service-role, returns 403 for brand users (brand reads still work — they just can't trigger an Apify scrape). Loads the publication, requires a non-empty `live_url`, and dispatches by platform. Only `instagram` is handled in PR 2; `x` and `linkedin` return 501 with a clear message until PRs 5 and 6 land.
+- **Instagram path** calls `apify/instagram-scraper` via `run-sync-get-dataset-items` (same pattern as fetch-trends). Normalizes the response into the schema columns (`like_count`, `comment_count`, `view_count` for video posts; `share_count` / `save_count` / `bookmark_count` stay null with an `availability_notes` explaining why). Embed fields (`author_handle`, `caption`, `media_url`, `media_urls` for carousel, `media_aspect_ratio` derived from dimensionsW/H) come from the same payload.
+- **Snapshot is always written**, even on failure — the row's `scrape_status` (`ok` / `partial` / `failed` / `blocked`) + `error_message` are the audit trail. Important specifically for the blocked path: when Apify returns 403 with `usage-limit` / "Monthly usage hard limit", the route stamps `scrape_status='blocked'` so the UI in PR 3 can distinguish "quota out" from "actor returned no items" cleanly. (This is the exact case the user hit on 2026-05-12 while validating PR 1's dry-run — the free-tier $5 monthly credit was exhausted by Trends Radar's existing scrape volume.)
+- **Embed cache only upserts on a successful scrape.** A failed refresh leaves the previous embed row intact so the tile keeps rendering the last-known card while the metrics row shows the freshness/error state.
+- **`vercel.json`** — added `api/engagement/refresh.ts` to `functions` with `maxDuration: 60`. Single Apify scrape clocks ~10-20s; 60s is generous headroom but well under the fetch-trends 300s budget (which scrapes many handles in one call).
+- Route deploys before its consumers (PR 3 UI, PR 4 on-paste auto-refresh) land — no client surface depends on it yet. Smoke test plan in the PR body uses curl + a real publication id.
 
 ### 2026-05-12 — Live Posts engagement: schema + Apify dry-run (PR 1 of 9)
 Foundational work for adding live engagement metrics + post embeds to the Live Posts repository.
