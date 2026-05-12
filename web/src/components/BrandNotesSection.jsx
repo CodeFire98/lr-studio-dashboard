@@ -2,9 +2,22 @@
 // BrandNotesSection — agency "memory" notes about the brand
 // =====================================================================
 //
-// Renders inside BrandKitView. The notes here are the same `brand_kit_notes`
-// rows the AI Co-pilot reads as part of its brand context on every call.
-// Two ways notes land in the table:
+// Renders on its own page at /c/:slug/notes (mounted via BrandNotesView).
+// Previously lived inside BrandKitView; promoted to a top-level surface
+// on 2026-05-12 as part of the brand-notes restructure — notes are an
+// agency-internal thinking-out-loud surface and deserved a real
+// workspace rather than being buried inside BrandKit.
+//
+// AGENCY-ONLY. The component early-returns null for non-agency callers
+// as defense-in-depth — the real enforcement is RLS on `brand_kit_notes`
+// (see supabase/migrations/0040_brand_kit_notes_agency_only_rls.sql).
+// A brand-user JWT would get 0 rows from PostgREST anyway; the frontend
+// gate just prevents the empty-state UI from rendering / the loading
+// state from spinning.
+//
+// The notes here are the same `brand_kit_notes` rows the AI Co-pilot
+// reads as part of its brand context on every call. Two ways notes
+// land in the table:
 //   1) Admin types into this UI's composer and clicks Save
 //   2) Admin tells the chat Co-pilot "remember that…" and the model calls
 //      the `write_brand_note` tool
@@ -46,7 +59,21 @@ function formatRelative(iso) {
   return date.toISOString().slice(0, 10);
 }
 
+// Public component — gate first, then mount the (hooks-heavy) inner.
+// Doing the gate at the outer level avoids the rules-of-hooks problem
+// you'd get from `if (!isAgency) return null` in front of useState/
+// useEffect — and it also avoids firing the data-loading effects (and
+// thus the RLS-gated Supabase queries) for users who shouldn't see
+// the surface.
 const BrandNotesSection = ({ accountId, isAgency, userId }) => {
+  if (!isAgency) return null;
+  return <BrandNotesSectionInner accountId={accountId} userId={userId} />;
+};
+
+const BrandNotesSectionInner = ({ accountId, userId }) => {
+  // isAgency is always true at this point (parent gates it). Hardcoded
+  // below where the section used it to gate action buttons / composer.
+  const isAgency = true;
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');

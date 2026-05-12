@@ -24,7 +24,8 @@ import {
   findCompetitorsForBrand,
 } from '../lib/db.js';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
-import { BrandNotesSection } from './BrandNotesSection.jsx';
+// BrandNotesSection moved to its own top-level view (/c/:slug/notes) on
+// 2026-05-12. Import removed here; the BrandNotesView mounts it directly.
 
 // System / pre-installed faces we never need to fetch from Google Fonts.
 // Anything not on this list gets a <link> appended so e.g. "Karla" actually
@@ -2112,7 +2113,12 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
         </div>
       )}
 
-      <BrandNotesSection accountId={accountId} isAgency={!!auth.isAgency} userId={auth?.id}/>
+      {/* BrandNotesSection used to mount here. Moved to its own top-level
+          view (`/c/:slug/notes`) on 2026-05-12 as part of the brand-notes
+          restructure — notes are an agency-internal memory surface that
+          deserved its own workspace rather than being buried inside
+          Brand Intelligence. The same data still flows into the AI
+          Co-pilot's brand context on every call. */}
 
       <ReferencesCard accountId={accountId} isAgency={!!auth.isAgency} assets={assets}/>
 
