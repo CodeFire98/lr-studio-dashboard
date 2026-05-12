@@ -1747,76 +1747,27 @@ export async function deletePostPlan(id) {
 }
 
 // =====================================================================
-// AI Co-pilot — dynamic suggestion chips
+// AI Co-pilot — dynamic suggestion chips (templated fallback)
 // =====================================================================
-// Builds 4 brand-aware suggestion strings for the Co-pilot's empty
-// welcome screen. The chips are pre-filled prompts the admin can click
-// to drop into the message box.
+// The PRIMARY path for Co-pilot welcome-screen chips is streaming AI
+// generation via `experimental_useObject` against `/api/ai/suggestions`
+// (mounted directly in CopilotPanel.jsx) — that gives the admin a
+// Refresh button with progressive chip rendering as the model streams
+// JSON deltas back.
 //
-// v1 of the Co-pilot used a hardcoded set of 3 generic prompts.
-// Phase 3 first slice templated chips from recent plan / category data.
-// Phase 3 second slice (this version) calls a dedicated AI route —
-// `/api/ai/suggestions` — which uses generateObject + temperature 0.9
-// to surface DIFFERENT angles each refresh. The user explicitly asked
-// for "give me new suggestions if these aren't relevant" → AI variation
-// is the right tool. Template fallback stays as a graceful degradation
-// path for offline / auth-failed / API-errored states.
+// THIS helper is the fallback path — called by CopilotPanel ONLY when
+// the useObject hook errors (offline, auth, allowlist, brand-kit
+// missing). It builds chips deterministically from Supabase data:
+// recent approved plans + brand-kit product categories + a date-aware
+// brainstorm starter. No AI, no streaming, no cost — just a graceful
+// degradation so the welcome state isn't empty.
 //
-// Returns 4 suggestion strings. Always returns something:
-//   - happy path: AI-generated, varied per call
-//   - degraded:   templated from Supabase data (same as Phase 3 first slice)
-//   - cold-start: COPILOT_GENERIC_SUGGESTIONS hardcoded set
+// Always returns 4 strings (or the COPILOT_GENERIC_SUGGESTIONS hardcoded
+// set if even Supabase is unreachable).
 // =====================================================================
-export async function loadCopilotSuggestions({ accountId } = {}) {
+export async function buildTemplatedCopilotSuggestions({ accountId } = {}) {
   if (!accountId) return COPILOT_GENERIC_SUGGESTIONS.slice();
 
-  // Try the AI-backed primary path first.
-  try {
-    const aiResult = await fetchAiSuggestions(accountId);
-    if (Array.isArray(aiResult) && aiResult.length === 4) {
-      return aiResult;
-    }
-    // Fall through to templated fallback if the API responded but the
-    // shape wasn't right (defensive — schema enforces 4 items server-side).
-  } catch {
-    // AI route failed (network, auth, allowlist, brand-kit missing).
-    // Silent fall-through to template path — admin still gets useful
-    // chips, no console-spamming red error in the welcome state.
-  }
-
-  // Templated fallback — same logic as Phase 3 first slice. Uses
-  // recent approved plan + brand-kit categories to build deterministic
-  // brand-aware chips without needing the AI route.
-  return buildTemplatedSuggestions(accountId);
-}
-
-async function fetchAiSuggestions(accountId) {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) throw new Error('Not signed in');
-  const resp = await fetch('/api/ai/suggestions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${session.access_token}`,
-    },
-    body: JSON.stringify({ accountId }),
-  });
-  if (!resp.ok) {
-    // Surface auth / allowlist errors as thrown — caller catches and
-    // falls back. Keeps the welcome state graceful.
-    const errBody = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-    throw new Error(errBody.error || `HTTP ${resp.status}`);
-  }
-  const json = await resp.json();
-  if (!json || !Array.isArray(json.suggestions)) {
-    throw new Error('Malformed response');
-  }
-  return json.suggestions
-    .map((s) => (typeof s === 'string' ? s.trim() : ''))
-    .filter((s) => s.length > 0);
-}
-
-async function buildTemplatedSuggestions(accountId) {
   // Pull the last few approved plans + the brand-kit product_categories
   // in parallel. Tight column lists — we don't need the full POST_PLAN_SELECT.
   const [plansResult, kitResult] = await Promise.all([

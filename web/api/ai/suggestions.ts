@@ -11,11 +11,18 @@
 // chip button. Different shape, different cost profile (one short
 // call per panel-open vs. a streaming conversation).
 //
-// Why generateObject (not streamText / streamObject): 4 short strings
-// don't benefit from streaming UX — they appear all-at-once below a
-// loading spinner. generateObject gives us schema-validated JSON in a
-// single request with no stream-parsing complexity client-side. Latency
-// is ~1-2s, fine for "click refresh, see new chips" UX.
+// Why streamObject + Haiku: the first version of this route used
+// generateObject + Sonnet, which clocked at 3-5s per refresh — slow
+// enough that the spinner felt stuck. Two wins stack here:
+//   1. Haiku 4.5 over Sonnet 4.6 → ~2× generation speedup. The task
+//      is "suggest 4 short prompts" — no reasoning required, no long
+//      output, Haiku handles it well.
+//   2. streamObject pipes JSON deltas to the client as the model
+//      generates them. The chips appear PROGRESSIVELY (one fills in
+//      every few hundred ms) instead of all-at-once after the full
+//      generation. Perceived latency drops dramatically even if the
+//      total time is unchanged. Same pattern as the image-ideas
+//      panel (/api/ai/image mode=ideas).
 //
 // Why high temperature (0.9): variety BETWEEN calls is the entire
 // point. Same brand context should yield different angles each refresh
@@ -38,7 +45,7 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { generateObject } from "ai";
+import { streamObject } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
@@ -53,8 +60,11 @@ const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const MODEL_ID = "claude-sonnet-4-6";
-const MAX_OUTPUT_TOKENS = 400;
+// Haiku 4.5: ~2× faster than Sonnet for this task; 4 short prompt-
+// starters don't need a reasoning-class model. ~$0.001 cached per call
+// (cheaper than Sonnet too).
+const MODEL_ID = "claude-haiku-4-5";
+const MAX_OUTPUT_TOKENS = 220; // tight — 4 short strings + JSON syntax
 const TEMPERATURE = 0.9; // high for variety between refreshes
 
 // Schema enforces exactly 4 strings, each 8-150 chars. The min length
@@ -159,13 +169,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(404).json({ error: "No brand kit found for this account." });
   }
 
+  // Disable Vercel response buffering so JSON deltas reach the browser
+  // as they're generated. pipeTextStreamToResponse sets the Content-Type
+  // to text/plain; charset=utf-8 itself.
+  res.setHeader("X-Accel-Buffering", "no");
+
   try {
     // System messages array — same cache breakpoints as /api/ai/chat etc.
     // Brand-context blob is byte-stable per brand so this call piggybacks
     // on the existing cache pool. The user-message-side carries a small
     // amount of per-call entropy (timestamp) so the model isn't repeating
     // itself across refreshes within the same cache window.
-    const result = await generateObject({
+    //
+    // streamObject + pipeTextStreamToResponse: the client (CopilotPanel
+    // via experimental_useObject) parses partial JSON as it streams,
+    // showing chips one-by-one as each idea's title resolves. Same UX
+    // pattern as the image-ideas panel.
+    const result = streamObject({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       temperature: TEMPERATURE,
@@ -186,27 +206,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         {
           role: "user",
           content:
-            // Per-call entropy: the admin's local-day signal nudges the
-            // model toward seasonally-aware variations without changing
-            // the cached prefix. (The brand context is the cache breakpoint;
+            // Per-call entropy: the date signal nudges the model toward
+            // seasonally-aware variations without changing the cached
+            // prefix. (The brand context is the cache breakpoint;
             // the user message is never cached.)
             `Surface 4 fresh prompt-starter suggestions for the Co-pilot welcome screen. The admin clicks Refresh to get DIFFERENT angles from previous generations, so don't echo the most-obvious starters — explore varied hooks. Today is ${new Date().toISOString().slice(0, 10)}.`,
         },
       ],
+      onFinish: ({ usage }) => {
+        const cr = usage?.inputTokenDetails?.cacheReadTokens ?? 0;
+        const cw = usage?.inputTokenDetails?.cacheWriteTokens ?? 0;
+        const nc = usage?.inputTokenDetails?.noCacheTokens ?? usage?.inputTokens ?? 0;
+        const out = usage?.outputTokens ?? 0;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[suggestions] usage account=${body.accountId} input=${nc} cache_read=${cr} cache_write=${cw} output=${out}`,
+        );
+      },
     });
 
-    const cr = result.usage?.inputTokenDetails?.cacheReadTokens ?? 0;
-    const cw = result.usage?.inputTokenDetails?.cacheWriteTokens ?? 0;
-    const nc = result.usage?.inputTokenDetails?.noCacheTokens ?? result.usage?.inputTokens ?? 0;
-    const out = result.usage?.outputTokens ?? 0;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[suggestions] usage account=${body.accountId} input=${nc} cache_read=${cr} cache_write=${cw} output=${out}`,
-    );
-
-    return res.status(200).json({ suggestions: result.object.suggestions });
+    result.pipeTextStreamToResponse(res);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return res.status(500).json({ error: msg });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: msg });
+    }
+    res.end();
   }
 }
