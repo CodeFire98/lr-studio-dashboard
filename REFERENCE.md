@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**AI Co-pilot Phase 3 — dynamic suggestion chips, streaming + Haiku**: replaced CopilotPanel's hardcoded `EMPTY_SUGGESTIONS` with brand-aware suggestions streamed from a new `/api/ai/suggestions` route using `streamObject` + Zod schema + temperature 0.9 on **claude-haiku-4-5** (~2× faster than Sonnet for this size). Chips render PROGRESSIVELY via `experimental_useObject` — same UX as the image-ideas panel. **Refresh button** re-fires submit(). Template-based logic stays in db.js as graceful fallback when the AI hook errors. Cost: ~$0.001-0.003 cached per refresh on Haiku.)
+**Last updated:** 2026-05-12 (**Brand notes restructure**: `brand_kit_notes` RLS tightened to agency-staff-only on SELECT/INSERT/UPDATE/DELETE (was: agency OR account members). BrandNotesSection promoted from a card inside BrandKitView to a top-level view at `/c/:slug/notes`. New agency-only sidebar entry "Brand notes" below "Trends Radar". Frontend-gated against non-agency users as defense-in-depth — RLS is the real enforcement. Manual: run [`supabase/migrations/0040_brand_kit_notes_agency_only_rls.sql`](supabase/migrations/0040_brand_kit_notes_agency_only_rls.sql) via Supabase dashboard before the frontend ships.)
+
+**Previous (2026-05-12):** AI Co-pilot Phase 3 — dynamic suggestion chips + Refresh button via new `/api/ai/suggestions` route (`streamObject` + Haiku 4.5 + Zod schema + temperature 0.9). Chips render progressively via `experimental_useObject`. Template fallback retained in db.js.
 
 **Previous (2026-05-12):** AI Co-pilot v2 Phase 2c — `AIImagePromptPanel.jsx` rewritten around `experimental_useObject` (ideas) + `useCompletion` (prompt). `/api/ai/image` switched to text-stream protocol on both modes. Body shape change on prompt mode (`details` → `prompt`). Idea cards now render PROGRESSIVELY as the JSON streams. **Track A complete** — all client-side AI surfaces on AI SDK native hooks; bespoke `parseSse` fully retired.
 
@@ -20,7 +22,25 @@
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
 
-### 2026-05-12 — AI Co-pilot Phase 3: dynamic suggestion chips + Refresh ([PR pending])
+### 2026-05-12 — Brand notes restructure ([PR pending])
+Three coordinated changes promoting `brand_kit_notes` from an agency-or-member card buried inside Brand Intelligence to a top-level agency-only workspace.
+
+**1. RLS tighten** ([supabase/migrations/0040_brand_kit_notes_agency_only_rls.sql](supabase/migrations/0040_brand_kit_notes_agency_only_rls.sql)) — was `is_agency_user() OR account_id IN (accessible_account_ids())` on SELECT/INSERT/UPDATE/DELETE; now `is_agency_user()` only on all four. **User-run via Supabase dashboard before the frontend ships** — there's no automated migration runner in this repo. The frontend won't crash for brand users if the migration lags (BrandNotesSection returns null for non-agency callers as defense-in-depth), but the data won't be hidden from PostgREST until the migration lands.
+
+**2. Top-level view** — new [BrandNotesView.jsx](web/src/components/BrandNotesView.jsx) mounts the existing BrandNotesSection in a dedicated page. Route: `/c/:slug/notes`. Page chrome: title "Brand notes", sub copy explaining the AI-Co-pilot connection. Old `<BrandNotesSection/>` in BrandKitView is removed (line replaced with a placeholder comment pointing to the new view).
+
+**3. Sidebar entry** — `Sidebar.jsx`'s agency branch adds `{ key: "notes", label: "Brand notes", icon: "comment" }` directly below "Trends Radar". Brand users never see it.
+
+**Defense-in-depth gates**:
+- Frontend: [BrandNotesSection.jsx](web/src/components/BrandNotesSection.jsx) splits into outer wrapper + inner — the outer returns `null` if `!isAgency`, so the hooks-heavy inner never mounts for brand users. Avoids the rules-of-hooks problem you'd get from an early `if (!isAgency) return null` before useState calls.
+- Frontend: [BrandNotesView.jsx](web/src/components/BrandNotesView.jsx) renders an "internal-only" stub for a direct-URL bounce by a non-agency user — they shouldn't reach this route via the sidebar but it's a coherent landing if they paste the URL.
+- Server: RLS migration above.
+
+**No data migration needed** — existing rows remain accessible to agency users; the policy change just stops returning them to brand-user JWTs. Same code paths (`loadBrandKitNotes`, `subscribeToBrandKitNotes`, `createBrandKitNote`, etc. in db.js) all keep working unchanged.
+
+- **Sections touched:** Recent changes log; `Last updated`; §6 Data model (brand_kit_notes RLS); §7 Routes (`/c/:slug/notes` added); §10 (no new route — the existing view-tree gains one mount point).
+
+### 2026-05-12 — AI Co-pilot Phase 3: dynamic suggestion chips + Refresh ([PR #74](https://github.com/CodeFire98/lr-studio-dashboard/pull/74))
 First post-Track-A net-new improvement to the Co-pilot. Replaced [CopilotPanel.jsx](web/src/components/CopilotPanel.jsx)'s hardcoded `EMPTY_SUGGESTIONS` array (three generic prompt-starters that have shipped since the first Co-pilot PR) with **AI-generated brand-aware suggestion chips** + a **Refresh button** so the admin can get different angles when the current set isn't relevant.
 
 **New server route**: [/api/ai/suggestions](web/api/ai/suggestions.ts). One-shot `generateObject` call with a Zod schema (`{ suggestions: z.array(z.string().min(8).max(150)).length(4) }`), temperature 0.9 for variety between calls. Reuses the cached brand-context blob (same cache pool as chat / copy / image — one 5-min TTL). Anthropic cost: ~$0.005-0.010 first call (cache miss), ~$0.001-0.003 cached. Refresh-heavy admin (10 clicks in a session) ≈ $0.01-0.03 total. Logs `[suggestions] usage account=… cache_read=…` for observability.
@@ -900,7 +920,7 @@ Both tables are in `supabase_realtime`; `IdeateView` (brand) and `IdeateInboxVie
 
 | Table | Purpose | Key columns | Who can SELECT | Who can write |
 |---|---|---|---|---|
-| `brand_kit_notes` | Free-form admin annotations powering the AI Co-pilot's "memory" — facts that don't fit `brand_kits`' structured columns. Composed into the brand-context blob on every AI call. | `account_id` (FK → accounts), `body` (text), `is_pinned` (boolean), `created_by` (FK → profiles ON DELETE SET NULL), `created_at`, `updated_at` | Agency staff OR members of the account | Same |
+| `brand_kit_notes` | Free-form admin annotations powering the AI Co-pilot's "memory" — facts that don't fit `brand_kits`' structured columns. Composed into the brand-context blob on every AI call. | `account_id` (FK → accounts), `body` (text), `is_pinned` (boolean), `created_by` (FK → profiles ON DELETE SET NULL), `created_at`, `updated_at` | **Agency staff only** (tightened 2026-05-12, migration 0040 — was agency OR members) | Same — agency-only |
 
 `post_plans` also gains two AI-related columns in migration 0038:
 
@@ -972,7 +992,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0038_daily_digest_log.sql`.
+Most recent: `0040_brand_kit_notes_agency_only_rls.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -992,6 +1012,7 @@ Recent batch:
 - `0037_daily_reminder_settings` — adds `accounts.daily_reminder_enabled boolean not null default true`. Drives the 6pm-IST daily-digest email cron to brand members. No timezone column for v1 (every customer is in India today); add `accounts.timezone` when expansion happens. See §13 entry on cron-as-orchestrator-edge-function-as-renderer split.
 - `0038_daily_digest_log` — new table `daily_digest_log` capturing every per-brand decision the cron makes (sent / failed / skipped, with counts and timestamps). One row per (run_at, account_id). RLS: agency reads, service-role-only writes. Indexes on `run_at desc` and `(account_id, run_at desc)`. See §13 entry on audit-as-table over read-from-logs.
 - `0039_ai_copilot_scaffolding` — new `brand_kit_notes` table (free-form admin annotations powering the AI Co-pilot's "memory" layer, RLS mirrors `post_plan_ideas`) + new `post_plans.ai_generated` and `post_plans.ai_draft_payload` columns marking AI-proposed plans. Partial index on the AI-generated subset. Purely additive — nothing in the SPA reads these yet. See §13 entries on compiler-as-pure-function and notes-as-table-not-jsonb.
+- `0040_brand_kit_notes_agency_only_rls` — tightens `brand_kit_notes` RLS from "agency staff OR account members" to **agency staff only** on SELECT/INSERT/UPDATE/DELETE. Notes are an agency-internal memory surface; brand users should never see the raw memory dump. Frontend in the same PR adds defense-in-depth (BrandNotesSection returns null for non-agency callers, sidebar entry hidden for brand users) but RLS is the real enforcement. **User runs via Supabase dashboard before the frontend PR lands.**
 
 ---
 
@@ -1083,6 +1104,7 @@ URL-driven routing via `react-router-dom@6`. `<BrowserRouter>` wraps `<App/>` in
 | `team` | `/team` | `TeamView` | `AdminClientsView` | Customer: invite teammates. Admin: client list |
 | `members` | `/members` | — | `AdminTeamView` | Agency-only team management |
 | `brand` | `/brand` | `BrandKitView` | `BrandKitView` | Brand Intelligence — full kit view + Fetch Brand. Receives `accountId` from App. |
+| `notes` | `/c/:slug/notes` | — | `BrandNotesView` | **Agency-only** memory workspace for `brand_kit_notes`. Promoted from a card inside BrandKitView on 2026-05-12. Sidebar entry below "Trends Radar". RLS blocks brand users from SELECT/INSERT/UPDATE/DELETE (migration 0040). |
 | `plan` + `id` | `/calendar/:shortId` (or `/c/:slug/calendar/:shortId`) | `PostPlanDetailView` | `PostPlanDetailView` | Per-plan detail nested under calendar — calendar is the parent surface, so the URL stays `…/calendar/:shortId` instead of switching to a sibling `/plan/`. `:shortId` follows the same first-8-hex-chars rule as tasks. |
 | `clients` | `/clients` | — | `AdminClientsView` | Agency-only client list (reachable from BrandPicker). |
 | `settings` | `/settings` | `SettingsView` | `SettingsView` | Workspace name, danger-zone delete |

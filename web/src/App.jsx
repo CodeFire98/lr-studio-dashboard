@@ -21,6 +21,7 @@ import { LivePostsView } from './components/LivePostsView.jsx';
 import { PerformanceView } from './components/PerformanceView.jsx';
 import { TeamView } from './components/TeamView.jsx';
 import { BrandKitView } from './components/BrandKitView.jsx';
+import { BrandNotesView } from './components/BrandNotesView.jsx';
 import { ProfileView } from './components/ProfileView.jsx';
 import { CalendarView } from './components/CalendarView.jsx';
 import { PostPlanDetailView } from './components/PostPlanDetailView.jsx';
@@ -91,7 +92,7 @@ const COPILOT_ALLOWED_BRAND_IDS = new Set(
 
 const SIMPLE_VIEWS = new Set([
   'calendar', 'ideate', 'library', 'posts', 'brand', 'team',
-  'performance', 'profile', 'settings', 'clients', 'members', 'trends',
+  'performance', 'profile', 'settings', 'clients', 'members', 'trends', 'notes',
 ]);
 
 function parsePathToRoute(pathname) {
@@ -119,6 +120,7 @@ function parsePathToRoute(pathname) {
   if (path === '/clients') return { view: 'clients' };
   if (path === '/members') return { view: 'members' };
   if (path === '/trends')  return { view: 'trends' };
+  if (path === '/notes')   return { view: 'notes' };
   if (path === '/profile') return { view: 'profile' };
   if (path === '/settings') return { view: 'settings' };
   // Unknown path → render the 404 view. We carry the bad pathname so the
@@ -151,7 +153,7 @@ function findFullId(prefix, items) {
 // Views NOT in this set (profile, clients, members) stay at the root.
 const BRAND_SCOPED_VIEWS = new Set([
   'calendar', 'plan', 'ideate', 'library', 'posts', 'brand',
-  'team', 'performance', 'settings', 'trends',
+  'team', 'performance', 'settings', 'trends', 'notes',
 ]);
 
 function viewToPath(next, brandSlug) {
@@ -592,7 +594,7 @@ const App = () => {
     if (!auth?.isAgency) return;
     const r = route.view;
     const allClientsRoutes = new Set(['profile', 'settings', 'clients', 'members', 'not_found']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'profile', 'settings', 'clients', 'members', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'profile', 'settings', 'clients', 'members', 'not_found']);
     if (isAllClientsMode) {
       if (!allClientsRoutes.has(r)) navigate('/clients');
     } else {
@@ -848,6 +850,7 @@ const App = () => {
     if (route.view === "clients") return <><strong>Clients</strong></>;
     if (route.view === "members") return <><strong>Linkrunner Team</strong></>;
     if (route.view === "trends")  return <><strong>Trends Radar</strong></>;
+    if (route.view === "notes")   return <><strong>Brand notes</strong></>;
     if (route.view === "team") return <><strong>Team</strong></>;
     if (route.view === "brand") return <><strong>Brand Intelligence</strong></>;
     if (route.view === "settings") return <><strong>Settings</strong></>;
@@ -988,6 +991,18 @@ const App = () => {
     if (route.view === "performance") return <PerformanceView accountId={calendarAccountId}/>;
     if (route.view === "team") return <TeamView overrideAccountId={auth?.isAgency ? calendarAccountId : null} />;
     if (route.view === "brand") return <BrandKitView accountId={calendarAccountId}/>;
+    if (route.view === "notes") {
+      // Agency-only — sidebar already hides this entry for non-agency
+      // users; BrandNotesView itself shows a "not available" stub for
+      // a direct-URL bounce from a brand user. RLS (migration 0040)
+      // gives 0 rows from Supabase regardless.
+      return (
+        <BrandNotesView
+          accountId={calendarAccountId}
+          brandName={calendarAccountName}
+        />
+      );
+    }
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;
     return (
       <CalendarView

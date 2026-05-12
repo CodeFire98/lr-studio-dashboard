@@ -35,8 +35,13 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
     { key: "posts", label: "Live posts", icon: "link" },
   ];
   if (isAgency) {
-    // Trends Radar is agency-only and sits below Library — same as before.
+    // Agency-only entries sit below the brand-shared workflow nav.
+    //   - Trends Radar — surfaces external signals (added 2026-05-06).
+    //   - Brand notes — agency-internal memory layer that the AI
+    //     Co-pilot reads on every call (added 2026-05-12, was buried
+    //     inside Brand Intelligence before).
     primary.push({ key: "trends", label: "Trends Radar", icon: "sparkles" });
+    primary.push({ key: "notes",  label: "Brand notes",  icon: "comment"  });
   }
   const secondary = [
     { key: "performance", label: "Performance", icon: "chart" },
