@@ -3,12 +3,16 @@
    Guests get the empty Social Calendar; any other view bounces them to
    /calendar via the GUEST_ALLOWED gate. Brand owners + agency users see
    the full app with sidebar surfaces driven by BrandPicker. */
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './components/Icon.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TweaksPanel } from './components/TweaksPanel.jsx';
-import { CopilotPanel } from './components/CopilotPanel.jsx';
+// CopilotPanel is code-split: it pulls in @ai-sdk/react + AI Elements
+// + Streamdown + shiki language packs (~1.5MB gzipped). Loading those
+// on every page would tank the dashboard's first-paint perf. Lazy import
+// defers the download until admin clicks the topbar Co-pilot trigger.
+const CopilotPanel = lazy(() => import('./components/CopilotPanel.jsx'));
 import { LoginModal } from './components/LoginModal.jsx';
 import { IdeateView } from './components/IdeateView.jsx';
 import { IdeateInboxView } from './components/IdeateInboxView.jsx';
@@ -1110,14 +1114,16 @@ const App = () => {
         {renderView()}
       </div>
       {copilotEligible && copilotOpen && (
-        <CopilotPanel
-          accountId={scopeAccountId}
-          brandName={calendarAccountName}
-          brandSlug={brandAccounts.find((b) => b.id === scopeAccountId)?.slug || auth?.account?.slug || null}
-          userId={auth?.id}
-          onClose={() => setCopilotOpen(false)}
-          onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setCopilotOpen(false); }}
-        />
+        <Suspense fallback={null}>
+          <CopilotPanel
+            accountId={scopeAccountId}
+            brandName={calendarAccountName}
+            brandSlug={brandAccounts.find((b) => b.id === scopeAccountId)?.slug || auth?.account?.slug || null}
+            userId={auth?.id}
+            onClose={() => setCopilotOpen(false)}
+            onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setCopilotOpen(false); }}
+          />
+        </Suspense>
       )}
       {tweaksOpen && <TweaksPanel tweaks={tweaks} setTweaks={setTweaks} onClose={() => setTweaksOpen(false)}/>}
       <LoginModal

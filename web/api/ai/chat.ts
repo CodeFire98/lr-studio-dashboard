@@ -1,13 +1,16 @@
 // =====================================================================
 // /api/ai/chat — Vercel serverless function — AI Co-pilot streaming chat
 //
-// AI Co-pilot v2 Phase 1a: migrated from the raw @anthropic-ai/sdk + a
-// hand-rolled MAX_TURNS while-loop to the Vercel AI SDK's streamText +
-// tool primitives. The agentic loop, message threading, and Anthropic
-// prompt caching are now SDK-managed. Wire protocol on the response
-// stays IDENTICAL — same custom SSE event names (text / tool_call /
-// tool_result / usage / done / error) — so the existing CopilotPanel.jsx
-// keeps working untouched until Phase 2a swaps it to useChat.
+// AI Co-pilot v2 Phase 2a: switched the wire protocol from the v1 custom
+// SSE event names (text / tool_call / tool_result / usage / done / error)
+// to the AI SDK's native UIMessage stream protocol. CopilotPanel.jsx is
+// rewritten in the same PR around `useChat` from @ai-sdk/react and
+// consumes the new stream natively. Server reads UIMessage[] from the
+// request body and converts them to ModelMessages for streamText.
+//
+// (Phase 1a — merged earlier — moved from raw @anthropic-ai/sdk to
+// streamText + tool primitives but kept the legacy wire protocol via
+// a manual fullStream translation. That translation is gone now.)
 //
 // Auth model (unchanged from v1):
 //   - Caller's JWT verified against Supabase auth via the anon-key client
@@ -36,7 +39,14 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { streamText, stepCountIs, tool } from "ai";
+import {
+  convertToModelMessages,
+  stepCountIs,
+  streamText,
+  tool,
+  type ModelMessage,
+  type UIMessage,
+} from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
@@ -79,23 +89,14 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social
 - Don't touch other brands. You're scoped to the active brand only.
 - Don't claim to schedule posts — you create drafts on a date; the agency owns the workflow.`;
 
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string | unknown[];
-};
-
+// The request body carries the UIMessage[] from useChat plus our custom
+// accountId field (configured via DefaultChatTransport's body option on
+// the client). UIMessage's `parts` array is what streams from the AI SDK
+// and what convertToModelMessages consumes.
 type RequestBody = {
   accountId?: string;
-  messages?: ChatMessage[];
+  messages?: UIMessage[];
 };
-
-function writeSseEvent(res: VercelResponse, type: string, data: unknown) {
-  res.write(`event: ${type}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
-  // Flush ASAP so the client sees streaming progress.
-  // @ts-expect-error — Node response may have flush, types don't expose it.
-  res.flush?.();
-}
 
 // Zod schemas — replace the hand-written Anthropic.Tool[] from v1.
 // Schema validation now happens at the SDK boundary; bad inputs from the
@@ -226,13 +227,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  // SSE response setup.
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
+  // Disable Vercel's response buffering so deltas reach the browser as
+  // they're generated. pipeUIMessageStreamToResponse handles Content-Type
+  // + Cache-Control + the AI SDK's data-stream protocol headers itself.
   res.setHeader("X-Accel-Buffering", "no");
-  res.status(200);
-  res.write(": stream open\n\n");
 
   // Tool implementations live INSIDE the handler so they can close over
   // accountId + user.id + serviceClient without globally-mutable plumbing.
@@ -309,90 +307,79 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    // Two cache breakpoints on the system prompt, same as v1:
+    // Two cache breakpoints on the system prompt, unchanged from Phase 1a:
     //   1. Fixed instruction prefix (rarely changes)
     //   2. Per-brand context blob (stable per call, changes on brand mutations)
     // The AI SDK collapses consecutive system messages into a single Anthropic
     // system param with multiple text blocks, each with its own cache_control.
     // Verified by the PoC route — see AI_COPILOT_V2_MIGRATION.md PoC results.
+    //
+    // UIMessage[] from the client is converted to ModelMessage[] via
+    // convertToModelMessages — handles text + tool-call + tool-result
+    // parts uniformly. The system messages are prepended directly as
+    // ModelMessages (not UIMessages) since they never enter the chat
+    // history; they're injected per call.
+    const conversation: ModelMessage[] = [
+      {
+        role: "system",
+        content: SYSTEM_PROMPT,
+        providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+      },
+      {
+        role: "system",
+        content: `\n\n---\n\n${brandContext}`,
+        providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+      },
+      ...(await convertToModelMessages(body.messages)),
+    ];
+
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS_PER_TURN,
       stopWhen: stepCountIs(MAX_STEPS),
       tools,
-      messages: [
-        {
-          role: "system",
-          content: SYSTEM_PROMPT,
-          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
-        },
-        {
-          role: "system",
-          content: `\n\n---\n\n${brandContext}`,
-          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
-        },
-        ...body.messages.map((m) => ({
-          role: m.role,
-          content: m.content as string,
-        })),
-      ],
+      messages: conversation,
     });
 
-    // Drain the full event stream and translate to the existing custom SSE
-    // wire format. CopilotPanel.jsx's parseSse generator reads these exact
-    // event names; switching to AI SDK's data-stream protocol happens in
-    // Phase 2a alongside the useChat client rewrite.
-    for await (const part of result.fullStream) {
-      if (part.type === "text-delta") {
-        writeSseEvent(res, "text", { delta: part.text });
-      } else if (part.type === "tool-call") {
-        writeSseEvent(res, "tool_call", {
-          id: part.toolCallId,
-          name: part.toolName,
-          input: part.input,
-        });
-      } else if (part.type === "tool-result") {
-        // The AI SDK wraps the tool's execute() return value as `output`.
-        // Our v1 protocol splits ok/result/error so the client renders
-        // the right card variant.
-        const output = part.output as ToolExecResult | undefined;
-        const ok = output && typeof output === "object" && "ok" in output ? output.ok : true;
-        writeSseEvent(res, "tool_result", {
-          id: part.toolCallId,
-          name: part.toolName,
-          ok,
-          result: ok && output && "result" in output ? output.result : ok ? output : undefined,
-          error: !ok && output && "error" in output ? output.error : undefined,
-        });
-      } else if (part.type === "finish-step") {
-        // Per-step usage event — same shape (snake_case) as v1's
-        // post-finalMessage emit so the client's usage meter is unchanged.
-        // AI SDK exposes cache tokens at usage.inputTokenDetails.{cacheRead,cacheWrite}Tokens.
-        // See AI_COPILOT_V2_MIGRATION.md PoC results for the field-path source.
-        const u = part.usage as
+    // Pipe the AI SDK's native UIMessage stream protocol directly to the
+    // Vercel ServerResponse. The client's useChat hook consumes this
+    // protocol natively — no manual SSE translation on either side.
+    //
+    // messageMetadata attaches per-message usage to the UIMessage so the
+    // client can render a "X in (Y cached) · Z out" token meter from
+    // message.metadata. Fires on the model's `finish` event (final step).
+    // The AI SDK normalizes cache counts at usage.inputTokenDetails —
+    // see feedback_ai_sdk_v6_cache_tokens.md for the field-path source.
+    result.pipeUIMessageStreamToResponse(res, {
+      messageMetadata: ({ part }) => {
+        if (part.type !== "finish") return undefined;
+        const u = part.totalUsage as
           | {
               inputTokens?: number;
               outputTokens?: number;
               inputTokenDetails?: { noCacheTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
             }
           | undefined;
-        writeSseEvent(res, "usage", {
-          input_tokens: u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0,
-          output_tokens: u?.outputTokens ?? 0,
-          cache_creation_input_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
-          cache_read_input_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
-        });
-      } else if (part.type === "finish") {
-        writeSseEvent(res, "done", { stop_reason: part.finishReason });
-      } else if (part.type === "error") {
-        const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
-        writeSseEvent(res, "error", { error: errMsg });
-      }
-    }
+        return {
+          usage: {
+            input_tokens: u?.inputTokenDetails?.noCacheTokens ?? u?.inputTokens ?? 0,
+            output_tokens: u?.outputTokens ?? 0,
+            cache_creation_input_tokens: u?.inputTokenDetails?.cacheWriteTokens ?? 0,
+            cache_read_input_tokens: u?.inputTokenDetails?.cacheReadTokens ?? 0,
+          },
+        };
+      },
+      onError: (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        return msg;
+      },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    writeSseEvent(res, "error", { error: msg });
-  } finally {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: msg });
+    }
+    // Stream already started — best we can do is end the response.
     res.end();
   }
 }
