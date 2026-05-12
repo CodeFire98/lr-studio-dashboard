@@ -50,8 +50,16 @@ const xUrl        = flag("--x");
 const linkedinUrl = flag("--linkedin");
 const skipX        = argv.includes("--skip-x");
 const skipLinkedIn = argv.includes("--skip-linkedin");
+const includeX     = argv.includes("--include-x"); // override: re-test X anyway
 
-if (!xUrl && !skipX) {
+// X candidate list is empty post-2026-05-12 (see X_CANDIDATES note).
+// Only attempt X if user explicitly passes --include-x.
+const effectiveSkipX = skipX || !includeX;
+
+if (xUrl && !effectiveSkipX && X_CANDIDATES.length === 0) {
+  console.warn("Note: X candidates list is empty (see top of file). Pass --include-x AND populate X_CANDIDATES to re-test.");
+}
+if (!xUrl && !effectiveSkipX) {
   console.error("Pass --x <real tweet URL>, or --skip-x to only test LinkedIn.");
   process.exit(1);
 }
@@ -66,50 +74,42 @@ if (!linkedinUrl && !skipLinkedIn) {
 // Some actors take `tweetURLs`, others `urls`, others `startUrls: [{url}]`
 // — we try shapes top-to-bottom and take the first that returns items.
 
-const X_CANDIDATES = [
-  {
-    actor: "kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest",
-    inputs: [
-      (url) => ({ tweetURLs: [url], maxItems: 1 }),
-      (url) => ({ urls: [url], maxItems: 1 }),
-      (url) => ({ startUrls: [{ url }], maxItems: 1 }),
-    ],
-  },
-  {
-    actor: "apidojo/twitter-scraper-lite",
-    inputs: [
-      (url) => ({ startUrls: [{ url }], maxItems: 1 }),
-      (url) => ({ tweetUrls: [url], maxItems: 1 }),
-      (url) => ({ urls: [url], maxItems: 1 }),
-    ],
-  },
-  {
-    actor: "tugkan/twitter-tweet-scraper-pay-per-result",
-    inputs: [
-      (url) => ({ startUrls: [{ url }], maxItems: 1 }),
-      (url) => ({ tweetUrls: [url], maxItems: 1 }),
-      (url) => ({ urls: [url], maxItems: 1 }),
-    ],
-  },
-];
+// X candidates removed 2026-05-12 after the first preflight burned
+// credit on demo/mock data:
+//   - kaitoeasyapi/...-cheapest charges a minimum per-call even on
+//     empty results (returned 15 mock_tweet items with a fine-print
+//     message saying "we returned N mock items to cover our costs").
+//   - apidojo/twitter-scraper-lite returned {demo:true} × 10.
+//   - tugkan/twitter-tweet-scraper-pay-per-result is a missing actor.
+// Per pre-agreed plan: skip X in MVP. The preflight no longer
+// attempts X to save credit; use --include-x if you want to re-test.
+const X_CANDIDATES = [];
 
+// LinkedIn candidates re-derived from Apify Store search 2026-05-12.
+// My PR-1 guesses (apify/linkedin-post-scraper, harvestapi/linkedin-
+// post-scraper, apimaestro/linkedin-post-search-scraper, curious_
+// coder/linkedin-post-scraper, dev_fusion/linkedin-post-scraper) all
+// 404'd because none of them exist. Replaced with the top 2 actors
+// from the real Store listing:
+//
+//   - supreme_coder/linkedin-post: 6.4M runs, 13k users, "No cookies
+//     · $1 per 1k" per the listing. Title matches our exact use case
+//     (post-URL → engagement). Primary candidate.
+//   - harvestapi/linkedin-post-reactions: 408k runs, 2.4k users.
+//     Focused on reactions (the main engagement signal) for a given
+//     post URL. Cookie-free. Backup in case supreme_coder doesn't
+//     return the full metric set we need.
 const LINKEDIN_CANDIDATES = [
   {
-    actor: "apimaestro/linkedin-post-search-scraper",
+    actor: "supreme_coder/linkedin-post",
     inputs: [
       (url) => ({ urls: [url] }),
       (url) => ({ postUrls: [url] }),
-    ],
-  },
-  {
-    actor: "curious_coder/linkedin-post-scraper",
-    inputs: [
-      (url) => ({ urls: [url] }),
       (url) => ({ startUrls: [{ url }] }),
     ],
   },
   {
-    actor: "dev_fusion/linkedin-post-scraper",
+    actor: "harvestapi/linkedin-post-reactions",
     inputs: [
       (url) => ({ urls: [url] }),
       (url) => ({ postUrls: [url] }),
@@ -257,12 +257,14 @@ function printSummary(title, results) {
   const xResults = [];
   const linkedinResults = [];
 
-  if (xUrl && !skipX) {
-    console.log(`\n────── X — testing 3 candidates against ${xUrl} ──────`);
+  if (xUrl && !effectiveSkipX && X_CANDIDATES.length > 0) {
+    console.log(`\n────── X — testing ${X_CANDIDATES.length} candidate(s) against ${xUrl} ──────`);
     for (const c of X_CANDIDATES) {
       const r = await tryCandidate("x", c, xUrl);
       xResults.push(r);
     }
+  } else if (xUrl && X_CANDIDATES.length === 0) {
+    console.log("\n────── X — skipped (pre-agreed: no viable Apify actor as of 2026-05-12)");
   }
 
   if (linkedinUrl && !skipLinkedIn) {
