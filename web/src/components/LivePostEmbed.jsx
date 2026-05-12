@@ -53,6 +53,25 @@ const truncate = (text, n = 220) => {
   return text.slice(0, n).trimEnd() + '…';
 };
 
+// Route IG / Facebook CDN URLs through the same-origin image proxy so
+// the browser doesn't trip on Meta's Cross-Origin-Resource-Policy.
+// Non-Meta hosts (eg. user-pasted X media URLs) pass through unchanged.
+const proxiedUrl = (raw) => {
+  if (!raw || typeof raw !== 'string') return raw;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname;
+    const needsProxy =
+      host.endsWith('.cdninstagram.com') ||
+      host.endsWith('.fbcdn.net') ||
+      host === 'cdninstagram.com';
+    if (!needsProxy) return raw;
+    return `/api/engagement/image-proxy?u=${encodeURIComponent(raw)}`;
+  } catch {
+    return raw;
+  }
+};
+
 const Avatar = ({ url, name }) => {
   // No avatar in the cache (IG actor doesn't surface it) → render a
   // monogram tile so the row still aligns visually.
@@ -124,7 +143,15 @@ const MediaBlock = ({ embed, liveUrl }) => {
       aria-label="Open live post in a new tab"
     >
       <img
-        src={url}
+        // Route IG CDN URLs through our /api/engagement/image-proxy.
+        // Meta sends Cross-Origin-Resource-Policy: same-origin (or
+        // same-site) on scontent-*.cdninstagram.com responses, so any
+        // direct <img src=...cdninstagram.com> is blocked by the
+        // browser with ERR_BLOCKED_BY_RESPONSE.NotSameOrigin regardless
+        // of crossorigin / referrerpolicy. Proxying server-side strips
+        // that CORP header (CORP is browser-side only, server-to-server
+        // fetches ignore it). Non-IG URLs pass through untouched.
+        src={proxiedUrl(url)}
         alt={embed?.caption?.slice(0, 80) || 'Live post media'}
         style={{
           width: '100%',
