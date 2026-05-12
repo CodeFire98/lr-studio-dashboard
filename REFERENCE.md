@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 3 of 9**: UI integration for the engagement snapshots + embed cache shipped in PRs 1+2. New [LivePostEmbed.jsx](web/src/components/LivePostEmbed.jsx) renders a static card (author + media + 4-line caption) per platform; LivePostsView's `LiveTile` grows a metrics row (likes/comments/shares/saves/views with `—` for unexposed fields) and an agency-only "Refresh now" button on IG tiles (X/LinkedIn show "coming soon" badges until PRs 5/6). Engagement data flows via two new db.js loaders (`loadLatestEngagementSnapshots`, `loadEmbedCacheForPublications`) and two realtime subscriptions; `refreshEngagement(publicationId)` calls the route from the client. App.jsx passes `isAgency` down to LivePostsView. Migration `0041` previously applied, route deployed; consumer surface is the new piece in this PR.)
+**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 4 of 9**: on-paste auto-refresh. PostPlanDetailView's `handleMarkPostedSubmit` now fires `/api/engagement/refresh` for every newly-marked-posted IG publication with a URL. Fire-and-forget, doesn't block the modal close; realtime in LivePostsView picks up the snapshot + embed cache ~6s later. X/LinkedIn skip until PRs 5/6 wire those platforms. Brand-user 403 swallowed silently — server gate is authoritative. Earlier same day: PR #78 visual smoke test surfaced an IG image rendering issue → diagnosed as CORP not hotlink → shipped a same-origin image proxy at `/api/engagement/image-proxy`.)
+
+**Previous (2026-05-12):** PR 3 of 9 — UI integration for the engagement snapshots + embed cache shipped in PRs 1+2. New `LivePostEmbed.jsx` renders a static card; `LiveTile` grows a metrics row and agency-only "Refresh now" button. Two new db.js loaders + two realtime subscriptions; `refreshEngagement(publicationId)` calls the route. App.jsx passes `isAgency` down.
 
 **Previous (2026-05-12):** Live Posts engagement — PR 2 of 9 — new Vercel API route [web/api/engagement/refresh.ts](web/api/engagement/refresh.ts). POST `{ publicationId }` → loads the publication via service-role, dispatches to `apify/instagram-scraper` (IG only in PR 2; X and LinkedIn return 501 until PRs 5/6), normalizes the response, INSERTs a snapshot row, UPSERTs the embed cache. Auth: JWT → `profiles.is_agency = true` → 403 if brand. Hardened against the Apify monthly-cap 403 by stamping `scrape_status='blocked'` on the snapshot row so the UI can distinguish quota exhaustion from a genuine scrape failure. `vercel.json` gets a per-function `maxDuration: 60`.
 
@@ -31,6 +33,12 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-12 — Live Posts engagement: on-paste auto-refresh (PR 4 of 9)
+With PRs 1–3 deploying the engagement system, the agency still had to manually click "Refresh now" on every newly-marked-posted plan to populate metrics. PR 4 closes that loop: the moment an agency user marks a plan as posted with a live URL, the dashboard fires `/api/engagement/refresh` in the background and the tile auto-populates ~6s later via realtime.
+
+- **[web/src/components/PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx)** `handleMarkPostedSubmit` — after the upsert loop completes, iterates the newly-saved publications and fires `refreshEngagement(id)` for each one that is (a) `platform === 'instagram'` and (b) has a non-empty `liveUrl`. Fire-and-forget — the modal close is NOT blocked on the ~6s Apify scrape; realtime in LivePostsView picks up the snapshot + embed cache writes when they land. 403 (brand user) is swallowed silently because the server gate is authoritative; brand users get the data when an agency teammate clicks Refresh later. Other failures (Apify quota, actor down) end up in the snapshot row's `scrape_status` and surface honestly in the tile next time someone looks.
+- **X / LinkedIn skip intentionally** — the client doesn't fire for those platforms (the route 501s them; firing would waste a server hop). PRs 5/6 will flip the gate when the actor selection lands.
 
 ### 2026-05-12 — Live Posts engagement: image proxy fix (PR 3 hotfix)
 First end-to-end visual test on the Vercel preview surfaced that IG images weren't rendering. The first diagnosis (hotlink protection → `referrerpolicy="no-referrer"`) turned out wrong. Real cause:

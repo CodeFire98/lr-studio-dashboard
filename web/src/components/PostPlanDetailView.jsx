@@ -36,6 +36,7 @@ import {
   upsertPostPlanPublication,
   deletePostPlanPublication,
   subscribeToPostPlanPublications,
+  refreshEngagement,
 } from '../lib/db.js';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { MarkAsPostedModal } from './MarkAsPostedModal.jsx';
@@ -801,6 +802,30 @@ const PostPlanDetailView = ({
     markPostPlanSeen(plan.id, userId);
     onPlanSeen?.(plan.id);
     setPostedModalOpen(false);
+
+    // Fire-and-forget engagement refresh for every IG publication that
+    // has a URL. Apify scrape takes ~6s; we don't want to block the
+    // modal close on it. When the snapshot + embed cache write lands,
+    // LivePostsView's realtime subscription picks it up and the tile
+    // populates without any further user action. X/LinkedIn currently
+    // 501 at the route (PRs 5/6 will add them); the client just
+    // doesn't fire for those platforms so we don't burn a request.
+    //
+    // The route gates on `profiles.is_agency = true` server-side. If a
+    // brand user marks posted, the call 403s here and we swallow the
+    // error — agency can hit "Refresh now" later from the Live Posts
+    // tile. Any other failure (Apify quota out, actor down) gets
+    // captured in the snapshot row's `scrape_status` ('blocked' /
+    // 'failed') so the tile shows the real state next time someone
+    // looks.
+    for (const r of created) {
+      if (r.platform !== 'instagram') continue;
+      if (!r.liveUrl) continue;
+      refreshEngagement(r.id).catch((e) => {
+        if (e?.status === 403) return; // brand user, expected
+        console.warn('auto-refresh on mark-posted failed', e);
+      });
+    }
   };
 
   // ---- Activity feed (synthesized) ------------------------------------
