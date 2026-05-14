@@ -369,7 +369,13 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
           <CopilotStatus status={status} messages={messages} />
         )}
 
-        {error && (
+        {/* Gate the error banner on messages.length > 0 so that
+            clicking "Start new" (which resets messages) doesn't leave a
+            stale error from the previous conversation sitting around.
+            useChat doesn't expose a setError, so this is the cleanest
+            way to reset the error UI on conversation reset. The error
+            naturally re-renders on the next failed sendMessage anyway. */}
+        {error && messages.length > 0 && (
           <div className="copilot-error">
             <Icon name="alert" size={12} /> {error.message || String(error)}
           </div>
