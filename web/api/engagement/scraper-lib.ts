@@ -2,16 +2,23 @@
 // Engagement scraper shared helpers — imported by both /api/engagement/
 // refresh (on-demand) and /api/engagement/refresh-cron (scheduled).
 //
-// **Filename does NOT start with an underscore.** Earlier attempt was
-// `_shared.ts` (based on the convention that leading-underscore files
-// aren't deployed by Vercel as routes — `feedback_vercel_underscore_
-// prefix.md` documents that for routes). Turns out Vercel's build also
-// EXCLUDES leading-underscore files from the function deploy artifact
-// entirely — they're treated as "private" all the way through. The
-// production runtime then can't resolve `import { ... } from "./_shared"`
-// (ERR_MODULE_NOT_FOUND, `/var/task/.../_shared` missing). Discovered
-// on 2026-05-14 when the X integration deployment 500'd in prod.
-// Renamed to `scraper-lib.ts` to deploy normally.
+// **Filename has no leading underscore and the import statements
+// use the `.js` extension** (e.g. `from "./scraper-lib.js"`). Both
+// matter under Node 24's strict ESM resolution:
+//   - Node 24 ESM doesn't auto-extend `./scraper-lib` → `./scraper-
+//     lib.js`. Missing extension = `ERR_MODULE_NOT_FOUND` at runtime
+//     (even though the source file is `.ts`, the compiled artifact is
+//     `.js` and that's what the runtime resolver sees). All four
+//     `web/api/ai/*.ts` routes import their shared helpers with `.js`
+//     extensions for the same reason.
+//   - Leading underscore on the filename was a red herring during
+//     the 2026-05-14 debug — earlier attempt was `_shared.ts` and
+//     the rename to `scraper-lib.ts` happened at the same time as
+//     the extension fix; the extension is what actually fixed it.
+//     Underscore-prefix is still bad style for shared helpers (the
+//     `_` is reserved by convention for Vercel route-skip behavior
+//     — see `feedback_vercel_underscore_prefix.md`); keeping the
+//     non-underscore name regardless.
 //
 // Why a shared module instead of duplicating: PR 7 added the cron
 // route, which needs the same scrapeInstagram + scrapeLinkedIn logic
