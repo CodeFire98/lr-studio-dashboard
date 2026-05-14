@@ -16,7 +16,7 @@
     },
     "api/ai/chat.ts": {
       "includeFiles": "src/data/skills/**",
-      "maxDuration": 90
+      "maxDuration": 60
     },
     "api/ai/copy.ts": {
       "includeFiles": "src/data/skills/**",

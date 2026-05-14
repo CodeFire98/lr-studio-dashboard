@@ -37,6 +37,12 @@
 //   - Tool loop cap: 8 steps (stopWhen: stepCountIs(8))
 // =====================================================================
 
+// Diagnostic: this log fires at MODULE LOAD. If we don't see it in Vercel
+// function logs, the module never loaded — the function bundle itself is
+// broken or one of the imports below threw before this line. Cheap, gone
+// once we diagnose the FUNCTION_INVOCATION_FAILED reproducing in PR #89.
+console.log("[chat] module-load-start");
+
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
@@ -58,6 +64,8 @@ import {
   loadSkillReference,
   SKILL_SLUGS,
 } from "../../src/lib/skillRegistry.js";
+
+console.log("[chat] module-load-imports-ok");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -228,11 +236,7 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social
 - When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true; leave non-pinned for time-bound or context-specific facts. The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
 - After calling a tool, briefly tell the admin what you did and link them to the result if applicable. Don't just go silent.
 - **Don't announce internal failures.** If a tool call fails and you retry successfully on the next step, present the final result as if it worked the first time. Don't say "let me try that again", "apologies for the error", or any variant. The admin doesn't need to see plumbing slips.
-- **End every turn with \`suggest_follow_ups\`.** After your text reply and any other tool calls, call \`suggest_follow_ups\` with 2-4 chips the admin would plausibly want to send next. The chips render as click-to-prefill buttons above the textarea. Make them SPECIFIC to what you just did, not generic. Good examples:
-  - After drafting 3 plans: \`["Add 2 more in a different pillar", "Move all three to next week instead", "Generate hero images for these", "Polish the LinkedIn copy on the second one"]\`
-  - After a proactive brief: \`["Plan a 3-post Diwali series", "Fill my Tuesday gap with a community post", "What's trending in eco-fashion this week?", "Show me the engagement on last month's IG"]\`
-  - After loading a skill: \`["Apply this to next week's calendar", "Draft a post with this framework", "Show me 3 more idea angles"]\`
-  Bad chips: "Tell me more", "Continue", "Yes please", "Anything else?" — these add no value. Don't repeat the admin's last message.
+- **End every turn with suggest_follow_ups.** After your text reply and any other tool calls, call suggest_follow_ups with 2-4 chips the admin would plausibly want to send next. The chips render as click-to-prefill buttons above the textarea. Make them SPECIFIC to what you just did, not generic. Good examples after drafting 3 plans: "Add 2 more in a different pillar", "Move all three to next week instead", "Generate hero images for these", "Polish the LinkedIn copy on the second one". Good examples after a proactive brief: "Plan a 3-post Diwali series", "Fill my Tuesday gap with a community post", "What is trending in eco-fashion this week?", "Show me the engagement on last month's IG". Good examples after loading a skill: "Apply this to next week's calendar", "Draft a post with this framework", "Show me 3 more idea angles". Bad chips: "Tell me more", "Continue", "Yes please", "Anything else?" — these add no value. Do not repeat the admin's last message.
 
 ## Platform craft (universal — applies to every brand)
 
