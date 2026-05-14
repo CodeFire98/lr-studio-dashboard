@@ -12,7 +12,7 @@
 
    Empty state nudges the agency / brand to mark plans as posted from
    the detail view; that's the only way rows land here. */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import {
   PLATFORMS,
@@ -295,6 +295,75 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
           </>
         )}
       </div>
+    </div>
+  );
+};
+
+// =====================================================================
+// Masonry grid — row-first reading order + per-column tight stacking
+// =====================================================================
+// CSS multi-column would stack tiles tightly within each column (which
+// we want), but it fills column 1 top-to-bottom THEN column 2 etc.,
+// so the top-left tile is the newest but the top-middle tile is
+// item N+1 (not item 1). The user expectation for chronological sort
+// is row-first: top-left = item 0, top-middle = item 1, etc.
+//
+// Solution: distribute items round-robin into N flex columns. Item 0
+// goes to column 0 row 0 (top-left), item 1 to column 1 row 0 (top-
+// middle), item 2 to column 2 row 0 (top-right), item 3 wraps back to
+// column 0 row 1, and so on. Each column is a flex column so tiles
+// inside stack tightly with no whitespace below short tiles.
+//
+// Column count is derived from container width via ResizeObserver,
+// targeting a per-column min width of ~280px (matches the original
+// CSS Grid's minmax).
+
+const MIN_COLUMN_WIDTH = 280;
+const COLUMN_GAP = 12;
+
+function useColumnCount(containerRef) {
+  const [cols, setCols] = useState(1);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return undefined;
+    const compute = (width) => {
+      // Floor((w + gap) / (min + gap)) gives the largest column count
+      // where each column is >= MIN_COLUMN_WIDTH including inter-column
+      // gaps. Clamp to >= 1 so we always render at least one column.
+      const n = Math.max(1, Math.floor((width + COLUMN_GAP) / (MIN_COLUMN_WIDTH + COLUMN_GAP)));
+      setCols(n);
+    };
+    compute(el.getBoundingClientRect().width);
+    const ro = new ResizeObserver((entries) => {
+      compute(entries[0].contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [containerRef]);
+  return cols;
+}
+
+const MasonryGrid = ({ items, renderItem }) => {
+  const ref = useRef(null);
+  const cols = useColumnCount(ref);
+  const columns = useMemo(() => {
+    const arr = Array.from({ length: cols }, () => []);
+    items.forEach((item, i) => arr[i % cols].push(item));
+    return arr;
+  }, [items, cols]);
+  return (
+    <div
+      ref={ref}
+      style={{ display: 'flex', gap: COLUMN_GAP, alignItems: 'flex-start' }}
+    >
+      {columns.map((col, ci) => (
+        <div
+          key={ci}
+          style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: COLUMN_GAP }}
+        >
+          {col.map((item) => renderItem(item))}
+        </div>
+      ))}
     </div>
   );
 };
@@ -592,33 +661,20 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                   · {g.rows.length}
                 </span>
               </h3>
-              {/* CSS multi-column masonry. Each tile stacks immediately
-                  under the previous one IN ITS COLUMN — short tiles
-                  (text-only X tweets) no longer leave whitespace below
-                  while a sibling tile in the same row is taller (IG
-                  with image). Reading order is top-to-bottom within
-                  each column, left-to-right across columns — fine for
-                  Live Posts where users scan chronologically. */}
-              <div style={{
-                columnWidth: 280,
-                columnGap: 12,
-              }}>
-                {g.rows.map((row) => (
-                  <div
+              <MasonryGrid
+                items={g.rows}
+                renderItem={(row) => (
+                  <LiveTile
                     key={row.id}
-                    style={{ breakInside: 'avoid', marginBottom: 12 }}
-                  >
-                    <LiveTile
-                      row={row}
-                      snapshot={snapshotsByPubId.get(row.id) || null}
-                      embed={embedsByPubId.get(row.id) || null}
-                      isAgency={!!isAgency}
-                      onRefresh={handleRefresh}
-                      onOpenPlan={openPlan}
-                    />
-                  </div>
-                ))}
-              </div>
+                    row={row}
+                    snapshot={snapshotsByPubId.get(row.id) || null}
+                    embed={embedsByPubId.get(row.id) || null}
+                    isAgency={!!isAgency}
+                    onRefresh={handleRefresh}
+                    onOpenPlan={openPlan}
+                  />
+                )}
+              />
             </section>
           ))}
         </div>
@@ -640,17 +696,11 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
               · {sortedFlat?.length ?? 0}
             </span>
           </h3>
-          {/* Same masonry shape as the month-grouped view above. */}
-          <div style={{
-            columnWidth: 280,
-            columnGap: 12,
-          }}>
-            {(sortedFlat ?? []).map((row) => (
-              <div
-                key={row.id}
-                style={{ breakInside: 'avoid', marginBottom: 12 }}
-              >
+          <MasonryGrid
+            items={sortedFlat ?? []}
+            renderItem={(row) => (
               <LiveTile
+                key={row.id}
                 row={row}
                 snapshot={snapshotsByPubId.get(row.id) || null}
                 embed={embedsByPubId.get(row.id) || null}
@@ -658,9 +708,8 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                 onRefresh={handleRefresh}
                 onOpenPlan={openPlan}
               />
-              </div>
-            ))}
-          </div>
+            )}
+          />
         </div>
       )}
     </div></div>
