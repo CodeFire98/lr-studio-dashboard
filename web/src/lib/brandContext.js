@@ -41,6 +41,13 @@ const PUBLICATIONS_LIMIT = 20;
 const TOP_PERFORMERS_COUNT = 3;
 const VOICE_ANCHORS_COUNT = 5;
 const HOLIDAY_LOOKAHEAD_DAYS = 30;
+// Industry signals (Firecrawl /search results from the daily cron) —
+// always loaded when calendar is enabled (chat route). Cheap: ~5-10
+// rows max, ~1-2K tokens of context. The model leads with these to
+// feel proactive about trends without paying for a per-call web
+// search. Stale data is fine — trends don't change minute-to-minute.
+const INDUSTRY_SIGNALS_LIMIT = 8;
+const INDUSTRY_SIGNALS_MAX_AGE_DAYS = 7;
 
 // brand_kits / accounts don't currently have country or timezone columns.
 // Defaults match L+R Studio's reality: India-based agency, Asia/Kolkata
@@ -103,6 +110,11 @@ export async function loadAndCompileBrandContext(supabaseClient, accountId, opti
   // the model only sees day-resolution anyway. Anything stricter would
   // need brand_kits.timezone wired through, which we're deferring.
   const todayIso = new Date().toISOString();
+  // Industry signals stale-cutoff: only show snapshots fresher than 7d.
+  // Older trends aren't useful for "what should I post this week" and
+  // would only confuse the model.
+  const signalsCutoffIso = new Date(Date.now() - INDUSTRY_SIGNALS_MAX_AGE_DAYS * 86400_000).toISOString();
+
   const calendarQueries = includeCalendar
     ? [
         supabaseClient
@@ -123,11 +135,24 @@ export async function loadAndCompileBrandContext(supabaseClient, accountId, opti
           .eq('post_plans.account_id', accountId)
           .order('published_at', { ascending: false })
           .limit(PUBLICATIONS_LIMIT),
+        // Industry signals — from the daily cron's Firecrawl /search
+        // results. The cron writes snapshots into brand_trend_snapshots.
+        // We pull the latest non-failed rows, capped to a freshness
+        // window so stale trends don't ride along forever if the cron
+        // is broken.
+        supabaseClient
+          .from('brand_trend_snapshots')
+          .select('id, query, source_url, title, summary, published_at, fetched_at, scrape_status')
+          .eq('account_id', accountId)
+          .neq('scrape_status', 'failed')
+          .gte('fetched_at', signalsCutoffIso)
+          .order('fetched_at', { ascending: false })
+          .limit(INDUSTRY_SIGNALS_LIMIT * 3), // over-fetch then dedupe by URL
       ]
     : [];
 
   const results = await Promise.all([...baseQueries, ...calendarQueries]);
-  const [kitResult, notesResult, plansResult, upcomingResult, pubsResult] = results;
+  const [kitResult, notesResult, plansResult, upcomingResult, pubsResult, signalsResult] = results;
 
   if (kitResult.error) throw kitResult.error;
 
@@ -150,6 +175,19 @@ export async function loadAndCompileBrandContext(supabaseClient, accountId, opti
     }
   }
 
+  // Dedupe industry signals by URL — same article can show up across
+  // queries on the same day (industry-trends + hashtag-pulse often
+  // overlap). Keep the newest version of each URL.
+  const signalsRaw = signalsResult?.data || [];
+  const signalsByUrl = new Map();
+  for (const s of signalsRaw) {
+    const url = s.source_url;
+    if (!url) continue;
+    if (signalsByUrl.has(url)) continue;
+    signalsByUrl.set(url, s);
+  }
+  const industrySignals = Array.from(signalsByUrl.values()).slice(0, INDUSTRY_SIGNALS_LIMIT);
+
   return compileBrandContext({
     brandKit: kitResult.data,
     notes: notesResult.data || [],
@@ -157,6 +195,7 @@ export async function loadAndCompileBrandContext(supabaseClient, accountId, opti
     upcomingPlans: upcomingResult?.data || [],
     publications,
     snapshotsByPublication,
+    industrySignals,
     includeCalendar,
   });
 }
@@ -168,6 +207,7 @@ export function compileBrandContext({
   upcomingPlans = [],
   publications = [],
   snapshotsByPublication = {},
+  industrySignals = [],
   includeCalendar = false,
   now,
 } = {}) {
@@ -248,6 +288,9 @@ export function compileBrandContext({
 
     const anchors = voiceAnchorsSection({ publications, snapshotsByPublication });
     if (anchors) sections.push(anchors);
+
+    const signals = industrySignalsSection({ industrySignals, today });
+    if (signals) sections.push(signals);
   }
 
   // Past approved plans (style references) — always included. The voice
@@ -465,6 +508,41 @@ function voiceAnchorsSection({ publications, snapshotsByPublication }) {
 
   const lines = scored.map((s) => `- (${s.platform}) ${s.hook}`);
   return `## Voice anchors (opening lines of top-performing recent posts)\n${lines.join('\n')}`;
+}
+
+// ---------- ## Industry signals (Firecrawl /search cache) ------------
+
+function industrySignalsSection({ industrySignals, today }) {
+  if (!Array.isArray(industrySignals) || !industrySignals.length) return null;
+
+  const lines = [];
+  lines.push(
+    "External news + trend articles relevant to this brand, refreshed daily. Use these to ground proactive suggestions in what's actually happening in the brand's world right now. Don't fabricate context that isn't here — if the admin asks about a topic NOT covered, call the web_search tool.",
+  );
+  lines.push('');
+
+  const todayMs = today instanceof Date ? today.getTime() : new Date(today).getTime();
+  for (const s of industrySignals) {
+    const fetchedMs = s.fetched_at ? new Date(s.fetched_at).getTime() : NaN;
+    const ageDays = Number.isFinite(fetchedMs)
+      ? Math.max(0, Math.round((todayMs - fetchedMs) / 86400_000))
+      : null;
+    const ageTag = ageDays == null
+      ? ''
+      : ageDays === 0
+        ? '(today)'
+        : ageDays === 1
+          ? '(yesterday)'
+          : `(${ageDays}d ago)`;
+    const title = (s.title || s.source_url || '(untitled)').trim().slice(0, 200);
+    const summary = (s.summary || '').trim();
+    const url = s.source_url || '';
+    lines.push(`- ${ageTag} **${title}**`);
+    if (summary) lines.push(`  ${truncate(summary, 280)}`);
+    if (url) lines.push(`  source: ${url}`);
+  }
+
+  return `## Industry signals (recent trend articles)\n${lines.join('\n')}`;
 }
 
 // ---------- existing helpers (unchanged) ------------------------------

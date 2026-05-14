@@ -63,6 +63,10 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const ANON_KEY = process.env.SUPABASE_ANON_KEY ?? "";
+const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "";
+
+const WEB_SEARCH_RESULT_LIMIT = 5;
+const WEB_SEARCH_SUMMARY_CHARS = 280;
 
 const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
   .split(",")
@@ -218,7 +222,8 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social
   2. **Time:** 09:00 in the brand's timezone (see the ## Today block).
   3. **Platforms:** if the brand's strategy mentions primary platforms, use those. Otherwise infer from past approved posts and Top performers. If still ambiguous, default to Instagram (most brands' primary).
   4. **Concept:** derive from upcoming moments + brand pillars + cadence gaps + the admin's hints. Lean on the brand's pillars — rotating across them avoids monotone calendars.
-- **Be proactive.** When the conversation opens (no prior assistant messages in this turn's history) or the admin asks an open-ended question like "what should I post?", lead with what's most relevant right now: upcoming holidays/festivals on the brand's market, cadence gaps, what top-performing recent posts can be built on, anything in the brand notes that's time-bound. Then offer 2-3 concrete next moves. Don't just dump information — propose action.
+- **Be proactive.** When the conversation opens (no prior assistant messages in this turn's history) or the admin asks an open-ended question like "what should I post?", lead with what's most relevant right now: upcoming holidays/festivals on the brand's market, cadence gaps, what top-performing recent posts can be built on, the freshest items in `## Industry signals` (the cached news block populated by the daily trend cron), anything in the brand notes that's time-bound. Then offer 2-3 concrete next moves. Don't just dump information — propose action.
+- **Use Industry signals before searching.** The `## Industry signals` block is refreshed daily by a Firecrawl cron and is the cheapest source of trend awareness — read from it first. Call `web_search` ONLY when the admin asks about something the cached signals don't cover (a specific recent event, a competitor announcement, a niche topic, a fresh data point from "today" or "this week"). Don't fire `web_search` speculatively or for broad questions already answered by the cached signals — it costs credits per call.
 - **Use the calendar context.** Before creating a draft, glance at the Upcoming calendar block. Don't propose a date that's already busy on every targeted platform. Don't suggest content concepts that duplicate something already drafted within 7 days. If the calendar is empty, that's the most important signal — propose filling it, not analysing it.
 - When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true; leave non-pinned for time-bound or context-specific facts. The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
 - After calling a tool, briefly tell the admin what you did and link them to the result if applicable. Don't just go silent.
@@ -261,6 +266,7 @@ When drafting copy via create_post_plan_draft, match these platform conventions.
 - write_brand_note — persist a fact about the brand to the brand_kit_notes table. Used when the admin tells you to remember something. The note flows into the brand context on every future AI call (chat + inline copy). Pin always-true facts; leave others non-pinned.
 - load_skill — fetch one of the marketing playbooks listed below. Use when its description matches the work. Loaded body rides in context for the rest of the conversation.
 - load_skill_reference — fetch a deep-dive reference doc from an already-loaded skill (e.g. post templates, copy frameworks, idea catalogues). Call when the SKILL response lists the reference and it looks directly useful.
+- web_search — search the live web (Firecrawl) for information NOT in the cached ## Industry signals block. Use sparingly — see the "Use Industry signals before searching" rule above. Costs credits per call.
 
 __SKILL_MENU__
 
@@ -330,6 +336,16 @@ const loadSkillReferenceInput = z.object({
     ),
 });
 
+const webSearchInput = z.object({
+  query: z
+    .string()
+    .min(3)
+    .max(300)
+    .describe(
+      "The search query. Make it specific and grounded in the brand's market — e.g. 'sustainable kidswear trends India 2026' not 'fashion trends'. The cached ## Industry signals block already covers daily-refreshed broad trends for this brand; only call web_search when you need information NOT in those signals — a specific recent event, a competitor announcement, current news on a niche topic, etc.",
+    ),
+});
+
 const writeBrandNoteInput = z.object({
   body: z
     .string()
@@ -346,6 +362,81 @@ const writeBrandNoteInput = z.object({
 });
 
 type ToolExecResult = { ok: true; result: unknown } | { ok: false; error: string };
+
+// =====================================================================
+// web_search via Firecrawl /search
+// =====================================================================
+//
+// On-demand web search. The cached ## Industry signals block in the
+// brand context already gives the model a daily refresh of trend
+// articles (populated by /api/trends/refresh-cron). web_search is the
+// drill-down — model calls when it needs information NOT in those
+// snapshots. Returns up to 5 results with title + URL + summary.
+
+type FirecrawlSearchHit = {
+  url?: string;
+  title?: string;
+  description?: string;
+  publishedDate?: string;
+  publishedAt?: string;
+};
+
+async function performWebSearch(query: string): Promise<ToolExecResult> {
+  if (!FIRECRAWL_API_KEY) {
+    return { ok: false, error: "FIRECRAWL_API_KEY not configured on this Vercel project — web_search is unavailable." };
+  }
+  let res: Response;
+  try {
+    res = await fetch("https://api.firecrawl.dev/v2/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
+      },
+      body: JSON.stringify({ query, limit: WEB_SEARCH_RESULT_LIMIT }),
+    });
+  } catch (ex) {
+    return { ok: false, error: `firecrawl network: ${(ex as Error).message}` };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return { ok: false, error: `firecrawl ${res.status}: ${text.slice(0, 300)}` };
+  }
+  let json: { success?: boolean; data?: { web?: FirecrawlSearchHit[]; news?: FirecrawlSearchHit[] } | FirecrawlSearchHit[] };
+  try {
+    json = await res.json();
+  } catch (ex) {
+    return { ok: false, error: `firecrawl json parse: ${(ex as Error).message}` };
+  }
+  const data = json.data;
+  let merged: FirecrawlSearchHit[] = [];
+  if (Array.isArray(data)) {
+    merged = data;
+  } else if (data && typeof data === "object") {
+    merged = [...(data.web ?? []), ...(data.news ?? [])];
+  }
+  // Dedupe by URL + slim each hit to what the model actually needs.
+  const seen = new Set<string>();
+  const results = [];
+  for (const hit of merged) {
+    const url = typeof hit.url === "string" ? hit.url.trim() : "";
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const title = typeof hit.title === "string" ? hit.title.slice(0, 200) : "";
+    const summary = typeof hit.description === "string" ? hit.description.slice(0, WEB_SEARCH_SUMMARY_CHARS) : "";
+    const published = hit.publishedDate || hit.publishedAt || null;
+    results.push({ url, title, summary, ...(published ? { published_at: published } : {}) });
+    if (results.length >= WEB_SEARCH_RESULT_LIMIT) break;
+  }
+  return {
+    ok: true,
+    result: {
+      query,
+      result_count: results.length,
+      results,
+    },
+  };
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS — match the other API routes.
@@ -529,6 +620,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       inputSchema: loadSkillReferenceInput,
       execute: async (input): Promise<ToolExecResult> => {
         return loadSkillReference(input.slug, input.reference_name);
+      },
+    }),
+    web_search: tool({
+      description:
+        "Search the live web for information NOT in the cached ## Industry signals block. Use for: current news about a specific company / event, competitor announcements, niche topics the daily trend cron wouldn't cover, anything the admin asks about with a 'recent' or 'today' or 'this week' framing. DON'T use for general industry trends — those are already in the system prompt under ## Industry signals. Returns up to 5 results (title + URL + summary). Costs Firecrawl credits per call, so call only when you actually need fresh info — not speculatively.",
+      inputSchema: webSearchInput,
+      execute: async (input): Promise<ToolExecResult> => {
+        return performWebSearch(input.query);
       },
     }),
   };

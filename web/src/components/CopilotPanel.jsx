@@ -504,6 +504,14 @@ function runningToolLabel(toolName, input) {
     if (ref) return `Pulling “${ref}”…`;
     return "Pulling a deep-dive reference…";
   }
+  if (toolName === "web_search") {
+    const q = typeof input?.query === "string" ? input.query.trim() : "";
+    if (q) {
+      const truncated = q.length > 60 ? q.slice(0, 57) + "…" : q;
+      return `Searching the web for “${truncated}”…`;
+    }
+    return "Searching the web…";
+  }
   return `Running ${toolName}…`;
 }
 
@@ -602,6 +610,7 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
   const isNote = toolName === "write_brand_note";
   const isLoadSkill = toolName === "load_skill";
   const isLoadSkillRef = toolName === "load_skill_reference";
+  const isWebSearch = toolName === "web_search";
 
   const isRunning = state === "input-streaming" || state === "input-available";
   const isOk = state === "output-available";
@@ -647,6 +656,11 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
   const skillTitle = input?.slug ? (skillSlugTitles[input.slug] || input.slug) : null;
   const refTitle = input?.reference_name ? String(input.reference_name).replace(/-/g, " ") : null;
 
+  // Web search input.query is the searched phrase; useful to surface
+  // in the tile headline.
+  const webSearchQuery = isWebSearch && typeof input?.query === "string" ? input.query.trim() : "";
+  const webSearchResultCount = isWebSearch && typeof result?.result_count === "number" ? result.result_count : null;
+
   let headline;
   if (statusKey === "running") {
     headline = isPlan
@@ -657,7 +671,9 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
           ? (skillTitle ? `Consulting the ${skillTitle} playbook…` : "Consulting a marketing playbook…")
           : isLoadSkillRef
             ? (skillTitle && refTitle ? `Pulling “${refTitle}” from the ${skillTitle} playbook…` : "Pulling a deep-dive reference…")
-            : `Running ${toolName}…`;
+            : isWebSearch
+              ? (webSearchQuery ? `Searching the web for “${webSearchQuery.length > 60 ? webSearchQuery.slice(0, 57) + "…" : webSearchQuery}”…` : "Searching the web…")
+              : `Running ${toolName}…`;
   } else if (statusKey === "ok") {
     headline = isPlan
       ? "Created an AI draft plan"
@@ -667,7 +683,9 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
           ? (skillTitle ? `Loaded the ${skillTitle} playbook` : "Loaded a marketing playbook")
           : isLoadSkillRef
             ? (skillTitle && refTitle ? `Loaded “${refTitle}” from ${skillTitle}` : "Loaded a deep-dive reference")
-            : `Ran ${toolName}`;
+            : isWebSearch
+              ? (webSearchResultCount != null ? `Read ${webSearchResultCount} result${webSearchResultCount === 1 ? "" : "s"} from the web` : "Searched the web")
+              : `Ran ${toolName}`;
   } else {
     headline = `${toolName} failed`;
   }

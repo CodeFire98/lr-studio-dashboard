@@ -19,6 +19,9 @@
     },
     "api/ai/copy.ts": {
       "includeFiles": "src/data/skills/**"
+    },
+    "api/trends/refresh-cron.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [
@@ -29,6 +32,10 @@
     {
       "path": "/api/engagement/refresh-cron",
       "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/trends/refresh-cron",
+      "schedule": "30 0 * * *"
     }
   ],
   "rewrites": [
