@@ -22,7 +22,7 @@
     },
     {
       "path": "/api/engagement/refresh-cron",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 1 * * *"
     }
   ],
   "rewrites": [

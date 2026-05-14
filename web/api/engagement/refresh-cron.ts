@@ -1,12 +1,23 @@
 // =====================================================================
 // /api/engagement/refresh-cron — Vercel Cron orchestrator
 //
-// Fires every 6 hours (`0 */6 * * *` in vercel.json). For every
-// publication on a supported platform with a live_url, decides
+// Fires once daily at 1am UTC (`0 1 * * *` in vercel.json). For
+// every publication on a supported platform with a live_url, decides
 // whether the publication is "due for refresh" using a tiered
 // cadence keyed off the publication's age + the latest snapshot's
 // fetched_at. Due publications get scraped in batches and the
 // snapshots + embed cache are written through `_shared.ts` helpers.
+//
+// **Why daily (not every 6h as originally planned).** Vercel Hobby
+// caps cron jobs at "once per day max" per project. The original
+// 6h schedule (`0 */6 * * *`) violated this and made the entire
+// deployment fail (Vercel build rejects cron schedules that exceed
+// plan limits — surfaced as "Deployment failed" with the cron-
+// pricing docs page on click-through). Daily is what Hobby allows;
+// to fire more often we'd need Vercel Pro ($20/mo). For MVP-scale
+// the daily cadence is fine — the on-paste auto-refresh already
+// captures the initial scrape, and the cron is for keeping numbers
+// fresh over the multi-day curve.
 //
 // Why a cron at all (the user already has on-paste auto-refresh):
 //   - Engagement numbers grow over hours/days; the first scrape
@@ -18,8 +29,7 @@
 // Tiered cadence (keyed on time-since-publication, NOT time-since-
 // last-scrape — so a long-overdue publication catches up to the right
 // tier instead of being stuck in the most-frequent one):
-//   0-48h after publication      → refresh every 6h
-//   2-14 days                    → daily
+//   0-14 days after publication  → refresh daily (every cron fire)
 //   15-60 days                   → every 3 days
 //   60+ days                     → weekly
 //   3+ consecutive failures      → demoted to weekly
@@ -62,16 +72,19 @@ const MAX_SCRAPES_PER_RUN = 5;
 // Cadence tiers (ms). The route picks the tier based on time-since-
 // publication, then the publication is "due" iff time-since-latest-
 // snapshot exceeds the tier's interval.
-const SIX_HOURS  = 6 * 60 * 60 * 1000;
+//
+// Sub-day tiers are pointless on Hobby (the cron fires once a day),
+// so the youngest tier is 1 day. If/when we upgrade to Pro and run
+// the cron every 4-6 hours, add a `< TWO_DAYS → SIX_HOURS` tier
+// at the top so new posts get sampled multiple times in their first
+// 48h to capture the early engagement curve.
 const ONE_DAY    = 24 * 60 * 60 * 1000;
-const TWO_DAYS   = 2 * ONE_DAY;
 const TWO_WEEKS  = 14 * ONE_DAY;
 const SIXTY_DAYS = 60 * ONE_DAY;
 const THREE_DAYS = 3 * ONE_DAY;
 const ONE_WEEK   = 7 * ONE_DAY;
 
 function refreshIntervalForAge(ageMs: number): number {
-  if (ageMs < TWO_DAYS)   return SIX_HOURS;
   if (ageMs < TWO_WEEKS)  return ONE_DAY;
   if (ageMs < SIXTY_DAYS) return THREE_DAYS;
   return ONE_WEEK;
