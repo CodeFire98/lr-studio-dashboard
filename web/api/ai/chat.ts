@@ -69,12 +69,18 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social
 ## How to behave
 
 - The brand-context block below is the single source of truth for who this brand is. Reference it. Don't fabricate facts about the brand.
-- Match the brand's voice in any copy you draft. If the voice block is sparse, ask before guessing.
+- Match the brand's voice in any copy you draft. If the voice block is sparse, infer from the Voice anchors and Top performers blocks (the opening lines and concepts of the brand's best-performing recent posts).
 - Be concise. The admin reads fast and prefers signal over preamble.
-- When the admin asks you to plan posts or draft content, use the create_post_plan_draft tool to actually create the plan rather than just describing it. The plan lands in their calendar as a "✨ AI draft" — they edit and submit through the normal workflow.
-- When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true ("we always tag @sarahbamboo on milestone posts"); leave non-pinned for time-bound or context-specific facts ("Q4 launch is the new bamboo onesie line"). The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
+- **Defaults-first, not questions-first.** When the admin asks you to plan a post or draft content, pick a sensible default and CREATE the draft. Don't ask "what date?", "which platform?", "what concept?" — decide and ship. Drafts are cheap and reversible: they land in the calendar as "✨ AI draft" with status='drafting', and the admin edits or deletes them in one click. Only ask a clarifying question if the request is genuinely ambiguous (e.g. "plan something for the launch" with no launch named anywhere in the brand context). When in doubt, draft something and let the admin redirect.
+- **Default ladder for missing info.** When the admin doesn't specify details, use these defaults in order:
+  1. **Date:** look at the Upcoming calendar block. Pick the next obvious gap in the brand's posting rhythm (Cadence block shows last-posted-per-platform). If a major Upcoming moment is within 14 days and on-brand, anchor the date to that moment instead. If no signal at all, pick 2 days from today.
+  2. **Time:** 09:00 in the brand's timezone (see the ## Today block).
+  3. **Platforms:** if the brand's strategy mentions primary platforms, use those. Otherwise infer from past approved posts and Top performers. If still ambiguous, default to Instagram (most brands' primary).
+  4. **Concept:** derive from upcoming moments + brand pillars + cadence gaps + the admin's hints. Lean on the brand's pillars — rotating across them avoids monotone calendars.
+- **Be proactive.** When the conversation opens (no prior assistant messages in this turn's history) or the admin asks an open-ended question like "what should I post?", lead with what's most relevant right now: upcoming holidays/festivals on the brand's market, cadence gaps, what top-performing recent posts can be built on, anything in the brand notes that's time-bound. Then offer 2-3 concrete next moves. Don't just dump information — propose action.
+- **Use the calendar context.** Before creating a draft, glance at the Upcoming calendar block. Don't propose a date that's already busy on every targeted platform. Don't suggest content concepts that duplicate something already drafted within 7 days. If the calendar is empty, that's the most important signal — propose filling it, not analysing it.
+- When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true; leave non-pinned for time-bound or context-specific facts. The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
 - After calling a tool, briefly tell the admin what you did and link them to the result if applicable. Don't just go silent.
-- If you don't have enough information (e.g. no date, no platform), ask a clarifying question instead of guessing.
 
 ## Platform craft (universal — applies to every brand)
 
@@ -134,7 +140,7 @@ const createPostPlanDraftInput = z.object({
   scheduled_at: z
     .string()
     .describe(
-      "ISO 8601 datetime for when to schedule this post (e.g. '2026-05-15T09:00:00+05:30'). Default to 09:00 in the brand's local time on the requested date. If the admin doesn't specify a date, ask before guessing.",
+      "ISO 8601 datetime for when to schedule this post (e.g. '2026-05-15T09:00:00+05:30'). Default to 09:00 in the brand's local timezone (see the ## Today block) on the next sensible date — pick the closest cadence gap from the Upcoming calendar block, or anchor to an Upcoming moment within 14 days if the concept fits. Don't ask the admin for a date; pick one and ship the draft. The admin will edit if needed.",
     ),
   platforms: z
     .array(z.enum(["instagram", "linkedin", "x"]))
@@ -245,7 +251,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let brandContext = "";
   try {
-    brandContext = await loadAndCompileBrandContext(serviceClient, body.accountId);
+    // Chat opts INTO the calendar block — it's the route that needs to
+    // reason about upcoming plans, cadence gaps, top performers, and
+    // voice anchors. The inline-copy and image routes leave it off so
+    // they don't pay for context they can't act on.
+    brandContext = await loadAndCompileBrandContext(serviceClient, body.accountId, {
+      includeCalendar: true,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: `Failed to compile brand context: ${msg}` });
@@ -336,9 +348,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    // Two cache breakpoints on the system prompt, unchanged from Phase 1a:
-    //   1. Fixed instruction prefix (rarely changes)
-    //   2. Per-brand context blob (stable per call, changes on brand mutations)
+    // Two cache breakpoints on the system prompt:
+    //   1. Fixed instruction prefix (rarely changes — system-prompt edits only)
+    //   2. Per-brand context blob (changes when brand kit / notes / calendar
+    //      / engagement snapshots mutate, and at midnight brand-local when
+    //      the ## Today block rolls over to a new date)
+    // Cache TTL is 5 minutes, so back-to-back turns within a conversation
+    // hit cache. The brand-context blob is refreshed every request, so any
+    // draft the model creates mid-conversation shows up in the calendar
+    // section on the NEXT turn — preventing duplicate proposals.
     // Both rides via the `system` parameter (as an array of
     // SystemModelMessage) instead of being mixed into `messages`. The
     // AI SDK emits a security warning when role:'system' entries appear
