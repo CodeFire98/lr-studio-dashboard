@@ -23,9 +23,9 @@ import {
   loadPostPlanById,
   updatePostPlan,
   deletePostPlan,
-  loadPostPlanComments,
-  addPostPlanComment,
-  subscribeToPostPlanComments,
+  loadMessagesForPostPlan,
+  addMessageForPostPlan,
+  subscribeToMessagesForPostPlan,
   loadPostPlanAttachments,
   addPostPlanAttachment,
   deletePostPlanAttachment,
@@ -404,10 +404,10 @@ const PostPlanDetailView = ({
   useEffect(() => {
     if (!postPlanId || !userId) return;
     let cancelled = false;
-    loadPostPlanComments(postPlanId, userId)
+    loadMessagesForPostPlan(postPlanId, userId)
       .then((rows) => { if (!cancelled) setComments(rows); })
-      .catch((e) => console.warn('loadPostPlanComments failed', e));
-    const unsub = subscribeToPostPlanComments(postPlanId, userId, (evt) => {
+      .catch((e) => console.warn('loadMessagesForPostPlan failed', e));
+    const unsub = subscribeToMessagesForPostPlan(postPlanId, userId, (evt) => {
       if (evt.type === 'INSERT') {
         setComments((prev) =>
           prev.some((c) => c.id === evt.comment.id) ? prev : [...prev, evt.comment]
@@ -689,8 +689,9 @@ const PostPlanDetailView = ({
     }
     if (requireComment && commentDraft.trim()) {
       try {
-        await addPostPlanComment({
+        await addMessageForPostPlan({
           postPlanId: plan.id,
+          accountId: plan.accountId,
           body: commentDraft.trim(),
           authorId: userId,
         });
@@ -706,10 +707,15 @@ const PostPlanDetailView = ({
 
   const handlePostComment = async () => {
     const body = commentDraft.trim();
-    if (!body || !plan?.id || !userId) return;
+    if (!body || !plan?.id || !plan?.accountId || !userId) return;
     setCommentHint('');
     try {
-      const c = await addPostPlanComment({ postPlanId: plan.id, body, authorId: userId });
+      const c = await addMessageForPostPlan({
+        postPlanId: plan.id,
+        accountId: plan.accountId,
+        body,
+        authorId: userId,
+      });
       setCommentDraft('');
       setComments((prev) => prev.some((x) => x.id === c.id) ? prev : [...prev, c]);
     } catch (e) {

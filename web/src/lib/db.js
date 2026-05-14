@@ -2009,10 +2009,16 @@ export async function loadPostPlanListRollups({ postPlanIds }) {
     return { commentsByPlan: new Map(), attachmentsByPlan: empty, referencesByPlan: empty };
   }
   const [commentsRes, attachmentsRes] = await Promise.all([
+    // Counts top-level messages tagged to each plan (replies excluded so
+    // the badge matches what a user sees in the per-plan Discussion
+    // panel). Repointed off post_plan_comments in migration 0042 — that
+    // table is preserved for rollback but no longer written to.
     supabase
-      .from('post_plan_comments')
-      .select('post_plan_id')
-      .in('post_plan_id', postPlanIds),
+      .from('conversation_messages')
+      .select('tagged_post_plan_id')
+      .in('tagged_post_plan_id', postPlanIds)
+      .is('parent_message_id', null)
+      .is('deleted_at', null),
     supabase
       .from('post_plan_attachments')
       .select('id, post_plan_id, kind, storage_path, filename, mime_type, created_at')
@@ -2024,7 +2030,9 @@ export async function loadPostPlanListRollups({ postPlanIds }) {
 
   const commentsByPlan = new Map();
   for (const r of commentsRes.data || []) {
-    commentsByPlan.set(r.post_plan_id, (commentsByPlan.get(r.post_plan_id) || 0) + 1);
+    const id = r.tagged_post_plan_id;
+    if (!id) continue;
+    commentsByPlan.set(id, (commentsByPlan.get(id) || 0) + 1);
   }
 
   // Group all attachments first, then sort each group so deliverables
@@ -2828,10 +2836,17 @@ export async function loadPostPlanUnreadCounts({ userId, postPlans }) {
   const ids = postPlans.map((p) => p.id);
   const [views, comments, attachments] = await Promise.all([
     loadPostPlanViews(userId),
+    // Repointed off post_plan_comments in migration 0042 — comments now
+    // live as top-level rows in conversation_messages with
+    // tagged_post_plan_id set. Replies (parent_message_id NOT NULL) are
+    // excluded; thread unread for the per-plan dot lands once the new
+    // chat UI ships in PR 2.
     supabase
-      .from('post_plan_comments')
-      .select('post_plan_id, author_id, created_at')
-      .in('post_plan_id', ids)
+      .from('conversation_messages')
+      .select('tagged_post_plan_id, author_id, created_at')
+      .in('tagged_post_plan_id', ids)
+      .is('parent_message_id', null)
+      .is('deleted_at', null)
       .neq('author_id', userId)
       .then(({ data, error }) => {
         if (error) throw error;
@@ -2850,8 +2865,10 @@ export async function loadPostPlanUnreadCounts({ userId, postPlans }) {
   const counts = new Map();
   const bump = (id) => counts.set(id, (counts.get(id) || 0) + 1);
   for (const c of comments) {
-    const seen = views.get(c.post_plan_id);
-    if (!seen || c.created_at > seen) bump(c.post_plan_id);
+    const planId = c.tagged_post_plan_id;
+    if (!planId) continue;
+    const seen = views.get(planId);
+    if (!seen || c.created_at > seen) bump(planId);
   }
   for (const a of attachments) {
     const seen = views.get(a.post_plan_id);
@@ -2888,8 +2905,15 @@ export function subscribeToPostPlanActivity({ accountId }, onChange) {
     .channel(`lr_post_plan_activity_${accountId || 'all'}`)
     .on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: 'post_plan_comments' },
-      () => { onChange?.(); }
+      // Comments now live in `conversation_messages` (migration 0042).
+      // Filtered to tagged-to-a-plan rows so general chat (PR 2+)
+      // doesn't re-tick per-plan unread.
+      { event: '*', schema: 'public', table: 'conversation_messages' },
+      (payload) => {
+        const tagged = payload.new?.tagged_post_plan_id || payload.old?.tagged_post_plan_id;
+        if (!tagged) return;
+        onChange?.();
+      }
     )
     .on(
       'postgres_changes',
@@ -2899,6 +2923,205 @@ export function subscribeToPostPlanActivity({ accountId }, onChange) {
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'post_plans' },
+      () => { onChange?.(); }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// =====================================================================
+// Conversations — unified per-brand chat (migration 0042)
+// =====================================================================
+// One conversation per brand account. Replaces the per-plan
+// post_plan_comments thread; the existing PostPlanDetailView tab is
+// repointed at this table via loadMessagesForPostPlan / addMessage…
+// helpers that filter by tagged_post_plan_id. The new /conversations
+// surface (PR 2) reads the same rows unfiltered.
+//
+// Read-row shape mirrors the legacy comment shape so the existing
+// detail-view UI doesn't need to know we swapped tables under it.
+
+// Named with the table prefix so it doesn't collide with the legacy
+// MESSAGE_SELECT / mapMessageRow above (which target the original
+// public.messages task-chat table from migration 0001 — still on disk
+// while the tasks-table cleanup is pending in REFERENCE.md §14).
+const CONVERSATION_MESSAGE_SELECT = `
+  *,
+  author:profiles!author_id(id, display_name, initials, avatar_color, is_agency)
+`;
+
+export function mapConversationMessageRow(row, viewerUserId) {
+  if (!row) return null;
+  const author = personFromProfile(row.author);
+  const mine = viewerUserId && row.author_id === viewerUserId;
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    parentMessageId: row.parent_message_id || null,
+    taggedPostPlanId: row.tagged_post_plan_id || null,
+    authorId: row.author_id,
+    from: mine ? 'me' : 'them',
+    who: author,
+    body: row.body || '',
+    time: formatRelative(row.created_at),
+    createdAt: row.created_at,
+    editedAt: row.edited_at || null,
+    deletedAt: row.deleted_at || null,
+    // Legacy alias so existing UI that reads `postPlanId` keeps working
+    // when this row was returned by loadMessagesForPostPlan.
+    postPlanId: row.tagged_post_plan_id || null,
+  };
+}
+
+// Fetches (or returns null if missing — fall through to backfill on the
+// server side) the single conversation row for a brand account.
+export async function loadConversationForAccount(accountId) {
+  if (!accountId) return null;
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('id, account_id, created_at')
+    .eq('account_id', accountId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return { id: data.id, accountId: data.account_id, createdAt: data.created_at };
+}
+
+// Drop-in replacement for loadPostPlanComments. Reads messages tagged
+// to this plan from the brand's conversation, in chronological order.
+// Filters out deleted_at = non-null (PR 2 will add a tombstone row UI;
+// for the legacy detail-view tab in PR 1 we just hide them).
+export async function loadMessagesForPostPlan(postPlanId, viewerUserId) {
+  if (!postPlanId) return [];
+  const { data, error } = await supabase
+    .from('conversation_messages')
+    .select(CONVERSATION_MESSAGE_SELECT)
+    .eq('tagged_post_plan_id', postPlanId)
+    .is('parent_message_id', null)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r) => mapConversationMessageRow(r, viewerUserId));
+}
+
+// Drop-in replacement for addPostPlanComment. Looks up the brand's
+// conversation, inserts a top-level message tagged to the plan.
+export async function addMessageForPostPlan({ postPlanId, accountId, body, authorId }) {
+  if (!postPlanId || !accountId || !authorId) {
+    throw new Error('addMessageForPostPlan: postPlanId, accountId, authorId required');
+  }
+  const conv = await loadConversationForAccount(accountId);
+  if (!conv) {
+    // Brand has no conversation row — should never happen post-migration
+    // (the trigger from 0042 auto-creates one on brand insert), but the
+    // defensive path keeps the UI from silently swallowing the failure.
+    throw new Error(`No conversation found for account ${accountId}`);
+  }
+  const { data, error } = await supabase
+    .from('conversation_messages')
+    .insert({
+      conversation_id: conv.id,
+      tagged_post_plan_id: postPlanId,
+      author_id: authorId,
+      body,
+    })
+    .select(CONVERSATION_MESSAGE_SELECT)
+    .single();
+  if (error) throw error;
+  return mapConversationMessageRow(data, authorId);
+}
+
+// Drop-in replacement for subscribeToPostPlanComments. Listens for new
+// messages tagged to this plan; existing detail-view callers receive
+// the same { type: 'INSERT', comment } payload they expect.
+export function subscribeToMessagesForPostPlan(postPlanId, viewerUserId, onChange) {
+  const channel = supabase
+    .channel(`lr_conv_messages_for_plan_${postPlanId}`)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'conversation_messages', filter: `tagged_post_plan_id=eq.${postPlanId}` },
+      async (payload) => {
+        try {
+          // Only surface top-level messages here — replies are scoped
+          // to the unified Conversations view's thread drawer.
+          if (payload.new?.parent_message_id) return;
+          const { data } = await supabase
+            .from('conversation_messages')
+            .select(CONVERSATION_MESSAGE_SELECT)
+            .eq('id', payload.new.id)
+            .maybeSingle();
+          if (data) onChange({ type: 'INSERT', comment: mapConversationMessageRow(data, viewerUserId) });
+        } catch (e) {
+          console.warn('conversation_messages realtime failed', e);
+        }
+      }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
+// Sidebar Conversations badge — count of top-level messages in the
+// brand's conversation that the user hasn't seen yet (created after
+// their last_seen_at, by someone else). Cheap: one view-row read +
+// one count query, both narrow to a single conversation. Replies
+// (parent_message_id IS NOT NULL) are excluded from the badge for v1
+// — once the thread drawer ships in PR 2 we can revisit per-thread
+// unread tracking.
+export async function loadConversationUnreadCount({ userId, accountId }) {
+  if (!userId || !accountId) return 0;
+  const conv = await loadConversationForAccount(accountId);
+  if (!conv) return 0;
+  const { data: viewRow } = await supabase
+    .from('conversation_views')
+    .select('last_seen_at')
+    .eq('user_id', userId)
+    .eq('conversation_id', conv.id)
+    .maybeSingle();
+  const lastSeen = viewRow?.last_seen_at || null;
+  let q = supabase
+    .from('conversation_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conv.id)
+    .is('parent_message_id', null)
+    .is('deleted_at', null)
+    .neq('author_id', userId);
+  if (lastSeen) q = q.gt('created_at', lastSeen);
+  const { count, error } = await q;
+  if (error) {
+    console.warn('loadConversationUnreadCount failed', error);
+    return 0;
+  }
+  return count || 0;
+}
+
+// Stamp the brand's conversation as fully seen for this user. Called
+// when the user opens the unified Conversations view (PR 2) or — once
+// we want plan-detail reads to clear the badge too — when a plan-tab
+// loads. For PR 1 only the placeholder ConversationsView calls this,
+// so opening a single plan tab does NOT clear the brand-wide badge.
+export async function markConversationSeen({ userId, accountId }) {
+  if (!userId || !accountId) return;
+  const conv = await loadConversationForAccount(accountId);
+  if (!conv) return;
+  const { error } = await supabase
+    .from('conversation_views')
+    .upsert(
+      { user_id: userId, conversation_id: conv.id, last_seen_at: new Date().toISOString() },
+      { onConflict: 'user_id,conversation_id' }
+    );
+  if (error) console.warn('markConversationSeen failed', error);
+}
+
+// Realtime: any message INSERT in the brand's conversation re-ticks
+// the unread badge. Volume per-brand is small so we don't bother
+// filtering on the conversation_id at the realtime level — the caller
+// re-queries the count and the noise is negligible.
+export function subscribeToConversationActivity({ accountId }, onChange) {
+  const channel = supabase
+    .channel(`lr_conversation_activity_${accountId || 'all'}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'conversation_messages' },
       () => { onChange?.(); }
     )
     .subscribe();
