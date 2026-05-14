@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 8 of 9**: monthly-report data hook. New `loadEngagementForBrandRange(accountId, fromISO, toISO)` in db.js — single read-only helper that returns one entry per brand publication with `firstSnapshot` / `lastSnapshot` / `snapshotCount` / per-metric `delta` (like / comment / share / save / view / bookmark / reaction + `totalEngagementDelta` sum) / `note` (no-snapshots-in-range or single-snapshot-only). Pure consumer of the cron-driven snapshot history; no new UI, no new schema, no new routes. Future monthly-report builder consumes this directly.)
+**Last updated:** 2026-05-12 (**Live Posts engagement feature — series complete (PRs #78, #79, #80, #81, #82, + this docs wrap)**. End-to-end engagement tracking + embed cards for IG and LinkedIn, intentional X-skip. Daily cron-driven snapshot history feeds a `loadEngagementForBrandRange` helper ready for the future monthly-reports surface. New §9 subsection "Live Posts engagement (how it all fits together)" stitches all 5 PRs into one readable end-to-end flow so the next engineer doesn't have to read 9 dated changelog entries to understand the system.)
+
+**Previous (2026-05-12):** PR 8 of 9 — monthly-report data hook. New `loadEngagementForBrandRange(accountId, fromISO, toISO)` in db.js — single read-only helper that returns one entry per brand publication with `firstSnapshot` / `lastSnapshot` / `snapshotCount` / per-metric `delta` (like / comment / share / save / view / bookmark / reaction + `totalEngagementDelta` sum) / `note` (no-snapshots-in-range or single-snapshot-only). Pure consumer of the cron-driven snapshot history; no new UI, no new schema, no new routes. Future monthly-report builder consumes this directly.)
 
 **Previous (2026-05-12):** PR 7 of 9 — scheduled refresh cron + sort affordances. New `/api/engagement/refresh-cron` (Vercel Cron, `0 */6 * * *`) reads eligible publications, computes tiered cadence (6h / daily / 3d / weekly by publication age + auto-demote-to-weekly after 3 consecutive failures), scrapes up to 5 due rows per fire, writes snapshots through the shared persistence helper. Scraper functions extracted from `refresh.ts` into a new `_shared.ts` so both the on-demand and the cron routes use the same dispatch + normalizer + DB write. LivePostsView grows a Sort dropdown (Recently posted / Most likes / Most engagement) — non-"recent" modes render a flat leaderboard instead of the month-grouped chronology.)
 
@@ -1307,6 +1309,43 @@ Unknown paths land on the 404 view (`view: 'not_found'`) — the bad pathname is
 5. `getDisplayStatus(plan, publications)` now returns `'posted'` for the plan; the status pill flips to violet on every surface — calendar chips, list rows, week cards, detail header, timeline sidebar.
 6. The plan appears in the Live posts repository (`/c/:slug/posts`) within the next realtime tick — `LivePostsView` listens to `subscribeToAllPostPlanPublications` and refetches the brand-joined list on any event.
 7. Calendar Posted filter pill increments by one; Approved pill decrements (the bucket excludes posted plans).
+
+### Live Posts engagement (how it all fits together)
+End-to-end flow for tracking engagement on a brand's live posts, shipped 2026-05-12 across PRs #78, #79, #80, #81, #82.
+
+**Trigger:** an agency user marks a plan as posted with a `live_url` (the flow above). For IG / LinkedIn URLs, that fires a chain that ends with the post's embed card + metrics row rendering on `/c/:slug/posts` within ~10s, with no further user action.
+
+**The chain:**
+1. `MarkAsPostedModal` → `upsertPostPlanPublication` writes the publication row (existing flow).
+2. `PostPlanDetailView.handleMarkPostedSubmit` then fires `refreshEngagement(publicationId)` for every IG / LinkedIn publication with a URL. Fire-and-forget — the modal close doesn't block on the ~7-10s Apify scrape. X publications are skipped (no actor wired, see §13).
+3. **`POST /api/engagement/refresh`** ([web/api/engagement/refresh.ts](web/api/engagement/refresh.ts)) — JWT → `is_agency` (brand users 403) → loads publication → `dispatchScrape(platform, liveUrl)` from `_shared.ts` → `apify/instagram-scraper` or `supreme_coder/linkedin-post` → normalizes the response → writes an append-only `post_engagement_snapshots` row + upserts the 1:1 `post_embed_cache` row.
+4. `LivePostsView` realtime subscriptions on both tables pick up the writes; the tile re-renders with the embed card (author + caption + image) and the metrics row (likes / comments / shares / saves / views; `—` for fields the platform doesn't expose). Brand users see the data; only agency sees the "Refresh now" button.
+5. Images route through **`/api/engagement/image-proxy`** ([web/api/engagement/image-proxy.ts](web/api/engagement/image-proxy.ts)) — Meta + LinkedIn CDNs both send `Cross-Origin-Resource-Policy: same-origin`, which blocks direct embedding. The proxy fetches server-side (CORP doesn't apply) and re-emits the bytes with permissive CORP. Host allowlist locked to `*.cdninstagram.com` / `*.fbcdn.net` / `*.licdn.com`.
+6. **`/api/engagement/refresh-cron`** ([web/api/engagement/refresh-cron.ts](web/api/engagement/refresh-cron.ts)) fires once daily at 1am UTC (Vercel Hobby caps cron at once-per-day, see §13). Loads eligible publications, picks "due" set by tiered cadence (<14d → daily, <60d → 3d, else weekly; demoted to weekly after 3 consecutive failures), scrapes up to 5 due rows per fire via the same `_shared.ts` helpers, writes through the same persistence path. Daily fires give us a multi-day curve which is what monthly reports need; sub-day cadence would require Pro.
+7. Future monthly-report builder consumes **`loadEngagementForBrandRange(accountId, fromISO, toISO)`** ([web/src/lib/db.js](web/src/lib/db.js)) — returns one entry per publication with `firstSnapshot` / `lastSnapshot` / `snapshotCount` / per-metric `delta` / `note`. No UI yet; the data shape is frozen so when the report ships it doesn't need to refactor db.js.
+
+**Platform coverage (as of 2026-05-12):**
+- **Instagram** — `apify/instagram-scraper`, full embed + likes/comments/views. Validated against a real Bamboo Bear post.
+- **LinkedIn** — `supreme_coder/linkedin-post` (cookie-free, `$0.001` per scrape), full embed + likes/comments/**shares** (LinkedIn tiles end up more informative than IG since IG doesn't expose share count via Apify). Validated against a real public post.
+- **X** — intentionally not tracked. Apify shootout found no viable actor; official X API at \$200/mo not worth the spend for one platform's stats in MVP. Tiles render the post URL with a permanent "X engagement not tracked" badge. Trivially reversible later.
+
+**Auth model:**
+- Reads (snapshots + embed cache): agency OR account-members-of-the-parent-plan. Both can see the data.
+- Writes: service-role only via the two API routes. **No client INSERT/UPDATE/DELETE policies** on either table — brand users can't trigger Apify scrapes (cost protection).
+- "Refresh now" button: agency-only at the route layer (403s brand users). When/if brand-side refresh ships later, the gate becomes a rate-limit + daily quota at the same layer, still not RLS.
+
+**Cost model:**
+- IG: \~\$0.0023 per scrape (apify/instagram-scraper)
+- LinkedIn: \~\$0.001 per scrape (supreme_coder/linkedin-post)
+- X: \$0 (not scraped)
+- Bamboo Bear MVP (\~30 posts × \~30 scrapes/month) → **\~\$0.50/month**. 10-brand rollout (\~100 posts each) → **\~\$15/month**. Comfortably inside Apify free-tier credits.
+
+**Files added (full list):**
+- Migration `supabase/migrations/0041_post_engagement.sql`
+- Routes: `web/api/engagement/refresh.ts`, `refresh-cron.ts`, `image-proxy.ts`
+- Shared: `web/api/engagement/_shared.ts`
+- UI: `web/src/components/LivePostEmbed.jsx`; tile changes in `LivePostsView.jsx`; trigger in `PostPlanDetailView.jsx`; helpers in `web/src/lib/db.js`
+- Scripts: `scripts/scrape-engagement-dry-run.mjs`, `scrape-engagement-actor-preflight.mjs`, `inspect-linkedin-actor.mjs`
 
 ### Brand onboarding (first-time brand owner)
 1. `_doRefresh` resolves a brand-owner profile
