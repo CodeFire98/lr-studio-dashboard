@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**Live Posts engagement feature — PRs 5+6 of 9 (combined)**: LinkedIn support shipped via `supreme_coder/linkedin-post` actor (6.4M runs, 13k users, "No cookies · $1 per 1k" — won the 2026-05-12 actor shootout). X intentionally not supported in MVP — 3-actor preflight found no actor that returns real metrics without hostile pricing (`kaitoeasyapi/...` charges minimum-per-call even on empty results, `apidojo/twitter-scraper-lite` returns demo data only, `tugkan/...` actor missing). X tiles now show a permanent "X engagement not tracked" badge instead of the temporary "coming soon" copy. LinkedIn auto-refresh fires from the mark-as-posted modal alongside IG. Image-proxy allowlist extended to `*.licdn.com` so LinkedIn CDN images render through the same CORP-bypassing path as IG.)
+**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 7 of 9**: scheduled refresh cron + sort affordances. New `/api/engagement/refresh-cron` (Vercel Cron, `0 */6 * * *`) reads eligible publications, computes tiered cadence (6h / daily / 3d / weekly by publication age + auto-demote-to-weekly after 3 consecutive failures), scrapes up to 5 due rows per fire, writes snapshots through the shared persistence helper. Scraper functions extracted from `refresh.ts` into a new `_shared.ts` so both the on-demand and the cron routes use the same dispatch + normalizer + DB write. LivePostsView grows a Sort dropdown (Recently posted / Most likes / Most engagement) — non-"recent" modes render a flat leaderboard instead of the month-grouped chronology.)
+
+**Previous (2026-05-12):** PRs 5+6 — LinkedIn wire-up via `supreme_coder/linkedin-post` (6.4M runs, 13k users, "No cookies · $1 per 1k"), X intentionally not supported in MVP (3-actor preflight found no viable actor without hostile pricing). Image-proxy allowlist extended to `*.licdn.com`. LinkedIn auto-refresh fires on mark-posted alongside IG.
 
 **Previous (2026-05-12):** PR 4 — on-paste auto-refresh. PostPlanDetailView's `handleMarkPostedSubmit` fires `/api/engagement/refresh` for every newly-marked-posted IG publication with a URL. Fire-and-forget, doesn't block the modal close.
 
@@ -35,6 +37,28 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-12 — Live Posts engagement: scheduled refresh + sort affordances (PR 7 of 9)
+Adds the cron leg of the engagement feature so engagement curves grow over time (not just the one snapshot from mark-posted + the occasional manual Refresh-now). Also a small UI polish for browsing live posts by leaderboard.
+
+**Refactor first.** `web/api/engagement/refresh.ts` was already a hairy file with scrapers + normalizers + DB writes inline. Moved the reusable pieces (types, `scrapeInstagram`, `scrapeLinkedIn`, `dispatchScrape`, `persistScrapeResult`, helpers) into a new [`web/api/engagement/_shared.ts`](web/api/engagement/_shared.ts). Leading underscore tells Vercel "this isn't a route" (see [feedback_vercel_underscore_prefix.md](.claude/projects/.../feedback_vercel_underscore_prefix.md)) — file is importable from sibling routes in the same bundle but never deploys as `/api/engagement/_shared`. `refresh.ts` is now a slim handler (auth → dispatch → persist).
+
+**New cron route — [`web/api/engagement/refresh-cron.ts`](web/api/engagement/refresh-cron.ts).** Vercel Cron `0 1 * * *` (daily at 1am UTC). **Original schedule was `0 */6 * * *` (every 6h) but Vercel Hobby caps cron jobs at "once per day max" — the build rejected the schedule and the entire deployment failed.** Daily fires give us a multi-day curve which is what monthly reports need; sub-daily resolution would require Pro ($20/mo). Auth via `Authorization: Bearer ${CRON_SECRET}` — same pattern as `daily-digest`. Algorithm:
+1. Load all eligible publications (`platform IN ('instagram','linkedin')` AND `live_url IS NOT NULL`).
+2. Bulk-load the latest snapshot per publication + the last 3 statuses (used for the failure-demotion rule).
+3. Compute "due" set in JS: tier the publication by **time-since-publication** (NOT time-since-last-scrape, so a stale publication catches up to its current tier instead of being stuck at the most-frequent cadence). Tiers: <14d→daily, <60d→3d, else weekly. (Original plan had a <2d→6h tier for new-post curves but the cron itself only fires daily on Hobby, so sub-daily tiers were pointless. When/if we upgrade to Pro and run the cron every 4-6h, the sub-day tier comes back.) If the last 3 statuses are all `failed`/`blocked`, demote to weekly regardless. Never-scraped rows are always due.
+4. Sort by oldest-latest-snapshot first (most-stale tiles attacked first).
+5. Scrape the first 5 (`MAX_SCRAPES_PER_RUN`) serially. Stays well inside Vercel's 60s function budget (IG ~7-12s, LinkedIn ~7-10s × 5 + DB writes ≈ 40-55s headroom).
+6. Persist each result via `persistScrapeResult` from `_shared.ts` — same logic the on-demand route uses, so cron-written rows are identical in shape to user-triggered ones.
+7. Response includes `total_eligible`, `due`, `processed`, `backlog`, per-row results — useful for debugging via curl.
+
+**Why batch=5.** At full rollout (10 brands × 100 posts = 1000 publications), back-of-envelope: ~150 publications/day at steady-state cadence × 4 cron fires/day = ~38 scrapes/run needed. 5/run × 4/day = 20/day, *short of the need at full scale*. **Documented inline in the route as a TODO**: when scale demands, switch to a queue model (qstash / supabase-queues / round-robin column). 5 is intentional MVP simplicity — at Bamboo Bear-only scale it's already overkill.
+
+**Failure demotion rule.** Last 3 statuses all `failed`/`blocked` → weekly. Stops the cron from burning Apify credit on permanently-broken URLs (deleted IG posts, login-walled LinkedIn posts, etc.). Doesn't apply to `partial` (which still counts as a successful refresh — the actor returned counts even if media is missing).
+
+**`vercel.json`** — adds the cron entry + `api/engagement/refresh-cron.ts` to functions with `maxDuration: 60`.
+
+**Sort affordances — [`LivePostsView.jsx`](web/src/components/LivePostsView.jsx).** New `<select>` between the platform filter pills and the search input. Three options: **Recently posted** (default — unchanged month-grouped chronology), **Most likes** (sort by latest snapshot's `like_count` desc), **Most engagement** (sort by `like_count + comment_count + share_count` desc). Non-"recent" modes render a single flat leaderboard section instead of the month groups — intercalating sort + month-group reads strangely. Sort is purely client-side; relies on already-loaded `snapshotsByPubId` Map.
 
 ### 2026-05-12 — Live Posts engagement: LinkedIn wired, X intentionally skipped (PRs 5+6 of 9, combined)
 Closes the platform matrix for Live Posts engagement. Combined into one merge unit because PR 5 (X) is a 5-line "show a permanent label" change and PR 6 (LinkedIn) is the actual scraper wire-up — splitting them would be more ceremony than they're worth.

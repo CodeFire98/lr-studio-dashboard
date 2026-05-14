@@ -10,12 +10,19 @@
     },
     "api/engagement/refresh.ts": {
       "maxDuration": 60
+    },
+    "api/engagement/refresh-cron.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [
     {
       "path": "/api/daily-digest",
       "schedule": "30 12 * * *"
+    },
+    {
+      "path": "/api/engagement/refresh-cron",
+      "schedule": "0 1 * * *"
     }
   ],
   "rewrites": [
