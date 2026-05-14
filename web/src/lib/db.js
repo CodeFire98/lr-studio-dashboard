@@ -2619,6 +2619,178 @@ export async function refreshEngagement(publicationId) {
 }
 
 // =====================================================================
+// Monthly-report data hook (PR 8 of the engagement series)
+// =====================================================================
+// Single read-only helper that consumes snapshots from the cron-driven
+// `post_engagement_snapshots` table to produce per-publication deltas
+// over an arbitrary date range. The future monthly-report builder
+// (calendar export, agency-side performance dashboard, brand-side
+// monthly recap email, etc.) consumes this without any further DB
+// plumbing.
+//
+// Output shape — one entry per publication in the brand:
+//   {
+//     publication,           // mapped post_plan_publications row
+//     plan,                  // post_plans context (concept, scheduledAt, platforms)
+//     firstSnapshot,         // earliest snapshot WITHIN the range, or null
+//     lastSnapshot,          // latest snapshot WITHIN the range, or null
+//     snapshotCount,         // how many snapshots fell in the range
+//     delta,                 // { likeDelta, commentDelta, ... } or null
+//     note,                  // 'no_snapshots_in_range' | 'single_snapshot_only' | null
+//   }
+//
+// Delta semantics:
+//   - delta = last - first for each metric, when both snapshots exist
+//     AND they're not the same row (snapshotCount > 1).
+//   - delta is null when either bound is missing OR when there's only
+//     one snapshot in range (a single sample tells us the value at
+//     that instant but not the change across the window).
+//   - Per-metric deltas can be negative (LinkedIn unliked, IG removed
+//     by user, etc.) — caller decides whether to clamp to 0 for display.
+//
+// "First/last in range" semantic (not "closest to bound"):
+//   - For monthly reports the standard interpretation is "what was the
+//     state at the start of the period vs. the end". The earliest
+//     snapshot with fetched_at >= fromISO and the latest with
+//     fetched_at <= toISO match that intuition.
+//   - Snapshots taken OUTSIDE the range are deliberately ignored —
+//     they'd give a misleadingly long curve. If a publication has
+//     zero snapshots in the range (e.g. it was first scraped after
+//     the period ended), we surface that as
+//     note='no_snapshots_in_range' so the caller can render an
+//     "insufficient data" cell.
+//
+// Cost: two queries (one for publications, one for snapshots in range).
+// At full rollout (~1000 publications × ~30 snapshots/month = ~30k
+// rows per query) the snapshots table read is the heavier of the two,
+// but indexed on (publication_id, fetched_at desc) so the filter is
+// cheap. Returns all rows to the client; the future report UI can
+// paginate if it ever needs to.
+
+/**
+ * Compute first/last/delta engagement for every publication of a brand
+ * within a date range. Designed for the monthly-reports surface.
+ *
+ * @param {string} accountId - brand account id
+ * @param {string} fromISO   - lower bound (inclusive), ISO timestamp
+ * @param {string} toISO     - upper bound (inclusive), ISO timestamp
+ * @returns {Promise<Array<{
+ *   publication: object,
+ *   plan: object|null,
+ *   firstSnapshot: object|null,
+ *   lastSnapshot: object|null,
+ *   snapshotCount: number,
+ *   delta: {
+ *     likeDelta: number|null,
+ *     commentDelta: number|null,
+ *     shareDelta: number|null,
+ *     saveDelta: number|null,
+ *     viewDelta: number|null,
+ *     bookmarkDelta: number|null,
+ *     reactionDelta: number|null,
+ *     totalEngagementDelta: number|null,
+ *   }|null,
+ *   note: 'no_snapshots_in_range'|'single_snapshot_only'|null,
+ * }>>}
+ */
+export async function loadEngagementForBrandRange(accountId, fromISO, toISO) {
+  if (!accountId) return [];
+  if (!fromISO || !toISO) throw new Error('loadEngagementForBrandRange: fromISO and toISO are required');
+
+  // Step 1 — load the brand's publications. Reuses the existing
+  // loader so the returned `publication` + `plan` shape matches what
+  // LivePostsView already renders, no remapping in the consumer.
+  const publications = await loadBrandPublications(accountId);
+  if (publications.length === 0) return [];
+
+  // Step 2 — bulk-load snapshots in range for those publications.
+  // Single query, ordered ascending so the first row per pub is the
+  // earliest in range and the last row per pub is the latest.
+  const pubIds = publications.map((p) => p.id);
+  const { data, error } = await supabase
+    .from('post_engagement_snapshots')
+    .select('*')
+    .in('publication_id', pubIds)
+    .gte('fetched_at', fromISO)
+    .lte('fetched_at', toISO)
+    .order('fetched_at', { ascending: true });
+  if (error) throw error;
+
+  // Step 3 — group by publication, keeping the asc order so [0] is
+  // earliest and [length-1] is latest.
+  const byPubId = new Map();
+  for (const row of data || []) {
+    const mapped = mapEngagementSnapshotRow(row);
+    const list = byPubId.get(mapped.publicationId) || [];
+    list.push(mapped);
+    byPubId.set(mapped.publicationId, list);
+  }
+
+  // Step 4 — build the per-publication result.
+  return publications.map((pub) => {
+    const snaps = byPubId.get(pub.id) || [];
+    const firstSnapshot = snaps[0] || null;
+    const lastSnapshot = snaps.length > 0 ? snaps[snaps.length - 1] : null;
+
+    let delta = null;
+    let note = null;
+    if (snaps.length === 0) {
+      note = 'no_snapshots_in_range';
+    } else if (snaps.length === 1) {
+      note = 'single_snapshot_only';
+      // delta stays null — one sample tells us a value, not a change.
+    } else {
+      delta = {
+        likeDelta:       numDelta(firstSnapshot.likeCount,      lastSnapshot.likeCount),
+        commentDelta:    numDelta(firstSnapshot.commentCount,   lastSnapshot.commentCount),
+        shareDelta:      numDelta(firstSnapshot.shareCount,     lastSnapshot.shareCount),
+        saveDelta:       numDelta(firstSnapshot.saveCount,      lastSnapshot.saveCount),
+        viewDelta:       numDelta(firstSnapshot.viewCount,      lastSnapshot.viewCount),
+        bookmarkDelta:   numDelta(firstSnapshot.bookmarkCount,  lastSnapshot.bookmarkCount),
+        reactionDelta:   numDelta(firstSnapshot.reactionCount,  lastSnapshot.reactionCount),
+        // Sum of the "loud" engagement metrics: likes + comments + shares.
+        // Views/saves/bookmarks deliberately excluded — they're
+        // visibility signals, not engagement actions, and the same
+        // headline number that the LivePostsView tile sums.
+        totalEngagementDelta: sumDeltas(
+          numDelta(firstSnapshot.likeCount,    lastSnapshot.likeCount),
+          numDelta(firstSnapshot.commentCount, lastSnapshot.commentCount),
+          numDelta(firstSnapshot.shareCount,   lastSnapshot.shareCount),
+        ),
+      };
+    }
+
+    return {
+      publication: pub,        // mapped publication row (id, platform, liveUrl, publishedAt, publisher)
+      plan: pub.plan ?? null,  // plan context (concept, scheduledAt, platforms, accountName)
+      firstSnapshot,
+      lastSnapshot,
+      snapshotCount: snaps.length,
+      delta,
+      note,
+    };
+  });
+}
+
+// Subtract two possibly-null counts. Returns null if either side is
+// null/undefined (we don't know the value at that bound, so we can't
+// compute a delta — be honest about it).
+function numDelta(first, last) {
+  if (first === null || first === undefined) return null;
+  if (last === null || last === undefined) return null;
+  return last - first;
+}
+
+// Sum that propagates "we don't know" (null) through. Used for the
+// totalEngagementDelta — if ANY of the contributing deltas is null,
+// we can't trust the sum, so the total is also null. The report can
+// fall back to the per-metric deltas it does have.
+function sumDeltas(...vals) {
+  if (vals.some((v) => v === null || v === undefined)) return null;
+  return vals.reduce((acc, v) => acc + v, 0);
+}
+
+// =====================================================================
 // Post-plan unread tracking (post_plan_views)
 // =====================================================================
 // A comment counts as "unread" for user U if either there's no view row
