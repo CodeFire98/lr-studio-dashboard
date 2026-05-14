@@ -12,7 +12,7 @@
 
    Empty state nudges the agency / brand to mark plans as posted from
    the detail view; that's the only way rows land here. */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon.jsx';
 import {
   PLATFORMS,
@@ -157,8 +157,12 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
   const platCfg = PLATFORM_BY_KEY[row.platform];
   const [refreshing, setRefreshing] = useState(false);
   const [lastError, setLastError] = useState('');
+  const [hovered, setHovered] = useState(false);
 
-  const handleRefresh = useCallback(async () => {
+  const handleRefresh = useCallback(async (e) => {
+    // Don't trigger the tile-level "open live URL" when clicking the
+    // refresh button — events bubble out of nested elements by default.
+    e?.stopPropagation?.();
     if (refreshing) return;
     setRefreshing(true);
     setLastError('');
@@ -171,8 +175,37 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
     }
   }, [refreshing, onRefresh, row.id]);
 
+  // Whole-tile click → open live post URL in a new tab. No-op when
+  // there's no live_url on this publication (user marked posted
+  // without pasting a URL). Inner interactive elements (concept-title
+  // button, refresh button) stopPropagation so they don't co-fire.
+  const handleTileClick = useCallback((e) => {
+    // Honor browser conventions for opening in a new tab regardless.
+    if (!row.liveUrl) return;
+    // If the user clicked on text they're trying to select, don't
+    // hijack — let the selection survive. Common UX gotcha for
+    // clickable cards.
+    const selection = window.getSelection?.();
+    if (selection && selection.toString().length > 0) return;
+    window.open(row.liveUrl, '_blank', 'noopener,noreferrer');
+  }, [row.liveUrl]);
+
+  const tileClickable = !!row.liveUrl;
+
   return (
     <div
+      onClick={handleTileClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      role={tileClickable ? 'link' : undefined}
+      tabIndex={tileClickable ? 0 : undefined}
+      onKeyDown={tileClickable ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          window.open(row.liveUrl, '_blank', 'noopener,noreferrer');
+        }
+      } : undefined}
+      title={tileClickable ? 'Open the live post in a new tab' : undefined}
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -182,6 +215,11 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
         borderRadius: 10,
         background: 'var(--surface)',
         minWidth: 0,
+        cursor: tileClickable ? 'pointer' : 'default',
+        // Subtle hover lift so the user knows the whole card is clickable.
+        boxShadow: hovered && tileClickable ? '0 4px 14px rgba(0,0,0,0.06)' : 'none',
+        transform: hovered && tileClickable ? 'translateY(-1px)' : 'none',
+        transition: 'box-shadow 120ms ease, transform 120ms ease',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -193,7 +231,13 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
 
       <button
         type="button"
-        onClick={() => row.plan?.id && onOpenPlan(row.plan.id)}
+        onClick={(e) => {
+          // The concept-title still opens the post plan in-dashboard;
+          // stopPropagation so the tile-level live-URL handler doesn't
+          // also fire.
+          e.stopPropagation();
+          if (row.plan?.id) onOpenPlan(row.plan.id);
+        }}
         style={{
           display: 'block',
           textAlign: 'left',
@@ -264,28 +308,13 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
         )}
       </div>
 
-      {row.liveUrl ? (
-        <a
-          href={row.liveUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            fontSize: 12,
-            color: 'var(--accent-ink)',
-            textDecoration: 'underline',
-            wordBreak: 'break-all',
-          }}
-        >
-          <Icon name="link" size={11} />
-          {row.liveUrl}
-        </a>
-      ) : (
-        <span style={{ fontSize: 12, color: 'var(--ink-4)' }}>No URL added</span>
-      )}
-
+      {/* URL block removed 2026-05-14 — the whole tile is now clickable
+          and opens the live URL in a new tab, so the redundant URL row
+          (which used to dominate the bottom of every card with an
+          underlined wrapped-string URL) was visual noise. The "No URL"
+          indicator is folded into the footer below when liveUrl is
+          missing, since that's the only remaining signal that the
+          publication wasn't saved with a URL. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-4)' }}>
         <span>Marked by {row.publisher?.name || 'Someone'}</span>
         {row.plan?.scheduledAt && (
@@ -294,7 +323,82 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
             <span>Scheduled {formatDate(row.plan.scheduledAt)}</span>
           </>
         )}
+        {!row.liveUrl && (
+          <>
+            <span>·</span>
+            <span style={{ fontStyle: 'italic' }}>No URL added</span>
+          </>
+        )}
       </div>
+    </div>
+  );
+};
+
+// =====================================================================
+// Masonry grid — row-first reading order + per-column tight stacking
+// =====================================================================
+// CSS multi-column would stack tiles tightly within each column (which
+// we want), but it fills column 1 top-to-bottom THEN column 2 etc.,
+// so the top-left tile is the newest but the top-middle tile is
+// item N+1 (not item 1). The user expectation for chronological sort
+// is row-first: top-left = item 0, top-middle = item 1, etc.
+//
+// Solution: distribute items round-robin into N flex columns. Item 0
+// goes to column 0 row 0 (top-left), item 1 to column 1 row 0 (top-
+// middle), item 2 to column 2 row 0 (top-right), item 3 wraps back to
+// column 0 row 1, and so on. Each column is a flex column so tiles
+// inside stack tightly with no whitespace below short tiles.
+//
+// Column count is derived from container width via ResizeObserver,
+// targeting a per-column min width of ~280px (matches the original
+// CSS Grid's minmax).
+
+const MIN_COLUMN_WIDTH = 280;
+const COLUMN_GAP = 12;
+
+function useColumnCount(containerRef) {
+  const [cols, setCols] = useState(1);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return undefined;
+    const compute = (width) => {
+      // Floor((w + gap) / (min + gap)) gives the largest column count
+      // where each column is >= MIN_COLUMN_WIDTH including inter-column
+      // gaps. Clamp to >= 1 so we always render at least one column.
+      const n = Math.max(1, Math.floor((width + COLUMN_GAP) / (MIN_COLUMN_WIDTH + COLUMN_GAP)));
+      setCols(n);
+    };
+    compute(el.getBoundingClientRect().width);
+    const ro = new ResizeObserver((entries) => {
+      compute(entries[0].contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [containerRef]);
+  return cols;
+}
+
+const MasonryGrid = ({ items, renderItem }) => {
+  const ref = useRef(null);
+  const cols = useColumnCount(ref);
+  const columns = useMemo(() => {
+    const arr = Array.from({ length: cols }, () => []);
+    items.forEach((item, i) => arr[i % cols].push(item));
+    return arr;
+  }, [items, cols]);
+  return (
+    <div
+      ref={ref}
+      style={{ display: 'flex', gap: COLUMN_GAP, alignItems: 'flex-start' }}
+    >
+      {columns.map((col, ci) => (
+        <div
+          key={ci}
+          style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: COLUMN_GAP }}
+        >
+          {col.map((item) => renderItem(item))}
+        </div>
+      ))}
     </div>
   );
 };
@@ -592,12 +696,9 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                   · {g.rows.length}
                 </span>
               </h3>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: 12,
-              }}>
-                {g.rows.map((row) => (
+              <MasonryGrid
+                items={g.rows}
+                renderItem={(row) => (
                   <LiveTile
                     key={row.id}
                     row={row}
@@ -607,8 +708,8 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                     onRefresh={handleRefresh}
                     onOpenPlan={openPlan}
                   />
-                ))}
-              </div>
+                )}
+              />
             </section>
           ))}
         </div>
@@ -630,12 +731,9 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
               · {sortedFlat?.length ?? 0}
             </span>
           </h3>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-            gap: 12,
-          }}>
-            {(sortedFlat ?? []).map((row) => (
+          <MasonryGrid
+            items={sortedFlat ?? []}
+            renderItem={(row) => (
               <LiveTile
                 key={row.id}
                 row={row}
@@ -645,8 +743,8 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                 onRefresh={handleRefresh}
                 onOpenPlan={openPlan}
               />
-            ))}
-          </div>
+            )}
+          />
         </div>
       )}
     </div></div>

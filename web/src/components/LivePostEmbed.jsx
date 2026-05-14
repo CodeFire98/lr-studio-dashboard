@@ -129,11 +129,12 @@ const MediaBlock = ({ embed, liveUrl }) => {
     ? embed.mediaAspectRatio
     : 1;
 
+  // No longer wraps the image in an <a> — the outer LiveTile is now
+  // the clickable surface that opens liveUrl. Wrapping here would
+  // cause a double-open (image-link + tile-onclick both fire on
+  // click). Pure visual container only.
   return (
-    <a
-      href={liveUrl || url}
-      target="_blank"
-      rel="noopener noreferrer"
+    <div
       style={{
         display: 'block',
         position: 'relative',
@@ -143,9 +144,7 @@ const MediaBlock = ({ embed, liveUrl }) => {
         background: 'var(--surface-2, #1a1a1a)',
         borderRadius: 8,
         overflow: 'hidden',
-        textDecoration: 'none',
       }}
-      aria-label="Open live post in a new tab"
     >
       <img
         // Route IG CDN URLs through our /api/engagement/image-proxy.
@@ -225,7 +224,7 @@ const MediaBlock = ({ embed, liveUrl }) => {
           ◧ {embed.mediaUrls.length}
         </div>
       )}
-    </a>
+    </div>
   );
 };
 
