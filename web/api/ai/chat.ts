@@ -228,6 +228,11 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social
 - When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true; leave non-pinned for time-bound or context-specific facts. The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
 - After calling a tool, briefly tell the admin what you did and link them to the result if applicable. Don't just go silent.
 - **Don't announce internal failures.** If a tool call fails and you retry successfully on the next step, present the final result as if it worked the first time. Don't say "let me try that again", "apologies for the error", or any variant. The admin doesn't need to see plumbing slips.
+- **End every turn with \`suggest_follow_ups\`.** After your text reply and any other tool calls, call \`suggest_follow_ups\` with 2-4 chips the admin would plausibly want to send next. The chips render as click-to-prefill buttons above the textarea. Make them SPECIFIC to what you just did, not generic. Good examples:
+  - After drafting 3 plans: \`["Add 2 more in a different pillar", "Move all three to next week instead", "Generate hero images for these", "Polish the LinkedIn copy on the second one"]\`
+  - After a proactive brief: \`["Plan a 3-post Diwali series", "Fill my Tuesday gap with a community post", "What's trending in eco-fashion this week?", "Show me the engagement on last month's IG"]\`
+  - After loading a skill: \`["Apply this to next week's calendar", "Draft a post with this framework", "Show me 3 more idea angles"]\`
+  Bad chips: "Tell me more", "Continue", "Yes please", "Anything else?" — these add no value. Don't repeat the admin's last message.
 
 ## Platform craft (universal — applies to every brand)
 
@@ -267,6 +272,7 @@ When drafting copy via create_post_plan_draft, match these platform conventions.
 - load_skill — fetch one of the marketing playbooks listed below. Use when its description matches the work. Loaded body rides in context for the rest of the conversation.
 - load_skill_reference — fetch a deep-dive reference doc from an already-loaded skill (e.g. post templates, copy frameworks, idea catalogues). Call when the SKILL response lists the reference and it looks directly useful.
 - web_search — search the live web (Firecrawl) for information NOT in the cached ## Industry signals block. Use sparingly — see the "Use Industry signals before searching" rule above. Costs credits per call.
+- suggest_follow_ups — emit 2-4 quick-reply chips the admin can click. Call at the END of every turn (after your text reply + any other tool calls). See the "End every turn with suggest_follow_ups" rule above for specifics.
 
 __SKILL_MENU__
 
@@ -343,6 +349,16 @@ const webSearchInput = z.object({
     .max(300)
     .describe(
       "The search query. Make it specific and grounded in the brand's market — e.g. 'sustainable kidswear trends India 2026' not 'fashion trends'. The cached ## Industry signals block already covers daily-refreshed broad trends for this brand; only call web_search when you need information NOT in those signals — a specific recent event, a competitor announcement, current news on a niche topic, etc.",
+    ),
+});
+
+const suggestFollowUpsInput = z.object({
+  chips: z
+    .array(z.string().min(3).max(120))
+    .min(2)
+    .max(4)
+    .describe(
+      "2-4 short, actionable quick-reply chips the admin can click to send as their next message. Each chip is a complete message-ready string (not a topic label). Make them CONTEXTUAL to what you just did, not generic. Examples after creating a draft: 'Add 2 more variations in a different pillar', 'Move all three to next week instead', 'Generate hero images for these'. Examples after a brief: 'Plan a 3-post Diwali series', 'Fill my Tuesday gap with a community post', 'What is trending in eco-fashion this week?'. AVOID 'tell me more', 'continue', 'go on' — those add no value. AVOID repeating the user's just-typed message. The chips PREFILL the textarea (admin can edit before sending) so write them in first-person admin voice ('Add 2 more…' not 'You should add 2 more…').",
     ),
 });
 
@@ -628,6 +644,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       inputSchema: webSearchInput,
       execute: async (input): Promise<ToolExecResult> => {
         return performWebSearch(input.query);
+      },
+    }),
+    suggest_follow_ups: tool({
+      description:
+        "Emit 2-4 quick-reply chips the admin can click to send as their next message. These chips render ABOVE the textarea in the chat panel — clicking one prefills the textarea (admin can edit before sending). Call this once near the END of every turn, AFTER your text reply and any other tool calls. Make chips CONTEXTUAL to what just happened (the post plans you drafted, the playbook you loaded, the trend articles you surfaced) and ACTIONABLE (each chip is a complete message the admin would plausibly want to send next). The tool just echoes the chips back as the UI hook — there's no side-effect; the only purpose is to surface the chips in the panel.",
+      inputSchema: suggestFollowUpsInput,
+      execute: async (input): Promise<ToolExecResult> => {
+        // No side effect — the chips are the result. CopilotPanel reads
+        // them out of the latest assistant message's tool-call output
+        // and renders them above the textarea.
+        return { ok: true, result: { chips: input.chips } };
       },
     }),
   };
