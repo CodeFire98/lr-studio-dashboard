@@ -3183,8 +3183,10 @@ export function subscribeToConversationActivity({ accountId }, onChange) {
 
 // Loads every top-level message for a conversation, ascending so the
 // caller can render oldest-at-top and scroll to the bottom on mount.
-// Filters deleted_at IS NULL so tombstones (PR 3) don't clutter the feed.
-// Replies (parent_message_id NOT NULL) are excluded — the thread drawer
+// **Includes tombstones (deleted_at NOT NULL).** WhatsApp-style: a
+// deleted message stays visible as a "Message deleted" placeholder so
+// users can see the conversation flow had a message there. Replies
+// (parent_message_id NOT NULL) are excluded — the thread drawer
 // fetches those on demand via loadThreadReplies.
 export async function loadConversationMessages(conversationId, viewerUserId) {
   if (!conversationId) return [];
@@ -3193,22 +3195,22 @@ export async function loadConversationMessages(conversationId, viewerUserId) {
     .select(CONVERSATION_MESSAGE_SELECT)
     .eq('conversation_id', conversationId)
     .is('parent_message_id', null)
-    .is('deleted_at', null)
     .order('created_at', { ascending: true });
   if (error) throw error;
   return (data || []).map((r) => mapConversationMessageRow(r, viewerUserId));
 }
 
 // For a list of top-level message ids, return a Map<id, replyCount>.
-// One query per page-load; the realtime channel updates the count
-// optimistically as replies come in. Empty / missing ids resolve to 0.
+// Counts INCLUDE soft-deleted replies — those still take a slot in
+// the thread drawer as "Message deleted" tombstones, so the parent's
+// "↳ N replies" link should match what the user sees when they open
+// the drawer.
 export async function loadThreadReplyCountsForMessages(parentIds) {
   if (!Array.isArray(parentIds) || parentIds.length === 0) return new Map();
   const { data, error } = await supabase
     .from('conversation_messages')
     .select('parent_message_id')
-    .in('parent_message_id', parentIds)
-    .is('deleted_at', null);
+    .in('parent_message_id', parentIds);
   if (error) throw error;
   const counts = new Map();
   for (const r of data || []) {
@@ -3220,14 +3222,15 @@ export async function loadThreadReplyCountsForMessages(parentIds) {
 }
 
 // Replies for a given thread. Ascending so the drawer renders oldest
-// at top under the pinned parent.
+// at top under the pinned parent. **Includes tombstones** so deleted
+// replies stay visible as "Message deleted" placeholders — same
+// WhatsApp-style behaviour as the top-level feed.
 export async function loadThreadReplies(parentMessageId, viewerUserId) {
   if (!parentMessageId) return [];
   const { data, error } = await supabase
     .from('conversation_messages')
     .select(CONVERSATION_MESSAGE_SELECT)
     .eq('parent_message_id', parentMessageId)
-    .is('deleted_at', null)
     .order('created_at', { ascending: true });
   if (error) throw error;
   return (data || []).map((r) => mapConversationMessageRow(r, viewerUserId));
