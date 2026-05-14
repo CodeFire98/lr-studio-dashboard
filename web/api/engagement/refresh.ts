@@ -20,7 +20,7 @@ import {
   dispatchScrape,
   persistScrapeResult,
   type Platform,
-} from "./_shared";
+} from "./scraper-lib";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const ANON_KEY     = process.env.SUPABASE_ANON_KEY ?? "";

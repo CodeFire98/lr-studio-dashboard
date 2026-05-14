@@ -58,7 +58,7 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
-import { dispatchScrape, persistScrapeResult, type Platform } from "./_shared";
+import { dispatchScrape, persistScrapeResult, type Platform } from "./scraper-lib";
 
 const CRON_SECRET     = process.env.CRON_SECRET ?? "";
 const SUPABASE_URL    = process.env.SUPABASE_URL ?? "";

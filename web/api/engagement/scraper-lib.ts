@@ -2,10 +2,16 @@
 // Engagement scraper shared helpers — imported by both /api/engagement/
 // refresh (on-demand) and /api/engagement/refresh-cron (scheduled).
 //
-// Leading underscore tells Vercel "this isn't a route" — the file
-// won't be deployed as `/api/engagement/_shared` (it'd return SPA
-// fallback if anyone tried) but it's importable from sibling routes
-// in the same bundle. See feedback_vercel_underscore_prefix.md.
+// **Filename does NOT start with an underscore.** Earlier attempt was
+// `_shared.ts` (based on the convention that leading-underscore files
+// aren't deployed by Vercel as routes — `feedback_vercel_underscore_
+// prefix.md` documents that for routes). Turns out Vercel's build also
+// EXCLUDES leading-underscore files from the function deploy artifact
+// entirely — they're treated as "private" all the way through. The
+// production runtime then can't resolve `import { ... } from "./_shared"`
+// (ERR_MODULE_NOT_FOUND, `/var/task/.../_shared` missing). Discovered
+// on 2026-05-14 when the X integration deployment 500'd in prod.
+// Renamed to `scraper-lib.ts` to deploy normally.
 //
 // Why a shared module instead of duplicating: PR 7 added the cron
 // route, which needs the same scrapeInstagram + scrapeLinkedIn logic
