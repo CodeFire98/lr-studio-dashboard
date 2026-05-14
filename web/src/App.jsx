@@ -28,6 +28,7 @@ import { PostPlanDetailView } from './components/PostPlanDetailView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { NotFoundView } from './components/NotFoundView.jsx';
 import { TrendsView } from './components/TrendsView.jsx';
+import ConversationsView from './components/ConversationsView.jsx';
 import {
   AdminClientsView,
   AdminTeamView,
@@ -51,6 +52,8 @@ import {
   subscribeToPostPlanActivity,
   loadPostPlanIdeas,
   subscribeToPostPlanIdeas,
+  loadConversationUnreadCount,
+  subscribeToConversationActivity,
 } from './lib/db.js';
 import { supabase } from './lib/supabase';
 import { ALL_CLIENTS } from './components/BrandPicker.jsx';
@@ -93,6 +96,7 @@ const COPILOT_ALLOWED_BRAND_IDS = new Set(
 const SIMPLE_VIEWS = new Set([
   'calendar', 'ideate', 'library', 'posts', 'brand', 'team',
   'performance', 'profile', 'settings', 'clients', 'members', 'trends', 'notes',
+  'conversations',
 ]);
 
 function parsePathToRoute(pathname) {
@@ -121,6 +125,7 @@ function parsePathToRoute(pathname) {
   if (path === '/members') return { view: 'members' };
   if (path === '/trends')  return { view: 'trends' };
   if (path === '/notes')   return { view: 'notes' };
+  if (path === '/conversations') return { view: 'conversations' };
   if (path === '/profile') return { view: 'profile' };
   if (path === '/settings') return { view: 'settings' };
   // Unknown path → render the 404 view. We carry the bad pathname so the
@@ -154,6 +159,7 @@ function findFullId(prefix, items) {
 const BRAND_SCOPED_VIEWS = new Set([
   'calendar', 'plan', 'ideate', 'library', 'posts', 'brand',
   'team', 'performance', 'settings', 'trends', 'notes',
+  'conversations',
 ]);
 
 function viewToPath(next, brandSlug) {
@@ -330,6 +336,12 @@ const App = () => {
   // Map<postPlanId, unreadCount> — drives the calendar red-dots and the
   // sidebar Social-Calendar badge total.
   const [unreadByPlan, setUnreadByPlan] = useState(() => new Map());
+  // Sidebar Conversations badge — count of unread top-level messages
+  // in the active brand's conversation. Recomputed on brand switch +
+  // any messages-table change for that brand (subscribeToConversation
+  // Activity); cleared by markConversationSeen when the user opens
+  // ConversationsView.
+  const [conversationsUnread, setConversationsUnread] = useState(0);
 
   // Login modal state — opened whenever a guest tries a gated action.
   const [loginOpen, setLoginOpen] = useState(false);
@@ -594,7 +606,7 @@ const App = () => {
     if (!auth?.isAgency) return;
     const r = route.view;
     const allClientsRoutes = new Set(['profile', 'settings', 'clients', 'members', 'not_found']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'profile', 'settings', 'clients', 'members', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'conversations', 'profile', 'settings', 'clients', 'members', 'not_found']);
     if (isAllClientsMode) {
       if (!allClientsRoutes.has(r)) navigate('/clients');
     } else {
@@ -680,6 +692,30 @@ const App = () => {
     const unsub = subscribeToPostPlanActivity({ accountId: calendarAccountId }, refresh);
     return () => { cancelled = true; unsub?.(); };
   }, [auth?.id, calendarAccountId, postPlans.map((p) => `${p.id}:${p.updatedAt}`).join(',')]);
+
+  // Sidebar Conversations badge for the active brand. Recomputed on
+  // brand switch + on any messages-table change (filtered to the
+  // brand's conversation by the helper, so a different brand's traffic
+  // doesn't ping us). Cleared by ConversationsView's mount effect via
+  // markConversationSeen.
+  useEffect(() => {
+    if (!auth?.id || !calendarAccountId) {
+      setConversationsUnread(0);
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      loadConversationUnreadCount({ userId: auth.id, accountId: calendarAccountId })
+        .then((n) => { if (!cancelled) setConversationsUnread(n); })
+        .catch((e) => console.warn('loadConversationUnreadCount failed', e));
+    };
+    refresh();
+    const unsub = subscribeToConversationActivity({ accountId: calendarAccountId }, refresh);
+    // Re-tick when the user opens the Conversations view (markConversation
+    // Seen runs in there, but the count won't auto-refresh unless we listen
+    // for the route change too).
+    return () => { cancelled = true; unsub?.(); };
+  }, [auth?.id, calendarAccountId, route.view]);
 
   // Post-plan optimistic mutators. Realtime (subscribeToPostPlans /
   // subscribeToPostPlanActivity) covers cross-tab sync, but same-tab
@@ -851,6 +887,7 @@ const App = () => {
     if (route.view === "members") return <><strong>Linkrunner Team</strong></>;
     if (route.view === "trends")  return <><strong>Trends Radar</strong></>;
     if (route.view === "notes")   return <><strong>Brand notes</strong></>;
+    if (route.view === "conversations") return <><strong>Conversations</strong></>;
     if (route.view === "team") return <><strong>Team</strong></>;
     if (route.view === "brand") return <><strong>Brand Intelligence</strong></>;
     if (route.view === "settings") return <><strong>Settings</strong></>;
@@ -1003,6 +1040,20 @@ const App = () => {
         />
       );
     }
+    if (route.view === "conversations") {
+      const convBrandSlug = brandAccounts.find((b) => b.id === calendarAccountId)?.slug
+        || auth?.account?.slug
+        || null;
+      return (
+        <ConversationsView
+          accountId={calendarAccountId}
+          accountName={calendarAccountName}
+          userId={auth?.id}
+          brandSlug={convBrandSlug}
+          isAgency={!!auth?.isAgency}
+        />
+      );
+    }
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;
     return (
       <CalendarView
@@ -1070,6 +1121,7 @@ const App = () => {
         onRequestLogin={() => requireAuth(null, null)}
         ideaQueueCount={ideaQueueCount}
         calendarUnreadCount={unreadByPlan.size}
+        conversationsUnreadCount={conversationsUnread}
         activeAdminBrandId={activeAdminBrandId}
         brandAccounts={brandAccounts}
         isAllClientsMode={isAllClientsMode}

@@ -52,6 +52,10 @@ const Icon = ({ name, size = 16, stroke = 1.6, ...rest }) => {
     case "sliders": return (<svg {...common}><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="10" cy="18" r="2" fill="currentColor" stroke="none"/></svg>);
     case "eye": return (<svg {...common}><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>);
     case "comment": return (<svg {...common}><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>);
+    // Two stacked speech bubbles — distinguishes the sidebar
+    // "Conversations" entry from the single-bubble "comment" icon used
+    // by Brand notes (which sits a few rows away with the same shape).
+    case "chat": return (<svg {...common}><path d="M3 5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H8l-5 4z"/><path d="M9 16v1a2 2 0 0 0 2 2h7l3 2v-9a2 2 0 0 0-2-2h-2"/></svg>);
     case "clock": return (<svg {...common}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>);
     case "flag": return (<svg {...common}><path d="M5 21V4M5 4h12l-2 3 2 3H5"/></svg>);
     case "link": return (<svg {...common}><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 1 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 1 0 7 7l1-1"/></svg>);

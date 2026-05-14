@@ -24,12 +24,16 @@ import { BrandPicker } from './BrandPicker.jsx';
 //   - Tasks is gone from the sidebar in both modes — the product has
 //     moved fully onto post plans.
 //   - Agency users see "Trends Radar" and a "Linkrunner Team" entry.
-const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, isAgency }) => {
+const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, conversationsUnreadCount, isAgency }) => {
   const primary = [
     { key: "calendar", label: "Social Calendar", icon: "calendar", badge: calendarUnreadCount || undefined },
     isAgency
       ? { key: "ideate", label: "Inbox", icon: "home", badge: ideaQueueCount || undefined }
       : { key: "ideate", label: "Idea dump", icon: "send" },
+    // One unified chat per brand — replaces the per-plan Conversation
+    // tab. Brand sees a single thread with their agency; agency staff
+    // see the same thread, scoped via BrandPicker.
+    { key: "conversations", label: "Conversations", icon: "chat", badge: conversationsUnreadCount || undefined },
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
     { key: "posts", label: "Live posts", icon: "link" },
@@ -75,6 +79,7 @@ const Sidebar = ({
   auth, onRequestLogin,
   ideaQueueCount = 0,
   calendarUnreadCount = 0,
+  conversationsUnreadCount = 0,
   // BrandPicker props
   activeAdminBrandId,
   brandAccounts,
@@ -90,7 +95,7 @@ const Sidebar = ({
   const navConfig = (() => {
     if (isGuest) return { primary: GUEST_NAV, secondary: [] };
     if (isAgency && isAllClientsMode) return buildAllClientsNav();
-    return buildBrandNav({ ideaQueueCount, calendarUnreadCount, isAgency });
+    return buildBrandNav({ ideaQueueCount, calendarUnreadCount, conversationsUnreadCount, isAgency });
   })();
   const primaryItems = navConfig.primary;
   const secondaryItems = navConfig.secondary;
