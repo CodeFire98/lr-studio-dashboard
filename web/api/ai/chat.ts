@@ -455,12 +455,22 @@ async function performWebSearch(query: string): Promise<ToolExecResult> {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Top-level try/catch — surfaces ANY uncaught throw as a JSON error
+  // response so the chat panel shows a real message instead of Vercel's
+  // generic FUNCTION_INVOCATION_FAILED. The handler is large with many
+  // pre-stream steps (auth + brand context + tool setup); any of them
+  // could throw an unhandled exception, and prior to this wrap it would
+  // crash the function process. Diagnostic breadcrumbs (console.log
+  // "[chat] step:...") flow into Vercel function logs to pinpoint
+  // where things go wrong when something does throw.
+  try {
   // CORS — match the other API routes.
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "authorization, x-client-info, apikey, content-type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST required" });
+  console.log("[chat] step:enter method=" + req.method);
 
   if (!ANTHROPIC_API_KEY) {
     return res.status(500).json({
@@ -487,6 +497,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!Array.isArray(body.messages) || !body.messages.length) {
     return res.status(400).json({ error: "messages must be a non-empty array" });
   }
+  console.log(`[chat] step:body-ok accountId=${body.accountId} msgs=${body.messages.length}`);
 
   const authHeader =
     (req.headers["authorization"] as string | undefined) ??
@@ -503,6 +514,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     error: userErr,
   } = await userClient.auth.getUser();
   if (userErr || !user) return res.status(401).json({ error: "Unauthorized" });
+  console.log(`[chat] step:auth-ok user=${user.id}`);
 
   const serviceClient = createClient(SUPABASE_URL, SERVICE_ROLE, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -517,6 +529,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!profile?.is_agency) {
     return res.status(403).json({ error: "Co-pilot is agency-only for now" });
   }
+  console.log(`[chat] step:agency-ok`);
 
   if (!WHITELIST.includes(body.accountId)) {
     return res.status(403).json({
@@ -530,9 +543,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // reason about upcoming plans, cadence gaps, top performers, and
     // voice anchors. The inline-copy and image routes leave it off so
     // they don't pay for context they can't act on.
+    console.log(`[chat] step:brand-ctx-start accountId=${body.accountId}`);
     brandContext = await loadAndCompileBrandContext(serviceClient, body.accountId, {
       includeCalendar: true,
     });
+    console.log(`[chat] step:brand-ctx-ok chars=${brandContext.length}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: `Failed to compile brand context: ${msg}` });
@@ -547,6 +562,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // they're generated. pipeUIMessageStreamToResponse handles Content-Type
   // + Cache-Control + the AI SDK's data-stream protocol headers itself.
   res.setHeader("X-Accel-Buffering", "no");
+
+  console.log(`[chat] step:brand-ctx-injection-ok`);
 
   // Tool implementations live INSIDE the handler so they can close over
   // accountId + user.id + serviceClient without globally-mutable plumbing.
@@ -684,6 +701,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // UIMessage[] from the client is converted to ModelMessage[] via
     // convertToModelMessages — handles text + tool-call + tool-result
     // parts uniformly.
+    console.log(`[chat] step:streamText-start tools=${Object.keys(tools).length}`);
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS_PER_TURN,
@@ -795,10 +813,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error("[chat] streamText/pipe error:", msg, err instanceof Error ? err.stack : "");
     if (!res.headersSent) {
       return res.status(500).json({ error: msg });
     }
     // Stream already started — best we can do is end the response.
     res.end();
+  }
+
+  } catch (topLevelErr) {
+    // Top-level safety net. Surfaces real error messages instead of
+    // letting Vercel return generic FUNCTION_INVOCATION_FAILED. Returns
+    // JSON if headers haven't been sent yet; otherwise just ends the
+    // already-started response so the function doesn't crash.
+    const msg = topLevelErr instanceof Error ? topLevelErr.message : String(topLevelErr);
+    const stack = topLevelErr instanceof Error ? (topLevelErr.stack || "") : "";
+    console.error("[chat] TOP-LEVEL UNHANDLED:", msg, stack);
+    if (!res.headersSent) {
+      try {
+        return res.status(500).json({ error: `Chat handler crashed: ${msg}`, stack: stack.slice(0, 800) });
+      } catch {
+        // res might be in a weird state — fall through to end()
+      }
+    }
+    try { res.end(); } catch {}
   }
 }
