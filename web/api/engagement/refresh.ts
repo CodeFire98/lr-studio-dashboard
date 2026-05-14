@@ -20,7 +20,7 @@ import {
   dispatchScrape,
   persistScrapeResult,
   type Platform,
-} from "./_shared";
+} from "./scraper-lib.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const ANON_KEY     = process.env.SUPABASE_ANON_KEY ?? "";
@@ -114,15 +114,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // -------- PLATFORM dispatch
   //
-  // X has no viable Apify actor as of 2026-05-12; the dispatch
-  // returns null and we 501 with a stable message the client can
-  // branch on. IG + LinkedIn go through `dispatchScrape` in
-  // `_shared.ts`.
+  // IG / LinkedIn / X all go through `dispatchScrape` in `_shared.ts`.
+  // The 501 branch below stays as a safety net for any future platform
+  // we add to `post_plan_publications.platform` without wiring a
+  // scraper — the route returns a stable error instead of crashing.
+  // (X was re-enabled 2026-05-14 via scrape.badger; the original
+  //  "X has no viable actor" 501 path is gone.)
 
   const result = await dispatchScrape(pub.platform, pub.live_url);
   if (!result) {
     return res.status(501).json({
-      error: `Engagement refresh is not supported for ${pub.platform}. (X has no viable Apify actor as of 2026-05-12.)`,
+      error: `Engagement refresh is not supported for ${pub.platform}.`,
       platform: pub.platform,
     });
   }

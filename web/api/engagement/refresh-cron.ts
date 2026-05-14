@@ -58,7 +58,7 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
-import { dispatchScrape, persistScrapeResult, type Platform } from "./_shared";
+import { dispatchScrape, persistScrapeResult, type Platform } from "./scraper-lib.js";
 
 const CRON_SECRET     = process.env.CRON_SECRET ?? "";
 const SUPABASE_URL    = process.env.SUPABASE_URL ?? "";
@@ -131,10 +131,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   // We only schedule scrapes for platforms with viable actors and a
   // pasted URL. The DB doesn't track "next scrape due" — we derive
   // it in JS from publication age + latest snapshot.
+  // X was re-enabled 2026-05-14 via scrape.badger; add new platforms
+  // here as their actors land in `_shared.ts`.
   const { data: pubs, error: pubErr } = await client
     .from("post_plan_publications")
     .select("id, platform, live_url, published_at")
-    .in("platform", ["instagram", "linkedin"])
+    .in("platform", ["instagram", "linkedin", "x"])
     .not("live_url", "is", null);
   if (pubErr) {
     res.status(500).json({ error: `Load publications failed: ${pubErr.message}` });

@@ -842,9 +842,10 @@ const PostPlanDetailView = ({
     // write lands, LivePostsView's realtime subscription picks it up
     // and the tile populates without any further user action.
     //
-    // X intentionally skipped — the route 501s X (no viable Apify
-    // actor as of 2026-05-12) and the UI shows a "not tracked" badge.
-    // Firing here would waste a server round-trip.
+    // All three platforms have viable scrapers as of 2026-05-14. X was
+    // re-enabled via scrape.badger after the second-pass shootout (see
+    // _shared.ts file header). New platforms get added to this Set as
+    // their dispatch entries land in _shared.ts.
     //
     // The route gates on `profiles.is_agency = true` server-side. If
     // a brand user marks posted, the call 403s and we swallow the
@@ -853,7 +854,7 @@ const PostPlanDetailView = ({
     // captured in the snapshot row's `scrape_status` ('blocked' /
     // 'failed') so the tile shows the real state next time someone
     // looks.
-    const AUTO_REFRESH_PLATFORMS = new Set(['instagram', 'linkedin']);
+    const AUTO_REFRESH_PLATFORMS = new Set(['instagram', 'linkedin', 'x']);
     for (const r of created) {
       if (!AUTO_REFRESH_PLATFORMS.has(r.platform)) continue;
       if (!r.liveUrl) continue;

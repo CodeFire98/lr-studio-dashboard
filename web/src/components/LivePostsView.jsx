@@ -238,10 +238,11 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
         <span style={{ flex: 1, minWidth: 0 }}>
           {refreshFooter({ snapshot, refreshing, lastError, embed })}
         </span>
-        {/* Refresh-now button: rendered for the platforms whose route
-            path is wired (IG and LinkedIn). For X, the route 501s and
-            the UI shows the "not tracked" badge below instead. */}
-        {isAgency && (row.platform === 'instagram' || row.platform === 'linkedin') && (
+        {/* Refresh-now button: rendered for every platform with a
+            wired scraper (IG, LinkedIn, X). X was re-enabled
+            2026-05-14 via scrape.badger after the second-pass
+            shootout (see web/api/engagement/_shared.ts file header). */}
+        {isAgency && (row.platform === 'instagram' || row.platform === 'linkedin' || row.platform === 'x') && (
           <button
             type="button"
             onClick={handleRefresh}
@@ -260,26 +261,6 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
           >
             {refreshing ? 'Refreshing…' : 'Refresh now'}
           </button>
-        )}
-        {/* X badge: permanent "not tracked" state. The Apify shootout
-            (2026-05-12) couldn't find an X actor that returns real
-            metrics without hostile pricing — the official X API at
-            $200/mo isn't worth the spend for one platform's stats in
-            MVP. Users can still mark plans as posted to X; the tile
-            shows the post exists but doesn't pretend to track metrics. */}
-        {row.platform === 'x' && (
-          <span
-            style={{
-              padding: '3px 8px',
-              fontSize: 11,
-              border: '1px dashed var(--line)',
-              borderRadius: 4,
-              color: 'var(--ink-4)',
-            }}
-            title="X engagement isn't tracked — Apify scrapers don't reliably support X. Track manually if needed."
-          >
-            X engagement not tracked
-          </span>
         )}
       </div>
 

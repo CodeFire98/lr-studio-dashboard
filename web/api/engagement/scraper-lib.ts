@@ -2,10 +2,23 @@
 // Engagement scraper shared helpers — imported by both /api/engagement/
 // refresh (on-demand) and /api/engagement/refresh-cron (scheduled).
 //
-// Leading underscore tells Vercel "this isn't a route" — the file
-// won't be deployed as `/api/engagement/_shared` (it'd return SPA
-// fallback if anyone tried) but it's importable from sibling routes
-// in the same bundle. See feedback_vercel_underscore_prefix.md.
+// **Filename has no leading underscore and the import statements
+// use the `.js` extension** (e.g. `from "./scraper-lib.js"`). Both
+// matter under Node 24's strict ESM resolution:
+//   - Node 24 ESM doesn't auto-extend `./scraper-lib` → `./scraper-
+//     lib.js`. Missing extension = `ERR_MODULE_NOT_FOUND` at runtime
+//     (even though the source file is `.ts`, the compiled artifact is
+//     `.js` and that's what the runtime resolver sees). All four
+//     `web/api/ai/*.ts` routes import their shared helpers with `.js`
+//     extensions for the same reason.
+//   - Leading underscore on the filename was a red herring during
+//     the 2026-05-14 debug — earlier attempt was `_shared.ts` and
+//     the rename to `scraper-lib.ts` happened at the same time as
+//     the extension fix; the extension is what actually fixed it.
+//     Underscore-prefix is still bad style for shared helpers (the
+//     `_` is reserved by convention for Vercel route-skip behavior
+//     — see `feedback_vercel_underscore_prefix.md`); keeping the
+//     non-underscore name regardless.
 //
 // Why a shared module instead of duplicating: PR 7 added the cron
 // route, which needs the same scrapeInstagram + scrapeLinkedIn logic
@@ -344,14 +357,223 @@ export async function scrapeLinkedIn(liveUrl: string): Promise<ScrapeResult> {
   };
 }
 
+// ----------------------------------------------------- Apify — X (Twitter)
+//
+// scrape.badger/twitter-tweets-scraper — won the 2026-05-14 second-pass
+// shootout after the first round disqualified every Apify X scraper
+// (hostile pricing, demo data, profile-only input, etc.) and the
+// external option (TwitterAPI.io) blocked us at their Google OAuth.
+//
+// Why this actor:
+//   - $0.0002/result ($0.20/1K) — cheapest tweet-by-ID Apify actor.
+//   - 700k+ runs, 1.2k users — mature.
+//   - Takes `{ id: "<numeric tweet id>" }` — confirmed by real-data run.
+//     (The other two input shapes its docs hint at — `tweets: "csv"`
+//     and `tweets: [...]` — both error with HTTP 400. The third shape
+//     `id` works cleanly. Documented inline so the next reader doesn't
+//     repeat the mistake.)
+//
+// Output schema confirmed via dry-run against the user's real Bamboo
+// Bear tweet (https://x.com/DrinkBambooBear/status/2052954209377497405):
+//   id, text, full_text, created_at, lang,
+//   user_id, username, user_name, user_profile_image_url,
+//   user_description, user_location, user_url,
+//   user_followers_count, user_following_count, user_tweet_count,
+//   user_verified, user_is_blue_verified, user_created_at,
+//   favorite_count, retweet_count
+// (Plus a `views` field that wasn't in the first-20 keys snapshot but
+//  was confirmed by the preflight's signals heuristic — value `82`.)
+//
+// **Reply count + bookmark count + quote count are NOT in the visible
+// schema**. The actor may or may not expose them past key #20. The
+// normalizer below checks several candidate field names; if none match,
+// the metric stays null with an `availability_notes` string. The
+// safest path is "don't pretend we have data we don't" — same pattern
+// as IG's missing share_count.
+
+export const X_ACTOR_ID = "scrape.badger/twitter-tweets-scraper";
+
+type ScrapeBadgerTweetItem = {
+  id?: string | number;
+  text?: string;
+  full_text?: string;
+  created_at?: string;            // Twitter format: "Sat May 09 03:30:00 +0000 2026"
+  lang?: string;
+  // Author
+  user_id?: string | number;
+  username?: string;              // handle, e.g. "DrinkBambooBear"
+  user_name?: string;             // display name
+  user_profile_image_url?: string;
+  // Engagement — confirmed field names
+  favorite_count?: number;        // likes
+  retweet_count?: number;         // retweets/reposts
+  // Engagement — fields we hope exist past key #20. We probe several
+  // plausible names; whichever is present wins, otherwise null.
+  view_count?: number;
+  views?: number;
+  viewCount?: number;
+  impression_count?: number;
+  reply_count?: number;
+  replies?: number;
+  replyCount?: number;
+  bookmark_count?: number;
+  bookmarks?: number;
+  bookmarkCount?: number;
+  quote_count?: number;
+  quotes?: number;
+  quoteCount?: number;
+  // Media for the embed card — same probe pattern as above.
+  media?: Array<{ media_url_https?: string; type?: string }>;
+  extended_entities?: { media?: Array<{ media_url_https?: string; type?: string }> };
+};
+
+function firstNum(item: ScrapeBadgerTweetItem, ...keys: Array<keyof ScrapeBadgerTweetItem>): number | null {
+  for (const k of keys) {
+    const v = item[k];
+    if (v === null || v === undefined) continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+// Convert Twitter's "Sat May 09 03:30:00 +0000 2026" → ISO 8601.
+// JavaScript Date parses this format natively in Node, but on older
+// runtimes it can return NaN — defensive fallback returns null so we
+// don't write garbage into `posted_at`.
+function twitterDateToIso(s: string | undefined | null): string | null {
+  if (!s) return null;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+export async function scrapeX(liveUrl: string): Promise<ScrapeResult> {
+  // The actor wants a numeric tweet id, not a URL. Pull it from the
+  // /status/<id> segment. URLs that don't match are a configuration
+  // error — return failed instead of trying anyway.
+  const tweetId = liveUrl.match(/\/status\/(\d+)/)?.[1];
+  if (!tweetId) {
+    return failed(X_ACTOR_ID, null, `Could not extract tweet id from URL: ${liveUrl}`);
+  }
+
+  const url =
+    `https://api.apify.com/v2/acts/${encodeURIComponent(X_ACTOR_ID)}` +
+    `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: tweetId }),
+    });
+  } catch (ex) {
+    return failed(X_ACTOR_ID, null, `network: ${(ex as Error).message}`);
+  }
+
+  const actorRunId =
+    res.headers.get("x-apify-act-run-id") ??
+    res.headers.get("x-apify-run-id") ??
+    null;
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const { isBlocked } = classifyApifyError(res.status, text);
+    return {
+      ok: false,
+      status: isBlocked ? "blocked" : "failed",
+      errorMessage: `apify ${res.status}: ${text.slice(0, 300)}`,
+      metrics: null, embed: null, raw: null,
+      actorRunId, actorId: X_ACTOR_ID,
+    };
+  }
+
+  const items = (await res.json().catch(() => [])) as ScrapeBadgerTweetItem[];
+  const item = Array.isArray(items) ? items[0] : null;
+  if (!item) {
+    return failed(X_ACTOR_ID, actorRunId, "scrape.badger returned no items for this tweet id", items);
+  }
+
+  const likes      = firstNum(item, "favorite_count");
+  const reposts    = firstNum(item, "retweet_count");
+  const views      = firstNum(item, "view_count", "views", "viewCount", "impression_count");
+  const replies    = firstNum(item, "reply_count", "replies", "replyCount");
+  const bookmarks  = firstNum(item, "bookmark_count", "bookmarks", "bookmarkCount");
+  const quotes     = firstNum(item, "quote_count", "quotes", "quoteCount");
+
+  // Honest availability note — explain which fields we couldn't find,
+  // matching IG's pattern. The first integration run will surface
+  // which counts are actually exposed; after that we can tighten this.
+  const missing: string[] = [];
+  if (replies === null)   missing.push("reply_count");
+  if (bookmarks === null) missing.push("bookmark_count");
+  if (quotes === null)    missing.push("quote_count");
+
+  const metrics: NormalizedMetrics = {
+    like_count: likes,
+    comment_count: replies,
+    share_count: reposts,
+    save_count: null,            // X doesn't have a save concept; bookmark is the closest
+    view_count: views,
+    bookmark_count: bookmarks,
+    quote_count: quotes,
+    reaction_count: null,        // X doesn't have a unified reaction count
+    engagement_rate: engagementRate(likes, replies, reposts, views),
+    availability_notes: missing.length
+      ? `X: not exposed by scrape.badger: ${missing.join(", ")}`
+      : null,
+  };
+
+  // Pick the first available media URL for the embed hero. Twitter's
+  // media URLs live under `media` or `extended_entities.media` —
+  // probe both. If neither exists, it's a text-only tweet (most are).
+  const mediaList = item.media ?? item.extended_entities?.media ?? [];
+  const firstMedia = mediaList[0];
+  const mediaUrl = firstMedia?.media_url_https ?? null;
+  const mediaType: NormalizedEmbed["media_type"] =
+    !mediaList.length
+      ? "text"
+      : firstMedia?.type === "video" || firstMedia?.type === "animated_gif"
+      ? "video"
+      : mediaList.length > 1
+      ? "carousel"
+      : "image";
+
+  const embed: NormalizedEmbed = {
+    author_handle: item.username ?? null,
+    author_display_name: item.user_name ?? null,
+    author_avatar_url: item.user_profile_image_url ?? null,
+    caption: item.full_text ?? item.text ?? null,
+    media_type: mediaType,
+    media_url: mediaUrl,
+    media_urls: mediaList.length > 1 ? mediaList.map((m) => m.media_url_https ?? null).filter((s): s is string => Boolean(s)) : null,
+    media_aspect_ratio: null,    // not in this actor's output
+    posted_at: twitterDateToIso(item.created_at),
+  };
+
+  // Partial = counts present but the visible card has nothing to render.
+  // For X, text-only tweets are normal so a missing media_url isn't
+  // partial as long as there's caption text.
+  const partial = !embed.caption && !embed.media_url;
+
+  return {
+    ok: true,
+    status: partial ? "partial" : "ok",
+    errorMessage: null,
+    metrics, embed, raw: item,
+    actorRunId, actorId: X_ACTOR_ID,
+  };
+}
+
 // ----------------------------------------------------- Dispatch
 
 // Single entry-point both callers use. Returns null when the platform
-// isn't supported (currently X) so the caller can decide whether to
-// 501 (on-demand route) or skip (cron).
+// isn't supported (none currently — X was re-enabled 2026-05-14).
 export async function dispatchScrape(platform: Platform, liveUrl: string): Promise<ScrapeResult | null> {
   if (platform === "instagram") return scrapeInstagram(liveUrl);
   if (platform === "linkedin")  return scrapeLinkedIn(liveUrl);
+  if (platform === "x")         return scrapeX(liveUrl);
   return null;
 }
 

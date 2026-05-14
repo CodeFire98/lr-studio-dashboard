@@ -50,15 +50,12 @@ const xUrl        = flag("--x");
 const linkedinUrl = flag("--linkedin");
 const skipX        = argv.includes("--skip-x");
 const skipLinkedIn = argv.includes("--skip-linkedin");
-const includeX     = argv.includes("--include-x"); // override: re-test X anyway
 
-// X candidate list is empty post-2026-05-12 (see X_CANDIDATES note).
-// Only attempt X if user explicitly passes --include-x.
-const effectiveSkipX = skipX || !includeX;
+// X is re-enabled by default after the 2026-05-12 second-pass investigation
+// found two viable actors that accept tweet-by-URL (or tweet-by-ID) input.
+// Pass --skip-x if you only want to re-test LinkedIn.
+const effectiveSkipX = skipX;
 
-if (xUrl && !effectiveSkipX && X_CANDIDATES.length === 0) {
-  console.warn("Note: X candidates list is empty (see top of file). Pass --include-x AND populate X_CANDIDATES to re-test.");
-}
 if (!xUrl && !effectiveSkipX) {
   console.error("Pass --x <real tweet URL>, or --skip-x to only test LinkedIn.");
   process.exit(1);
@@ -74,16 +71,64 @@ if (!linkedinUrl && !skipLinkedIn) {
 // Some actors take `tweetURLs`, others `urls`, others `startUrls: [{url}]`
 // — we try shapes top-to-bottom and take the first that returns items.
 
-// X candidates removed 2026-05-12 after the first preflight burned
-// credit on demo/mock data:
-//   - kaitoeasyapi/...-cheapest charges a minimum per-call even on
-//     empty results (returned 15 mock_tweet items with a fine-print
-//     message saying "we returned N mock items to cover our costs").
-//   - apidojo/twitter-scraper-lite returned {demo:true} × 10.
-//   - tugkan/twitter-tweet-scraper-pay-per-result is a missing actor.
-// Per pre-agreed plan: skip X in MVP. The preflight no longer
-// attempts X to save credit; use --include-x if you want to re-test.
-const X_CANDIDATES = [];
+// X candidates — second-pass shootout 2026-05-12 after the first
+// round burned credit on demo/mock data + the broader "TwitterAPI.io
+// signup is broken" rabbit hole. Investigation found that most Apify
+// X scrapers use `startUrls` for PROFILE / SEARCH / LIST URLs, not
+// for tweet-URL lookups. Two actors do accept tweet identifiers:
+//
+//   - scrape.badger/twitter-tweets-scraper: 700k runs, 1.2k users,
+//     $0.0002/result (= $0.20/1K, comparable to LinkedIn at $0.001).
+//     Takes `tweets: "id1,id2,..."` as a comma-separated string of
+//     numeric tweet IDs. Title says "Tweets, Retweets, Lists & More!"
+//     — promising. **Primary candidate.**
+//
+//   - pratikdani/twitter-posts-scraper: 390k runs, $0.02/result. Takes
+//     `url: "<tweet-url>"`. Confirmed accepts tweet URLs but pricing
+//     is 100× the badger actor for the same use case — only worth it
+//     as a backup if badger doesn't return real engagement metrics.
+//
+// Dead/disqualified (don't waste credit re-running these):
+//   - kaitoeasyapi/...-cheapest: minimum-per-call hostile pricing.
+//   - apidojo/tweet-scraper-V2, apidojo/twitter-scraper-lite,
+//     xquik/x-tweet-scraper, xtdata/twitter-x-scraper: all use
+//     startUrls for profiles/searches, not tweet-URL input.
+//   - tugkan/twitter-tweet-scraper-pay-per-result: actor doesn't exist.
+//   - parseforge/x-com-scraper: usernames-only input.
+//
+// Default behavior unchanged: preflight skips X unless --include-x.
+
+const X_CANDIDATES = [
+  {
+    actor: "scrape.badger/twitter-tweets-scraper",
+    inputs: [
+      // The actor's example input shows `tweets: "id1,id2"` (CSV
+      // string) — we extract the numeric tweet id from the /status/N
+      // path and pass as a single-element CSV.
+      (url) => {
+        const id = url.match(/\/status\/(\d+)/)?.[1];
+        if (!id) return null;
+        return { tweets: id };
+      },
+      // Fallback shapes in case the actor also accepts an array form.
+      (url) => {
+        const id = url.match(/\/status\/(\d+)/)?.[1];
+        if (!id) return null;
+        return { tweets: [id] };
+      },
+      (url) => ({ id: url.match(/\/status\/(\d+)/)?.[1] }),
+    ],
+  },
+  {
+    actor: "pratikdani/twitter-posts-scraper",
+    inputs: [
+      // Confirmed by webfetch: `url` field accepts the full tweet URL.
+      // Tried second so we burn $0.02 only if the cheaper badger
+      // actor doesn't return what we need.
+      (url) => ({ url }),
+    ],
+  },
+];
 
 // LinkedIn candidates re-derived from Apify Store search 2026-05-12.
 // My PR-1 guesses (apify/linkedin-post-scraper, harvestapi/linkedin-
@@ -148,6 +193,10 @@ async function runActor(actor, body) {
 async function tryCandidate(platform, candidate, postUrl) {
   for (let i = 0; i < candidate.inputs.length; i++) {
     const input = candidate.inputs[i](postUrl);
+    if (!input || typeof input !== "object") {
+      console.log(`\n  → ${candidate.actor}  (input shape #${i+1} skipped — couldn't build payload from URL)`);
+      continue;
+    }
     const inputKey = Object.keys(input).filter((k) => k !== "maxItems").join("+");
     console.log(`\n  → ${candidate.actor}  (input: ${inputKey})`);
     const r = await runActor(candidate.actor, input);
