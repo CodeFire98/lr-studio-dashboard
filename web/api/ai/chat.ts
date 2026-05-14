@@ -41,6 +41,9 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
   convertToModelMessages,
+  generateObject,
+  InvalidToolInputError,
+  NoSuchToolError,
   stepCountIs,
   streamText,
   tool,
@@ -61,20 +64,159 @@ const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
   .filter(Boolean);
 
 const MODEL_ID = "claude-sonnet-4-6";
+const REPAIR_MODEL_ID = "claude-haiku-4-5-20251001";
 const MAX_STEPS = 8;
 const MAX_TOKENS_PER_TURN = 1500;
+
+// =====================================================================
+// Tool-call robustness: silent JSON repair + history sanitizer
+// =====================================================================
+//
+// Claude occasionally emits malformed JSON for large tool calls — most
+// commonly a stray trailing brace on multi-platform `copy_variants`
+// objects that run to ~1.5K chars. Two failure modes when this happens:
+//
+//   1. The current turn shows a red "tool failed" tile until the model
+//      retries (which it does, but the user sees the failure).
+//   2. The broken `tool_use` block gets persisted in the UIMessage
+//      history. On the NEXT turn, convertToModelMessages forwards it to
+//      Anthropic, which strict-rejects with
+//      "messages.N.content.M.tool_use.input: Input should be an object"
+//      and the WHOLE conversation becomes unusable until the user starts
+//      a new chat.
+//
+// Two layers of defense:
+//
+//   A. `experimental_repairToolCall` — fires when a tool call has
+//      invalid input. We try a cheap JSON cleanup first (strip trailing
+//      garbage, trailing commas, smart quotes). If that fails, a Haiku
+//      `generateObject` call asks the model to re-emit the input against
+//      the tool's schema. Either way, the repair completes BEFORE the
+//      tool's execute() runs and BEFORE anything reaches the client —
+//      so the user sees a successful tool result without ever knowing
+//      the model botched the first attempt.
+//
+//   B. `sanitizeBrokenToolCalls` — for conversations that are already
+//      poisoned (broken `tool_use` blocks persisted in a prior turn,
+//      before this fix shipped), we walk the incoming message history
+//      and neutralize any tool part whose state is an error or whose
+//      input isn't a plain object. Replace with a synthetic completed
+//      tool call (input: {}, output: { ok: false, error: ... }) so the
+//      Anthropic API sees a valid message and the conversation unblocks
+//      itself on the next message.
+
+const TOOL_PREFIX = "tool-";
+
+// Strip common JSON garbage and try to parse. Catches the trailing-extra-
+// brace case (our observed real-world failure) and a few other cheap fixes.
+// Returns the parsed value or null when nothing salvageable.
+function tryRepairJson(raw: string): unknown | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // Try as-is first (handles "valid JSON that just failed Zod" — the
+  // repair path will still hand it back to the schema validator).
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // fall through
+  }
+
+  // Trailing commas before close brace / bracket.
+  const noTrailingComma = trimmed.replace(/,(\s*[}\]])/g, "$1");
+  if (noTrailingComma !== trimmed) {
+    try {
+      return JSON.parse(noTrailingComma);
+    } catch {
+      // fall through
+    }
+  }
+
+  // "Unexpected non-whitespace character after JSON at position N" —
+  // truncate to position N and re-parse. This is the exact pattern of
+  // the trailing-extra-brace failure we observed in production.
+  try {
+    JSON.parse(trimmed);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const match = /position\s+(\d+)/.exec(msg);
+    if (match) {
+      const pos = Number(match[1]);
+      if (Number.isFinite(pos) && pos > 0 && pos <= trimmed.length) {
+        try {
+          return JSON.parse(trimmed.slice(0, pos));
+        } catch {
+          // fall through
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// Walk through the incoming UIMessage[] and neutralize any broken tool
+// parts. Replaces malformed inputs with `{}` and force-completes the
+// state so Anthropic accepts the conversation history. Past failures
+// stop blocking future turns.
+function sanitizeBrokenToolCalls(messages: UIMessage[]): UIMessage[] {
+  return messages.map((msg) => {
+    if (!msg || !Array.isArray(msg.parts)) return msg;
+    let touched = false;
+    const parts = msg.parts.map((part) => {
+      const partType = part?.type;
+      if (typeof partType !== "string" || !partType.startsWith(TOOL_PREFIX)) {
+        return part;
+      }
+      const anyPart = part as Record<string, unknown> & {
+        state?: string;
+        input?: unknown;
+        output?: unknown;
+      };
+      const inputIsObject =
+        anyPart.input !== null &&
+        typeof anyPart.input === "object" &&
+        !Array.isArray(anyPart.input);
+      const stateIsError =
+        anyPart.state === "output-error" ||
+        anyPart.state === "input-error" ||
+        anyPart.state === "input-streaming";
+      if (inputIsObject && anyPart.state === "output-available") return part;
+      if (!inputIsObject || stateIsError) {
+        touched = true;
+        return {
+          ...anyPart,
+          state: "output-available",
+          input: inputIsObject ? anyPart.input : {},
+          output: { ok: false, error: "previous tool call recovered" },
+          errorText: undefined,
+        };
+      }
+      return part;
+    });
+    return touched ? { ...msg, parts: parts as typeof msg.parts } : msg;
+  });
+}
 
 const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
 
 ## How to behave
 
 - The brand-context block below is the single source of truth for who this brand is. Reference it. Don't fabricate facts about the brand.
-- Match the brand's voice in any copy you draft. If the voice block is sparse, ask before guessing.
+- Match the brand's voice in any copy you draft. If the voice block is sparse, infer from the Voice anchors and Top performers blocks (the opening lines and concepts of the brand's best-performing recent posts).
 - Be concise. The admin reads fast and prefers signal over preamble.
-- When the admin asks you to plan posts or draft content, use the create_post_plan_draft tool to actually create the plan rather than just describing it. The plan lands in their calendar as a "✨ AI draft" — they edit and submit through the normal workflow.
-- When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true ("we always tag @sarahbamboo on milestone posts"); leave non-pinned for time-bound or context-specific facts ("Q4 launch is the new bamboo onesie line"). The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
+- **Defaults-first, not questions-first.** When the admin asks you to plan a post or draft content, pick a sensible default and CREATE the draft. Don't ask "what date?", "which platform?", "what concept?" — decide and ship. Drafts are cheap and reversible: they land in the calendar as "✨ AI draft" with status='drafting', and the admin edits or deletes them in one click. Only ask a clarifying question if the request is genuinely ambiguous (e.g. "plan something for the launch" with no launch named anywhere in the brand context). When in doubt, draft something and let the admin redirect.
+- **Default ladder for missing info.** When the admin doesn't specify details, use these defaults in order:
+  1. **Date:** look at the Upcoming calendar block. Pick the next obvious gap in the brand's posting rhythm (Cadence block shows last-posted-per-platform). If a major Upcoming moment is within 14 days and on-brand, anchor the date to that moment instead. If no signal at all, pick 2 days from today.
+  2. **Time:** 09:00 in the brand's timezone (see the ## Today block).
+  3. **Platforms:** if the brand's strategy mentions primary platforms, use those. Otherwise infer from past approved posts and Top performers. If still ambiguous, default to Instagram (most brands' primary).
+  4. **Concept:** derive from upcoming moments + brand pillars + cadence gaps + the admin's hints. Lean on the brand's pillars — rotating across them avoids monotone calendars.
+- **Be proactive.** When the conversation opens (no prior assistant messages in this turn's history) or the admin asks an open-ended question like "what should I post?", lead with what's most relevant right now: upcoming holidays/festivals on the brand's market, cadence gaps, what top-performing recent posts can be built on, anything in the brand notes that's time-bound. Then offer 2-3 concrete next moves. Don't just dump information — propose action.
+- **Use the calendar context.** Before creating a draft, glance at the Upcoming calendar block. Don't propose a date that's already busy on every targeted platform. Don't suggest content concepts that duplicate something already drafted within 7 days. If the calendar is empty, that's the most important signal — propose filling it, not analysing it.
+- When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true; leave non-pinned for time-bound or context-specific facts. The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
 - After calling a tool, briefly tell the admin what you did and link them to the result if applicable. Don't just go silent.
-- If you don't have enough information (e.g. no date, no platform), ask a clarifying question instead of guessing.
+- **Don't announce internal failures.** If a tool call fails and you retry successfully on the next step, present the final result as if it worked the first time. Don't say "let me try that again", "apologies for the error", or any variant. The admin doesn't need to see plumbing slips.
 
 ## Platform craft (universal — applies to every brand)
 
@@ -134,7 +276,7 @@ const createPostPlanDraftInput = z.object({
   scheduled_at: z
     .string()
     .describe(
-      "ISO 8601 datetime for when to schedule this post (e.g. '2026-05-15T09:00:00+05:30'). Default to 09:00 in the brand's local time on the requested date. If the admin doesn't specify a date, ask before guessing.",
+      "ISO 8601 datetime for when to schedule this post (e.g. '2026-05-15T09:00:00+05:30'). Default to 09:00 in the brand's local timezone (see the ## Today block) on the next sensible date — pick the closest cadence gap from the Upcoming calendar block, or anchor to an Upcoming moment within 14 days if the concept fits. Don't ask the admin for a date; pick one and ship the draft. The admin will edit if needed.",
     ),
   platforms: z
     .array(z.enum(["instagram", "linkedin", "x"]))
@@ -245,7 +387,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let brandContext = "";
   try {
-    brandContext = await loadAndCompileBrandContext(serviceClient, body.accountId);
+    // Chat opts INTO the calendar block — it's the route that needs to
+    // reason about upcoming plans, cadence gaps, top performers, and
+    // voice anchors. The inline-copy and image routes leave it off so
+    // they don't pay for context they can't act on.
+    brandContext = await loadAndCompileBrandContext(serviceClient, body.accountId, {
+      includeCalendar: true,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: `Failed to compile brand context: ${msg}` });
@@ -336,9 +484,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    // Two cache breakpoints on the system prompt, unchanged from Phase 1a:
-    //   1. Fixed instruction prefix (rarely changes)
-    //   2. Per-brand context blob (stable per call, changes on brand mutations)
+    // Two cache breakpoints on the system prompt:
+    //   1. Fixed instruction prefix (rarely changes — system-prompt edits only)
+    //   2. Per-brand context blob (changes when brand kit / notes / calendar
+    //      / engagement snapshots mutate, and at midnight brand-local when
+    //      the ## Today block rolls over to a new date)
+    // Cache TTL is 5 minutes, so back-to-back turns within a conversation
+    // hit cache. The brand-context blob is refreshed every request, so any
+    // draft the model creates mid-conversation shows up in the calendar
+    // section on the NEXT turn — preventing duplicate proposals.
     // Both rides via the `system` parameter (as an array of
     // SystemModelMessage) instead of being mixed into `messages`. The
     // AI SDK emits a security warning when role:'system' entries appear
@@ -359,6 +513,60 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       maxOutputTokens: MAX_TOKENS_PER_TURN,
       stopWhen: stepCountIs(MAX_STEPS),
       tools,
+      // Silent repair for malformed tool inputs. The model occasionally
+      // emits invalid JSON for big tool calls (e.g. trailing extra
+      // braces on multi-platform copy_variants). We try a cheap cleanup
+      // first, then fall back to a Haiku re-emit. Returning a repaired
+      // ToolCall makes the SDK transparently re-run execute() with the
+      // fixed input; the user never sees the failure.
+      experimental_repairToolCall: async ({ toolCall, tools: toolSet, inputSchema, error }) => {
+        // Schema-validation failures we can't repair — return null and
+        // let the SDK surface the error normally (model will retry).
+        if (NoSuchToolError.isInstance(error)) return null;
+        if (!InvalidToolInputError.isInstance(error)) return null;
+
+        const rawInput = typeof toolCall.input === "string" ? toolCall.input : "";
+
+        // Tier 1: cheap JSON cleanup.
+        const cleaned = tryRepairJson(rawInput);
+        if (cleaned && typeof cleaned === "object" && !Array.isArray(cleaned)) {
+          const toolDef = (toolSet as Record<string, { inputSchema?: z.ZodTypeAny }>)[toolCall.toolName];
+          if (toolDef?.inputSchema) {
+            const parsed = toolDef.inputSchema.safeParse(cleaned);
+            if (parsed.success) {
+              return { ...toolCall, input: JSON.stringify(parsed.data) };
+            }
+          } else {
+            return { ...toolCall, input: JSON.stringify(cleaned) };
+          }
+        }
+
+        // Tier 2: ask Haiku to re-emit valid input against the schema.
+        // Cheap and almost always succeeds because the malformation is a
+        // generation slip, not a semantic confusion.
+        try {
+          const schemaJson = await inputSchema({ toolName: toolCall.toolName });
+          const { object } = await generateObject({
+            model: anthropic(REPAIR_MODEL_ID),
+            schema: schemaJson as Parameters<typeof generateObject>[0]["schema"],
+            prompt: [
+              `A previous tool call to "${toolCall.toolName}" had invalid input.`,
+              `<original_input>`,
+              rawInput.slice(0, 4000),
+              `</original_input>`,
+              `<error>${error.message}</error>`,
+              `Re-emit the same intent as a valid JSON object matching the schema. Preserve the user's intent and the copy/content verbatim where possible — fix only the malformed structure.`,
+            ].join("\n\n"),
+            maxOutputTokens: 4000,
+          });
+          return { ...toolCall, input: JSON.stringify(object) };
+        } catch (repairErr) {
+          // Repair attempt itself failed (network, schema, etc.) — surface
+          // the original error so the SDK falls back to model retry.
+          console.error("[chat] repairToolCall failed", repairErr);
+          return null;
+        }
+      },
       system: [
         {
           role: "system",
@@ -371,7 +579,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
         },
       ],
-      messages: await convertToModelMessages(body.messages),
+      // sanitizeBrokenToolCalls unblocks conversations that were poisoned
+      // by a malformed tool_use block from a turn before this fix shipped.
+      messages: await convertToModelMessages(sanitizeBrokenToolCalls(body.messages)),
     });
 
     // Pipe the AI SDK's native UIMessage stream protocol directly to the

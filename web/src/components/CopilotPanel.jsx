@@ -478,6 +478,21 @@ function renderPart(part, idx, messageId, role, ctx) {
 // SDK's UIMessage tool-part shape: `state` cycles through
 // 'input-streaming' → 'input-available' → 'output-available' | 'output-error'.
 // We treat 'input-streaming' / 'input-available' as "running" visually.
+//
+// Failed tool calls render as null — we don't show the red "tool failed"
+// tile to the admin. Reasons:
+//   - The server's experimental_repairToolCall handler silently fixes
+//     malformed inputs before they reach the client. If a tile would
+//     have been an error, the server already retried it. By the time
+//     we render, the SAME toolCallId is on a successful retry that we
+//     do want to show; or the model gave up and produced a text reply
+//     instead, which is enough.
+//   - When the server-side repair AND the model retry both fail, the
+//     admin sees the model's natural-language explanation. They don't
+//     need to see a red plumbing artifact.
+// The SYSTEM_PROMPT also instructs the model not to announce internal
+// failures, so the post-recovery text reads as if the first attempt
+// worked.
 function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan, brandSlug }) {
   const isPlan = toolName === "create_post_plan_draft";
   const isNote = toolName === "write_brand_note";
@@ -498,8 +513,18 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
   const planId = isPlan && ok && result?.id ? result.id : null;
 
   let statusKey = "running";
-  if (isError || !ok && inner) statusKey = "error";
+  if (isError || (!ok && inner)) statusKey = "error";
   else if (isOk) statusKey = "ok";
+
+  // Suppress error tiles entirely. See the comment block above for the
+  // rationale. We still log the failure so we can debug from the browser
+  // devtools when something genuinely goes wrong.
+  if (statusKey === "error") {
+    if (typeof console !== "undefined" && displayError) {
+      console.warn("[copilot] suppressed tool error tile", { toolName, displayError });
+    }
+    return null;
+  }
 
   let headline;
   if (statusKey === "running") {

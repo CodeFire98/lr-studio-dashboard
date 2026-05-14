@@ -3,42 +3,78 @@
 // =====================================================================
 //
 // Single source of truth for the "who is this brand" blob we hand to
-// Claude on every AI call. Compiled once per request from three inputs:
+// Claude on every AI call. Compiled once per request from these inputs:
 //
 //   - brand_kits         the structured Brand Intelligence row
 //   - brand_kit_notes    free-form admin annotations (the "memory" layer)
-//   - post_plans         the last few approved plans (style references)
+//   - post_plans         past approved (style refs) + upcoming (calendar)
+//   - post_plan_publications + post_engagement_snapshots
+//                        powers ## Top performers and ## Voice anchors
 //
-// Designed for prompt caching: the output is stable per brand until any
-// of those three sources change, so back-to-back AI calls for the same
-// brand hit Anthropic's cache (~90% input-token discount) within the
-// 5-minute TTL.
+// Designed for prompt caching: the output is stable per brand within a
+// short window so back-to-back AI calls for the same brand hit Anthropic's
+// cache (~90% input-token discount) within the 5-minute TTL. The `## Today`
+// section changes daily, so the chat route puts it behind its own cache
+// breakpoint — see chat.ts.
 //
 // Two exports:
 //
-//   compileBrandContext({ brandKit, notes, recentApprovedPlans })
+//   compileBrandContext({ brandKit, notes, recentApprovedPlans, ... opts })
 //     Pure function. Takes raw DB rows (snake_case columns) and returns
 //     the final string. Importable from both the browser SPA and the
-//     Vercel API route (PR 2) so server-side rendering uses the same
-//     blob shape.
+//     Vercel API route so server-side rendering uses the same blob shape.
 //
-//   loadAndCompileBrandContext(supabaseClient, accountId)
-//     Async wrapper that does the three queries and calls the pure
-//     compiler. Works with both the publishable-key client (browser,
-//     RLS-scoped) and the service-role client (server, full access).
-//
-// Nothing in the SPA reads this yet — PR 1 lands the compiler so PR 2
-// can wire it into /api/ai/chat without re-architecting.
+//   loadAndCompileBrandContext(supabaseClient, accountId, options?)
+//     Async wrapper that does the queries and calls the pure compiler.
+//     Works with publishable-key (browser, RLS-scoped) and service-role
+//     (server, full access) clients. The `options` arg gates expensive
+//     calendar/engagement queries — chat opts in, inline copy/image opts
+//     out (they don't need the full calendar block).
+
+import { getUpcomingMoments } from './marketingMoments.js';
 
 const RECENT_PLANS_LIMIT = 6;
 const NOTES_RECENT_LIMIT = 20;
 const COPY_PREVIEW_CHARS = 280;
+const UPCOMING_PLANS_LIMIT = 30;
+const PUBLICATIONS_LIMIT = 20;
+const TOP_PERFORMERS_COUNT = 3;
+const VOICE_ANCHORS_COUNT = 5;
+const HOLIDAY_LOOKAHEAD_DAYS = 30;
 
-export async function loadAndCompileBrandContext(supabaseClient, accountId) {
+// brand_kits / accounts don't currently have country or timezone columns.
+// Defaults match L+R Studio's reality: India-based agency, Asia/Kolkata
+// timezone. Once we add a second brand in a different market, plumb
+// columns through accounts (or brand_kits) and the helper will pick them
+// up automatically.
+const DEFAULT_COUNTRY = 'IN';
+const DEFAULT_TIMEZONE = 'Asia/Kolkata';
+
+export function getBrandLocale(brandKit, account) {
+  return {
+    country:
+      brandKit?.primary_market ||
+      brandKit?.country ||
+      account?.country ||
+      DEFAULT_COUNTRY,
+    timezone:
+      brandKit?.timezone ||
+      account?.timezone ||
+      DEFAULT_TIMEZONE,
+  };
+}
+
+export async function loadAndCompileBrandContext(supabaseClient, accountId, options = {}) {
   if (!supabaseClient) throw new Error('supabaseClient required');
   if (!accountId) throw new Error('accountId required');
 
-  const [kitResult, notesResult, plansResult] = await Promise.all([
+  // Opt-IN, not opt-out. Inline copy / image / suggestions routes pass
+  // no options and skip the expensive calendar/engagement queries.
+  // Only the chat route asks for them explicitly.
+  const includeCalendar = options.includeCalendar === true;
+
+  // The base queries — always run.
+  const baseQueries = [
     supabaseClient
       .from('brand_kits')
       .select('*, account:accounts(id, name, type)')
@@ -58,24 +94,101 @@ export async function loadAndCompileBrandContext(supabaseClient, accountId) {
       .eq('status', 'approved')
       .order('scheduled_at', { ascending: false })
       .limit(RECENT_PLANS_LIMIT),
-  ]);
+  ];
+
+  // Calendar/engagement extras — gated by options.includeCalendar.
+  //
+  // Use a single date string (today, brand-local) for the upcoming-plans
+  // floor. We accept some slop on the boundary (brand-local vs UTC) because
+  // the model only sees day-resolution anyway. Anything stricter would
+  // need brand_kits.timezone wired through, which we're deferring.
+  const todayIso = new Date().toISOString();
+  const calendarQueries = includeCalendar
+    ? [
+        supabaseClient
+          .from('post_plans')
+          .select('id, concept, copy_variants, platforms, scheduled_at, status, ai_generated')
+          .eq('account_id', accountId)
+          .gte('scheduled_at', todayIso)
+          .order('scheduled_at', { ascending: true })
+          .limit(UPCOMING_PLANS_LIMIT),
+        // Recently published — for engagement signal. We over-fetch a bit
+        // because we filter to this brand's plans below; the publications
+        // table doesn't carry account_id directly.
+        supabaseClient
+          .from('post_plan_publications')
+          .select(
+            'id, post_plan_id, platform, live_url, published_at, post_plans!inner(id, account_id, concept, copy_variants, platforms)',
+          )
+          .eq('post_plans.account_id', accountId)
+          .order('published_at', { ascending: false })
+          .limit(PUBLICATIONS_LIMIT),
+      ]
+    : [];
+
+  const results = await Promise.all([...baseQueries, ...calendarQueries]);
+  const [kitResult, notesResult, plansResult, upcomingResult, pubsResult] = results;
 
   if (kitResult.error) throw kitResult.error;
+
+  // For each publication, get the latest engagement snapshot. Single
+  // query, filtered by publication_id IN (...). Then dedupe to the most
+  // recent per publication in-memory.
+  let snapshotsByPublication = {};
+  const publications = pubsResult?.data || [];
+  if (publications.length) {
+    const pubIds = publications.map((p) => p.id);
+    const { data: snapshots } = await supabaseClient
+      .from('post_engagement_snapshots')
+      .select('publication_id, like_count, comment_count, share_count, save_count, view_count, reaction_count, engagement_rate, fetched_at, scrape_status')
+      .in('publication_id', pubIds)
+      .order('fetched_at', { ascending: false });
+    for (const snap of snapshots || []) {
+      if (snap.scrape_status !== 'ok' && snap.scrape_status !== 'partial') continue;
+      if (snapshotsByPublication[snap.publication_id]) continue; // already have newer
+      snapshotsByPublication[snap.publication_id] = snap;
+    }
+  }
 
   return compileBrandContext({
     brandKit: kitResult.data,
     notes: notesResult.data || [],
-    recentApprovedPlans: plansResult.data || [],
+    recentApprovedPlans: plansResult?.data || [],
+    upcomingPlans: upcomingResult?.data || [],
+    publications,
+    snapshotsByPublication,
+    includeCalendar,
   });
 }
 
-export function compileBrandContext({ brandKit, notes = [], recentApprovedPlans = [] }) {
+export function compileBrandContext({
+  brandKit,
+  notes = [],
+  recentApprovedPlans = [],
+  upcomingPlans = [],
+  publications = [],
+  snapshotsByPublication = {},
+  includeCalendar = false,
+  now,
+} = {}) {
   if (!brandKit) return '';
 
   const sections = [];
   const name = brandKit.account?.name || 'this brand';
+  const locale = getBrandLocale(brandKit, brandKit.account);
+
+  // `now` overridable for deterministic tests. Defaults to wall-clock.
+  const today = now ? new Date(now) : new Date();
+
   sections.push(`# Brand: ${name}`);
 
+  // ----- ## Today --------------------------------------------------------
+  // Stays small (5-10 lines) but anchors the model: what is the actual
+  // date, what's coming up culturally, and what timezone defaults should
+  // it use for new post plans.
+  sections.push(todaySection({ today, locale }));
+
+  // ----- identity / voice / strategy / visual ---------------------------
   const identity = compactLines([
     brandKit.industry && `Industry: ${brandKit.industry}`,
     brandKit.tagline && `Tagline: ${brandKit.tagline}`,
@@ -119,13 +232,242 @@ export function compileBrandContext({ brandKit, notes = [], recentApprovedPlans 
   const notesBlock = notesSection(notes);
   if (notesBlock) sections.push(notesBlock);
 
+  // ----- calendar + engagement (opt-in) ---------------------------------
+  // These are the blocks that make the model proactive. We gate them
+  // behind includeCalendar so the inline-copy and image routes don't pay
+  // for context they can't act on.
+  if (includeCalendar) {
+    const calendar = calendarSection({ upcomingPlans, today });
+    if (calendar) sections.push(calendar);
+
+    const cadence = cadenceSection({ publications, today });
+    if (cadence) sections.push(cadence);
+
+    const performers = topPerformersSection({ publications, snapshotsByPublication });
+    if (performers) sections.push(performers);
+
+    const anchors = voiceAnchorsSection({ publications, snapshotsByPublication });
+    if (anchors) sections.push(anchors);
+  }
+
+  // Past approved plans (style references) — always included. The voice
+  // anchors above outrank these when both exist, but anchors require
+  // engagement data which may not be there yet for a new brand.
   const examplesBlock = recentPlansSection(recentApprovedPlans);
   if (examplesBlock) sections.push(examplesBlock);
 
   return sections.join('\n\n');
 }
 
-// ---------- helpers -----------------------------------------------------
+// ---------- ## Today ---------------------------------------------------
+
+function todaySection({ today, locale }) {
+  const lines = [];
+  const dateStr = formatDateInTimezone(today, locale.timezone);
+  const dayName = formatDayInTimezone(today, locale.timezone);
+  const weekOfYear = isoWeekOfYear(today);
+  lines.push(`Date: ${dateStr} (${dayName})`);
+  lines.push(`Brand timezone: ${locale.timezone}`);
+  lines.push(`Primary market: ${locale.country}`);
+  lines.push(`Week of year: W${weekOfYear}`);
+
+  const moments = getUpcomingMoments({
+    from: today,
+    days: HOLIDAY_LOOKAHEAD_DAYS,
+    country: locale.country,
+  });
+  if (moments.length) {
+    lines.push('');
+    lines.push(`Upcoming moments (next ${HOLIDAY_LOOKAHEAD_DAYS} days):`);
+    for (const m of moments) {
+      lines.push(`- ${m.date} (+${m.daysAway}d): ${m.name} [${m.tags.join(', ')}]`);
+    }
+  }
+  return `## Today\n${lines.join('\n')}`;
+}
+
+// ---------- ## Upcoming calendar --------------------------------------
+
+function calendarSection({ upcomingPlans, today }) {
+  if (!Array.isArray(upcomingPlans) || !upcomingPlans.length) {
+    // Explicit empty block so the model knows the calendar is empty —
+    // a major signal that there are gaps to fill.
+    return `## Upcoming calendar\n(The next 30 days are empty — no scheduled posts. This is a high-priority gap.)`;
+  }
+
+  const todayMs = startOfDayMs(today);
+  const oneDayMs = 24 * 60 * 60 * 1000;
+
+  const buckets = { detail: [], compact: [] };
+  for (const plan of upcomingPlans) {
+    const ts = new Date(plan.scheduled_at).getTime();
+    const daysOut = Math.round((startOfDayMs(new Date(ts)) - todayMs) / oneDayMs);
+    if (daysOut <= 7) buckets.detail.push({ plan, daysOut });
+    else if (daysOut <= 30) buckets.compact.push({ plan, daysOut });
+  }
+
+  const lines = [];
+
+  if (buckets.detail.length) {
+    lines.push('### Next 7 days (full detail)');
+    for (const { plan, daysOut } of buckets.detail) {
+      const when = formatScheduledShort(plan.scheduled_at);
+      const platforms = Array.isArray(plan.platforms) ? plan.platforms.join('/') : '';
+      const status = plan.status || 'unknown';
+      const concept = plan.concept || '(no concept yet)';
+      const ai = plan.ai_generated ? ' [AI draft]' : '';
+      lines.push(`- ${when} (+${daysOut}d) · ${platforms} · ${status}${ai}: ${concept}`);
+    }
+  } else {
+    lines.push('### Next 7 days');
+    lines.push('(empty — high-priority gap)');
+  }
+
+  if (buckets.compact.length) {
+    lines.push('');
+    lines.push('### Days 8-30 (compact)');
+    // Group by ISO week start (Monday) for compactness.
+    const byWeek = {};
+    for (const { plan, daysOut } of buckets.compact) {
+      const weekKey = isoWeekKey(new Date(plan.scheduled_at));
+      if (!byWeek[weekKey]) byWeek[weekKey] = [];
+      byWeek[weekKey].push({ plan, daysOut });
+    }
+    const sortedWeeks = Object.keys(byWeek).sort();
+    for (const wk of sortedWeeks) {
+      const items = byWeek[wk];
+      const platformCounts = {};
+      for (const { plan } of items) {
+        for (const p of plan.platforms || []) {
+          platformCounts[p] = (platformCounts[p] || 0) + 1;
+        }
+      }
+      const summary = Object.entries(platformCounts)
+        .map(([p, c]) => `${c} ${p}`)
+        .join(', ') || 'none';
+      lines.push(`- ${wk}: ${items.length} plan${items.length === 1 ? '' : 's'} (${summary})`);
+    }
+  }
+
+  return `## Upcoming calendar\n${lines.join('\n')}`;
+}
+
+// ---------- ## Cadence (last 30 days, by platform) --------------------
+
+function cadenceSection({ publications, today }) {
+  if (!Array.isArray(publications) || !publications.length) return null;
+
+  const todayMs = startOfDayMs(today);
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const thirtyDaysAgoMs = todayMs - 30 * oneDayMs;
+
+  const byPlatform = {};
+  for (const pub of publications) {
+    const tMs = new Date(pub.published_at).getTime();
+    if (tMs < thirtyDaysAgoMs) continue;
+    const platform = pub.platform;
+    if (!byPlatform[platform]) byPlatform[platform] = { count: 0, lastTs: 0 };
+    byPlatform[platform].count += 1;
+    byPlatform[platform].lastTs = Math.max(byPlatform[platform].lastTs, tMs);
+  }
+
+  const platforms = Object.keys(byPlatform);
+  if (!platforms.length) return null;
+
+  const lines = [];
+  for (const p of platforms) {
+    const info = byPlatform[p];
+    const daysSinceLast = Math.round((todayMs - info.lastTs) / oneDayMs);
+    const gap = daysSinceLast >= 7 ? '  ⚠ GAP' : '';
+    lines.push(`- ${p}: ${info.count} post${info.count === 1 ? '' : 's'} in last 30d · last ${daysSinceLast}d ago${gap}`);
+  }
+
+  return `## Cadence (last 30 days)\n${lines.join('\n')}`;
+}
+
+// ---------- ## Top performers (last 90d by engagement) ----------------
+
+function topPerformersSection({ publications, snapshotsByPublication }) {
+  const scored = publications
+    .map((pub) => {
+      const snap = snapshotsByPublication[pub.id];
+      if (!snap) return null;
+      const score =
+        (snap.like_count || 0) +
+        (snap.comment_count || 0) * 3 +
+        (snap.share_count || 0) * 4 +
+        (snap.save_count || 0) * 4 +
+        (snap.reaction_count || 0);
+      if (score <= 0) return null;
+      return { pub, snap, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, TOP_PERFORMERS_COUNT);
+
+  if (!scored.length) return null;
+
+  const lines = scored.map(({ pub, snap }) => {
+    const plan = pub.post_plans || {};
+    const concept = plan.concept || '(no concept)';
+    const copy = plan.copy_variants || {};
+    const platformCopy = copy[pub.platform];
+    const copyPreview = typeof platformCopy === 'string'
+      ? truncate(platformCopy, COPY_PREVIEW_CHARS)
+      : typeof platformCopy === 'object' && platformCopy
+      ? truncate(platformCopy.body || platformCopy.text || '', COPY_PREVIEW_CHARS)
+      : '';
+    const metrics = [
+      snap.like_count != null && `${snap.like_count} likes`,
+      snap.comment_count != null && `${snap.comment_count} comments`,
+      snap.share_count != null && `${snap.share_count} shares`,
+      snap.save_count != null && `${snap.save_count} saves`,
+      snap.reaction_count != null && `${snap.reaction_count} reactions`,
+    ].filter(Boolean).join(' · ');
+    const out = [`- ${pub.platform} · ${pub.published_at.slice(0, 10)} · ${metrics}`];
+    if (concept) out.push(`  Concept: ${concept}`);
+    if (copyPreview) out.push(`  Copy: ${copyPreview}`);
+    return out.join('\n');
+  });
+
+  return `## Top performers (recent, ranked by engagement)\n${lines.join('\n')}`;
+}
+
+// ---------- ## Voice anchors (hooks from top-engagement posts) --------
+
+function voiceAnchorsSection({ publications, snapshotsByPublication }) {
+  const scored = publications
+    .map((pub) => {
+      const snap = snapshotsByPublication[pub.id];
+      if (!snap) return null;
+      const score =
+        (snap.like_count || 0) +
+        (snap.comment_count || 0) * 3 +
+        (snap.share_count || 0) * 4 +
+        (snap.save_count || 0) * 4 +
+        (snap.reaction_count || 0);
+      if (score <= 0) return null;
+      const copy = pub.post_plans?.copy_variants || {};
+      const platformCopy = copy[pub.platform];
+      const text = typeof platformCopy === 'string'
+        ? platformCopy
+        : platformCopy?.body || platformCopy?.text || '';
+      if (!text) return null;
+      const hook = extractFirstLine(text);
+      if (!hook) return null;
+      return { hook, platform: pub.platform, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, VOICE_ANCHORS_COUNT);
+
+  if (!scored.length) return null;
+
+  const lines = scored.map((s) => `- (${s.platform}) ${s.hook}`);
+  return `## Voice anchors (opening lines of top-performing recent posts)\n${lines.join('\n')}`;
+}
+
+// ---------- existing helpers (unchanged) ------------------------------
 
 function compactLines(lines) {
   return lines.filter(Boolean).join('\n');
@@ -225,4 +567,68 @@ function truncate(value, max) {
   const s = String(value || '');
   if (s.length <= max) return s;
   return s.slice(0, max).trimEnd() + '…';
+}
+
+// ---------- date helpers (locale-aware) -------------------------------
+
+function formatDateInTimezone(date, timezone) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+function formatDayInTimezone(date, timezone) {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'long',
+    }).format(date);
+  } catch {
+    return date.toLocaleDateString('en-US', { weekday: 'long' });
+  }
+}
+
+// ISO 8601 week number — Mon-first week, week 1 contains Jan 4.
+function isoWeekOfYear(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  const diff = d - firstThursday;
+  return 1 + Math.round(diff / (7 * 24 * 60 * 60 * 1000));
+}
+
+function isoWeekKey(date) {
+  const week = isoWeekOfYear(date);
+  return `${date.getFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function startOfDayMs(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x.getTime();
+}
+
+function formatScheduledShort(iso) {
+  if (!iso) return '?';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso).slice(0, 10);
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = d.toLocaleString('en-US', { month: 'short' });
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${day} ${month} ${hh}:${mm}`;
+}
+
+function extractFirstLine(text) {
+  if (!text) return '';
+  const first = String(text).split(/\r?\n/)[0].trim();
+  return truncate(first, 200);
 }
