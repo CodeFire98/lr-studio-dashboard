@@ -45,6 +45,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { streamText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
+import { compileCopyGuidance } from "../../src/lib/skillRegistry.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -280,36 +281,62 @@ ${instructionLine}${crossPlatformSection}
 Output the caption text only — no preamble, no quotes. The output MUST follow the ${platformLabel} format requirements above.`;
   }
 
+  // Pull platform-specific guidance from the marketing-skills bundle.
+  // Replaces the hardcoded PLATFORM_GUIDANCE block above for the system-
+  // prompt slot — keeps the original block as a TERSE in-user-message
+  // requirements header for hard-constraint visibility (the
+  // PLATFORM_GUIDANCE strings are kept and used as a brief "MUST FOLLOW"
+  // recap at the top of the user message, the heavy lifting moves into
+  // the cached system block below). Failure to read the skill files
+  // degrades gracefully — copyGuidance returns "" and the route still
+  // works with just the original system instructions + brand context.
+  const copyGuidance = compileCopyGuidance(body.platform);
+
   try {
-    // Two cache breakpoints, same as chat.ts + image.ts:
-    //   1. Mode-specific system instructions
-    //   2. Brand context blob
-    // Both rides via the `system` parameter (as an array of
+    // Three cache breakpoints:
+    //   1. Mode-specific system instructions (static — rarely changes)
+    //   2. Platform-specific copy playbook from the marketing skills
+    //      (cached per platform; same across all calls for that platform)
+    //   3. Brand context blob (changes when the brand kit / notes
+    //      mutate, daily roll-over on the ## Today block, etc.)
+    // All ride via the `system` parameter (as an array of
     // SystemModelMessage) instead of being mixed into `messages`. The
     // AI SDK emits a security warning when role:'system' entries appear
     // in `messages` because — in principle — that's a prompt-injection
     // vector (user content could leak into a system block). Our content
     // is 100% server-controlled so the warning is informational, but
-    // using `system: [...]` is the cleaner API path AND keeps both
-    // cache breakpoints intact (SystemModelMessage supports
-    // providerOptions). Cache survival is the entire cost premise; if
-    // cache_read_input_tokens is consistently 0 after the first call,
-    // costs spike 4-10×. Verified by the Phase 1a/1b smoke tests.
+    // using `system: [...]` is the cleaner API path AND keeps the cache
+    // breakpoints intact (SystemModelMessage supports providerOptions).
+    // Cache survival is the entire cost premise; if cache_read_input_tokens
+    // is consistently 0 after the first call, costs spike 4-10×.
+    const systemBlocks: Array<{
+      role: "system";
+      content: string;
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } };
+    }> = [
+      {
+        role: "system",
+        content: systemInstructions,
+        providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+      },
+    ];
+    if (copyGuidance) {
+      systemBlocks.push({
+        role: "system",
+        content: `\n\n---\n\n${copyGuidance}`,
+        providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+      });
+    }
+    systemBlocks.push({
+      role: "system",
+      content: `\n\n---\n\n${brandContext}`,
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    });
+
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS,
-      system: [
-        {
-          role: "system",
-          content: systemInstructions,
-          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
-        },
-        {
-          role: "system",
-          content: `\n\n---\n\n${brandContext}`,
-          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
-        },
-      ],
+      system: systemBlocks,
       messages: [
         { role: "user", content: userMessage },
       ],
