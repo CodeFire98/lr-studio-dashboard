@@ -592,21 +592,31 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                   · {g.rows.length}
                 </span>
               </h3>
+              {/* CSS multi-column masonry. Each tile stacks immediately
+                  under the previous one IN ITS COLUMN — short tiles
+                  (text-only X tweets) no longer leave whitespace below
+                  while a sibling tile in the same row is taller (IG
+                  with image). Reading order is top-to-bottom within
+                  each column, left-to-right across columns — fine for
+                  Live Posts where users scan chronologically. */}
               <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: 12,
+                columnWidth: 280,
+                columnGap: 12,
               }}>
                 {g.rows.map((row) => (
-                  <LiveTile
+                  <div
                     key={row.id}
-                    row={row}
-                    snapshot={snapshotsByPubId.get(row.id) || null}
-                    embed={embedsByPubId.get(row.id) || null}
-                    isAgency={!!isAgency}
-                    onRefresh={handleRefresh}
-                    onOpenPlan={openPlan}
-                  />
+                    style={{ breakInside: 'avoid', marginBottom: 12 }}
+                  >
+                    <LiveTile
+                      row={row}
+                      snapshot={snapshotsByPubId.get(row.id) || null}
+                      embed={embedsByPubId.get(row.id) || null}
+                      isAgency={!!isAgency}
+                      onRefresh={handleRefresh}
+                      onOpenPlan={openPlan}
+                    />
+                  </div>
                 ))}
               </div>
             </section>
@@ -630,14 +640,17 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
               · {sortedFlat?.length ?? 0}
             </span>
           </h3>
+          {/* Same masonry shape as the month-grouped view above. */}
           <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-            gap: 12,
+            columnWidth: 280,
+            columnGap: 12,
           }}>
             {(sortedFlat ?? []).map((row) => (
-              <LiveTile
+              <div
                 key={row.id}
+                style={{ breakInside: 'avoid', marginBottom: 12 }}
+              >
+              <LiveTile
                 row={row}
                 snapshot={snapshotsByPubId.get(row.id) || null}
                 embed={embedsByPubId.get(row.id) || null}
@@ -645,6 +658,7 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                 onRefresh={handleRefresh}
                 onOpenPlan={openPlan}
               />
+              </div>
             ))}
           </div>
         </div>
