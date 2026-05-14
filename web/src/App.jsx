@@ -1041,11 +1041,16 @@ const App = () => {
       );
     }
     if (route.view === "conversations") {
+      const convBrandSlug = brandAccounts.find((b) => b.id === calendarAccountId)?.slug
+        || auth?.account?.slug
+        || null;
       return (
         <ConversationsView
           accountId={calendarAccountId}
           accountName={calendarAccountName}
           userId={auth?.id}
+          brandSlug={convBrandSlug}
+          isAgency={!!auth?.isAgency}
         />
       );
     }

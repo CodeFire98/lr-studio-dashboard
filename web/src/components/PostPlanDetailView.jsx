@@ -7,6 +7,7 @@
    Replaces the old popup modal — the calendar now navigates to this
    route instead of opening a modal in place. */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import {
@@ -353,6 +354,25 @@ const PostPlanDetailView = ({
 }) => {
   const isAdmin = role === 'admin';
 
+  // Brand slug derivation for the "💬 Discuss this plan" deep-link.
+  // PostPlanDetailView lives at /c/:slug/calendar/:id, so we read the
+  // first path segment after /c/. Guards against the legacy
+  // /calendar/:id URL where there's no slug.
+  const navigate = useNavigate();
+  const location = useLocation();
+  const brandSlug = useMemo(() => {
+    const m = (location?.pathname || '').match(/^\/c\/([^/]+)\//);
+    return m ? m[1] : null;
+  }, [location?.pathname]);
+  const openConversationsForPlan = () => {
+    if (!plan?.id) return;
+    const short = plan.id.slice(0, 8);
+    const target = brandSlug
+      ? `/c/${brandSlug}/conversations?plan=${short}`
+      : `/conversations?plan=${short}`;
+    navigate(target);
+  };
+
   // Hydrate from the App-level list first (instant), then refetch for
   // the freshest copy + anything not in the list snapshot.
   const fromList = useMemo(
@@ -395,11 +415,19 @@ const PostPlanDetailView = ({
   // Tabs.
   const [tab, setTab] = useState('overview');
 
-  // Comments stream.
+  // Comments stream — still loaded so the Activity tab can list "X
+  // commented" entries. The dedicated Conversation tab moved to the
+  // unified Conversations surface (PR 2); messages-on-this-plan are
+  // accessed via the "💬 Discuss this plan" button below, which deep-
+  // links into /conversations with this plan pre-tagged.
   const [comments, setComments] = useState([]);
-  const [commentDraft, setCommentDraft] = useState('');
-  const [commentHint, setCommentHint] = useState('');
-  const commentInputRef = useRef(null);
+  // Inline "tell the brand what to change" panel — replaces the old
+  // tab-switch friction for status transitions that demand a reason
+  // (e.g. agency → needs revision). null = panel closed.
+  // { status: nextStatus, draft: text } when open.
+  const [pendingTransition, setPendingTransition] = useState(null);
+  const [pendingDraft, setPendingDraft] = useState('');
+  const pendingDraftRef = useRef(null);
 
   useEffect(() => {
     if (!postPlanId || !userId) return;
@@ -681,46 +709,45 @@ const PostPlanDetailView = ({
   };
 
   const transitionStatus = async (next, { requireComment = false } = {}) => {
-    if (requireComment && !commentDraft.trim()) {
-      setCommentHint('Add a comment explaining what needs to change.');
-      setTab('conversation');
-      setTimeout(() => commentInputRef.current?.focus(), 0);
+    if (requireComment) {
+      // Pop the inline reason panel; the user types their note + clicks
+      // "Send & change status" and confirmTransition() does the actual
+      // work. Replaces the old setTab('conversation') friction.
+      setPendingTransition({ status: next });
+      setPendingDraft('');
+      setTimeout(() => pendingDraftRef.current?.focus(), 0);
       return;
-    }
-    if (requireComment && commentDraft.trim()) {
-      try {
-        await addMessageForPostPlan({
-          postPlanId: plan.id,
-          accountId: plan.accountId,
-          body: commentDraft.trim(),
-          authorId: userId,
-        });
-        setCommentDraft('');
-      } catch (e) {
-        console.error('post comment failed', e);
-        return;
-      }
     }
     persist({ status: next });
     setStatus(next);
   };
 
-  const handlePostComment = async () => {
-    const body = commentDraft.trim();
-    if (!body || !plan?.id || !plan?.accountId || !userId) return;
-    setCommentHint('');
+  const cancelPendingTransition = () => {
+    setPendingTransition(null);
+    setPendingDraft('');
+  };
+
+  const confirmPendingTransition = async () => {
+    const next = pendingTransition?.status;
+    const body = pendingDraft.trim();
+    if (!next || !body || !plan?.id || !plan?.accountId || !userId) return;
     try {
-      const c = await addMessageForPostPlan({
+      const inserted = await addMessageForPostPlan({
         postPlanId: plan.id,
         accountId: plan.accountId,
         body,
         authorId: userId,
       });
-      setCommentDraft('');
-      setComments((prev) => prev.some((x) => x.id === c.id) ? prev : [...prev, c]);
+      // Optimistic add so the activity feed shows the new message
+      // immediately (without waiting for a refetch).
+      setComments((prev) => prev.some((x) => x.id === inserted.id) ? prev : [...prev, inserted]);
     } catch (e) {
-      console.error('post comment failed', e);
+      console.error('reason post failed', e);
+      return;
     }
+    persist({ status: next });
+    setStatus(next);
+    cancelPendingTransition();
   };
 
   const handleDelete = async () => {
@@ -1125,6 +1152,17 @@ const PostPlanDetailView = ({
               <Icon name="calendar" size={13}/>Duplicate
             </button>
           )}
+          {/* Deep-link into the unified Conversations view, with this
+              plan pre-tagged in the composer. Replaces the old per-plan
+              Conversation tab — chat lives in one place now. */}
+          <button
+            type="button"
+            className="discuss-plan-btn"
+            onClick={openConversationsForPlan}
+            title="Open this plan in the brand's chat"
+          >
+            <Icon name="chat" size={13}/>Discuss this plan
+          </button>
           {isAdmin && (
             <select
               className="btn btn-sm"
@@ -1142,6 +1180,70 @@ const PostPlanDetailView = ({
         </div>
       </div>
 
+      {/* Inline "tell the brand what to change" panel — opens when the
+          agency clicks a status transition that requires a reason
+          (e.g. → needs revision). Replaces the old tab-switch flow.
+          On submit: posts the message to the brand's conversation
+          (auto-tagged to this plan) AND flips the status. */}
+      {pendingTransition && (
+        <div
+          className="card"
+          style={{
+            marginTop: -8,
+            marginBottom: 16,
+            borderColor: 'color-mix(in oklab, var(--accent) 35%, var(--line))',
+          }}
+        >
+          <div className="card-head">
+            <div>
+              <div className="card-title">Tell the brand what needs to change</div>
+              <div className="card-sub">
+                This message is sent into your shared chat and the status flips when you send.
+              </div>
+            </div>
+          </div>
+          <div style={{ padding: '0 16px 16px' }}>
+            <textarea
+              ref={pendingDraftRef}
+              rows={3}
+              placeholder="What's the change you'd like the brand to make?"
+              value={pendingDraft}
+              onChange={(e) => setPendingDraft(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                background: 'var(--surface)',
+                color: 'var(--ink-1)',
+                fontSize: 13,
+                outline: 'none',
+                resize: 'vertical',
+                minHeight: 80,
+                fontFamily: 'inherit',
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={cancelPendingTransition}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={confirmPendingTransition}
+                disabled={!pendingDraft.trim()}
+              >
+                Send & change status
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 2,
@@ -1150,7 +1252,6 @@ const PostPlanDetailView = ({
       }}>
         {[
           { k: 'overview', label: 'Overview', icon: 'sparkles' },
-          { k: 'conversation', label: 'Conversation', icon: 'comment', count: comments.length },
           { k: 'activity', label: 'Activity', icon: 'clock', count: activityFeed.length },
         ].map((t) => {
           const active = tab === t.k;
@@ -1596,67 +1697,6 @@ const PostPlanDetailView = ({
             </>
           )}
 
-          {tab === 'conversation' && (
-            <div className="card">
-              <div className="card-head">
-                <div>
-                  <div className="card-title">Conversation</div>
-                  <div className="card-sub">Use this thread to align on copy, references, and feedback.</div>
-                </div>
-              </div>
-              <div style={{ padding: '0 16px 16px' }}>
-                {comments.length === 0 ? (
-                  <div style={{ fontSize: 13, color: 'var(--ink-4)', padding: '4px 0 12px' }}>
-                    No comments yet. Start the conversation below.
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 16 }}>
-                    {comments.map((c) => (
-                      <div key={c.id} style={{ display: 'flex', gap: 10 }}>
-                        <Avatar person={c.who} size="sm"/>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
-                            <strong style={{ fontSize: 13 }}>{c.who?.name || 'Someone'}</strong>
-                            <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{c.time}</span>
-                          </div>
-                          <div style={{ fontSize: 13.5, color: 'var(--ink-2)', whiteSpace: 'pre-wrap' }}>{c.body}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <textarea
-                  ref={commentInputRef}
-                  rows={3}
-                  placeholder="Add a comment…"
-                  value={commentDraft}
-                  onChange={(e) => setCommentDraft(e.target.value)}
-                  disabled={!userId}
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    border: '1px solid var(--line)',
-                    borderRadius: 6,
-                    background: 'var(--surface)',
-                    color: 'var(--ink-1)',
-                    fontSize: 13,
-                    outline: 'none',
-                    resize: 'vertical',
-                    minHeight: 80,
-                    fontFamily: 'inherit',
-                  }}
-                />
-                {commentHint && (
-                  <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4 }}>{commentHint}</div>
-                )}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                  <button type="button" className="btn btn-sm btn-primary" onClick={handlePostComment} disabled={!commentDraft.trim() || !userId}>
-                    Post comment
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {tab === 'activity' && (
             <div className="card">

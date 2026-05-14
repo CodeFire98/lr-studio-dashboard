@@ -3128,6 +3128,111 @@ export function subscribeToConversationActivity({ accountId }, onChange) {
   return () => supabase.removeChannel(channel);
 }
 
+// ---- Conversation chat feed (PR 2) -----------------------------------
+
+// Loads every top-level message for a conversation, ascending so the
+// caller can render oldest-at-top and scroll to the bottom on mount.
+// Filters deleted_at IS NULL so tombstones (PR 3) don't clutter the feed.
+// Replies (parent_message_id NOT NULL) are excluded — the thread drawer
+// fetches those on demand via loadThreadReplies.
+export async function loadConversationMessages(conversationId, viewerUserId) {
+  if (!conversationId) return [];
+  const { data, error } = await supabase
+    .from('conversation_messages')
+    .select(CONVERSATION_MESSAGE_SELECT)
+    .eq('conversation_id', conversationId)
+    .is('parent_message_id', null)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r) => mapConversationMessageRow(r, viewerUserId));
+}
+
+// For a list of top-level message ids, return a Map<id, replyCount>.
+// One query per page-load; the realtime channel updates the count
+// optimistically as replies come in. Empty / missing ids resolve to 0.
+export async function loadThreadReplyCountsForMessages(parentIds) {
+  if (!Array.isArray(parentIds) || parentIds.length === 0) return new Map();
+  const { data, error } = await supabase
+    .from('conversation_messages')
+    .select('parent_message_id')
+    .in('parent_message_id', parentIds)
+    .is('deleted_at', null);
+  if (error) throw error;
+  const counts = new Map();
+  for (const r of data || []) {
+    const id = r.parent_message_id;
+    if (!id) continue;
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return counts;
+}
+
+// Replies for a given thread. Ascending so the drawer renders oldest
+// at top under the pinned parent.
+export async function loadThreadReplies(parentMessageId, viewerUserId) {
+  if (!parentMessageId) return [];
+  const { data, error } = await supabase
+    .from('conversation_messages')
+    .select(CONVERSATION_MESSAGE_SELECT)
+    .eq('parent_message_id', parentMessageId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r) => mapConversationMessageRow(r, viewerUserId));
+}
+
+// Generic message insert for the unified chat. Supports both top-level
+// messages (parentMessageId omitted) and thread replies (parentMessage
+// Id set). Optional taggedPostPlanId renders the plan-chip card.
+export async function addConversationMessage({ conversationId, body, authorId, taggedPostPlanId, parentMessageId }) {
+  if (!conversationId || !authorId || !body) {
+    throw new Error('addConversationMessage: conversationId, authorId, body required');
+  }
+  const { data, error } = await supabase
+    .from('conversation_messages')
+    .insert({
+      conversation_id: conversationId,
+      author_id: authorId,
+      body,
+      tagged_post_plan_id: taggedPostPlanId || null,
+      parent_message_id: parentMessageId || null,
+    })
+    .select(CONVERSATION_MESSAGE_SELECT)
+    .single();
+  if (error) throw error;
+  return mapConversationMessageRow(data, authorId);
+}
+
+// Subscribe to every INSERT in a conversation (top-level + replies).
+// The caller routes INSERTs to the right pane based on
+// payload.parentMessageId (null → feed, non-null → matching thread
+// drawer if open). Volume per-conversation is small; full-row hydrate
+// + map keeps callers ergonomic.
+export function subscribeToConversationMessages(conversationId, viewerUserId, onChange) {
+  if (!conversationId) return () => {};
+  const channel = supabase
+    .channel(`lr_conv_msgs_${conversationId}`)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'conversation_messages', filter: `conversation_id=eq.${conversationId}` },
+      async (payload) => {
+        try {
+          const { data } = await supabase
+            .from('conversation_messages')
+            .select(CONVERSATION_MESSAGE_SELECT)
+            .eq('id', payload.new.id)
+            .maybeSingle();
+          if (data) onChange?.({ type: 'INSERT', message: mapConversationMessageRow(data, viewerUserId) });
+        } catch (e) {
+          console.warn('conversation_messages INSERT hydrate failed', e);
+        }
+      }
+    )
+    .subscribe();
+  return () => supabase.removeChannel(channel);
+}
+
 // =====================================================================
 // Trends Radar — agency-only read of public.trend_signals + edge function
 // trigger to refetch from external sources. Compartmentalized away from

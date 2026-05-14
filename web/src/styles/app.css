@@ -5469,3 +5469,436 @@ input, textarea { font: inherit; color: inherit; }
   border: 1px solid color-mix(in oklab, var(--accent) 25%, var(--line));
   letter-spacing: 0.01em;
 }
+
+/* =====================================================================
+   Conversations — unified per-brand chat (PR 2)
+   ===================================================================== */
+
+/* Outer wrap: takes the main pane height. Feed is the only scroll
+   surface; header + composer stay pinned. */
+.conv-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
+  position: relative;
+}
+.conv-head {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.conv-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.conv-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.45;
+}
+
+.conv-feed {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 22px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.conv-feed-empty {
+  color: var(--ink-3);
+  font-size: 13.5px;
+  padding: 40px 0;
+  text-align: center;
+}
+
+/* Single message row */
+.conv-msg {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.conv-msg-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conv-msg-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.conv-msg-name {
+  font-size: 13px;
+  color: var(--ink-1);
+}
+.conv-msg-time {
+  font-size: 11px;
+  color: var(--ink-4);
+}
+.conv-msg-text {
+  font-size: 13.5px;
+  color: var(--ink-1);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.conv-msg-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.conv-reply-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.conv-reply-btn:hover {
+  color: var(--accent);
+}
+/* Highlight the message whose thread drawer is currently open */
+.conv-msg-active .conv-msg-text,
+.conv-msg-active .conv-msg-name {
+  /* subtle marker — caret-style left border */
+}
+.conv-msg-active {
+  position: relative;
+}
+.conv-msg-active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* Plan-chip card embedded inside a message bubble. Inline-block so it
+   sits naturally below the body text without taking full width. */
+.conv-plan-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.conv-plan-chip.is-clickable:hover {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+  background: color-mix(in oklab, var(--accent) 6%, var(--surface));
+}
+.conv-plan-chip.is-removable {
+  cursor: default;
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--line));
+}
+.conv-plan-chip-concept {
+  font-weight: 500;
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+.conv-plan-chip-remove {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0 2px;
+  display: inline-flex;
+  cursor: pointer;
+  color: var(--ink-3);
+  border-radius: 3px;
+}
+.conv-plan-chip-remove:hover {
+  color: var(--ink-1);
+}
+
+/* Composer (used for both top-level + thread reply) */
+.conv-composer-wrap {
+  position: relative;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  padding: 12px 22px 16px;
+}
+.conv-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conv-composer-tag {
+  display: flex;
+  gap: 6px;
+}
+.conv-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.conv-composer-textarea {
+  flex: 1 1 auto;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  font-family: inherit;
+  line-height: 1.5;
+  background: var(--surface);
+  color: var(--ink-1);
+  outline: none;
+  max-height: 160px;
+  overflow-y: auto;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.conv-composer-textarea:focus {
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 12%, transparent);
+}
+.conv-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.conv-composer-icon-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--ink-2);
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.conv-composer-icon-btn:hover {
+  color: var(--ink-1);
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+}
+.conv-composer-icon-btn.is-active {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface));
+}
+.conv-composer-send {
+  height: 32px;
+}
+.conv-composer-hint {
+  font-size: 10.5px;
+  color: var(--ink-4);
+  letter-spacing: 0.02em;
+}
+
+/* Plan-tag dropdown — anchored above the composer (the wrap is
+   positioned relative for this). */
+.conv-tag-pop {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  right: 22px;
+  width: 360px;
+  max-height: 340px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.16);
+  display: flex;
+  flex-direction: column;
+  z-index: 50;
+}
+.conv-tag-search {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  background: transparent;
+  color: var(--ink-1);
+  outline: none;
+}
+.conv-tag-list {
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.conv-tag-empty {
+  padding: 14px;
+  font-size: 12.5px;
+  color: var(--ink-4);
+  text-align: center;
+}
+.conv-tag-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--ink-1);
+  font-size: 13px;
+  font-family: inherit;
+}
+.conv-tag-item:hover {
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+}
+.conv-tag-item-concept {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Thread drawer — right-side panel with scrim. Overlays the main pane
+   on desktop, full-screen overlay on mobile (≤640px). */
+.conv-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.18);
+  z-index: 60;
+}
+.conv-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 92vw;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: -16px 0 40px rgba(0, 0, 0, 0.12);
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+  animation: convDrawerIn 200ms ease-out;
+}
+@keyframes convDrawerIn {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.conv-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.conv-drawer-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.conv-drawer-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--ink-3);
+  border-radius: 4px;
+}
+.conv-drawer-close:hover {
+  color: var(--ink-1);
+  background: color-mix(in oklab, var(--ink-1) 6%, transparent);
+}
+.conv-drawer-parent {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklab, var(--accent) 4%, var(--surface));
+}
+.conv-drawer-replies {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.conv-drawer-empty {
+  color: var(--ink-4);
+  font-size: 13px;
+  text-align: center;
+  padding: 32px 0;
+}
+.conv-drawer-composer {
+  border-top: 1px solid var(--line);
+  padding: 10px 14px 14px;
+}
+.conv-drawer-composer .conv-composer-hint {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .conv-drawer {
+    width: 100vw;
+    max-width: 100vw;
+    border-left: 0;
+  }
+}
+
+/* The main app pane sets fixed height — make sure the conv view can
+   actually use it. Existing layout puts each view inside .main; the
+   conv-wrap fills it via flex. */
+.main:has(.conv-wrap) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* "Discuss this plan" button on PostPlanDetailView toolbar */
+.discuss-plan-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-1);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.discuss-plan-btn:hover {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+  background: color-mix(in oklab, var(--accent) 6%, var(--surface));
+}
