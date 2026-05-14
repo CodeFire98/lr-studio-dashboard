@@ -2945,15 +2945,62 @@ export function subscribeToPostPlanActivity({ accountId }, onChange) {
 // MESSAGE_SELECT / mapMessageRow above (which target the original
 // public.messages task-chat table from migration 0001 — still on disk
 // while the tasks-table cleanup is pending in REFERENCE.md §14).
+//
+// `attachments` is a nested embed of message_attachments — saves a
+// separate query per message. Newly-inserted attachments arrive via
+// realtime on the message_attachments table and the client merges
+// them into the existing message row.
 const CONVERSATION_MESSAGE_SELECT = `
   *,
-  author:profiles!author_id(id, display_name, initials, avatar_color, is_agency)
+  author:profiles!author_id(id, display_name, initials, avatar_color, is_agency),
+  attachments:message_attachments(*)
 `;
+
+const CONVERSATION_ATTACHMENTS_BUCKET = 'post-plan-attachments';
+
+export function mapMessageAttachmentRow(row) {
+  if (!row) return null;
+  let url = row.url || null;
+  let thumbnailUrl = null;
+  if (row.storage_path) {
+    const { data: pub } = supabase.storage
+      .from(CONVERSATION_ATTACHMENTS_BUCKET)
+      .getPublicUrl(row.storage_path);
+    url = pub?.publicUrl || null;
+    thumbnailUrl = resolveVideoThumbnailUrl({
+      bucket: CONVERSATION_ATTACHMENTS_BUCKET,
+      storagePath: row.storage_path,
+      mimeType: row.mime_type,
+    });
+  }
+  return {
+    id: row.id,
+    messageId: row.message_id,
+    kind: row.kind,
+    storagePath: row.storage_path || null,
+    url,
+    thumbnailUrl,
+    filename: row.filename || null,
+    mimeType: row.mime_type || null,
+    sizeBytes: row.size_bytes != null ? Number(row.size_bytes) : null,
+    width: row.width != null ? Number(row.width) : null,
+    height: row.height != null ? Number(row.height) : null,
+    uploadedBy: row.uploaded_by || null,
+    createdAt: row.created_at,
+  };
+}
 
 export function mapConversationMessageRow(row, viewerUserId) {
   if (!row) return null;
   const author = personFromProfile(row.author);
   const mine = viewerUserId && row.author_id === viewerUserId;
+  const attachments = Array.isArray(row.attachments)
+    ? row.attachments
+        .map(mapMessageAttachmentRow)
+        .filter(Boolean)
+        // Stable order: original upload order (oldest-first inside a single bubble).
+        .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
+    : [];
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -2967,6 +3014,7 @@ export function mapConversationMessageRow(row, viewerUserId) {
     createdAt: row.created_at,
     editedAt: row.edited_at || null,
     deletedAt: row.deleted_at || null,
+    attachments,
     // Legacy alias so existing UI that reads `postPlanId` keeps working
     // when this row was returned by loadMessagesForPostPlan.
     postPlanId: row.tagged_post_plan_id || null,
@@ -3078,11 +3126,14 @@ export async function loadConversationUnreadCount({ userId, accountId }) {
     .eq('conversation_id', conv.id)
     .maybeSingle();
   const lastSeen = viewRow?.last_seen_at || null;
+  // Counts BOTH top-level messages AND thread replies — a reply
+  // posted by another user is still "unread activity" the badge
+  // should surface, even if the user has the channel open but the
+  // thread drawer closed. Excludes soft-deleted rows and own writes.
   let q = supabase
     .from('conversation_messages')
     .select('id', { count: 'exact', head: true })
     .eq('conversation_id', conv.id)
-    .is('parent_message_id', null)
     .is('deleted_at', null)
     .neq('author_id', userId);
   if (lastSeen) q = q.gt('created_at', lastSeen);
@@ -3204,33 +3255,106 @@ export async function addConversationMessage({ conversationId, body, authorId, t
   return mapConversationMessageRow(data, authorId);
 }
 
-// Subscribe to every INSERT in a conversation (top-level + replies).
-// The caller routes INSERTs to the right pane based on
-// payload.parentMessageId (null → feed, non-null → matching thread
-// drawer if open). Volume per-conversation is small; full-row hydrate
-// + map keeps callers ergonomic.
+// Subscribe to INSERT + UPDATE in a conversation (top-level + replies)
+// AND any new message_attachments rows landing on its messages. The
+// caller routes events to the right pane based on payload type +
+// message.parentMessageId (null → feed, non-null → thread drawer).
+// Volume per-conversation is small; full-row hydrate keeps callers
+// ergonomic. UPDATE events cover soft-deletes (deleted_at flip) and
+// future edited_at edits — both render as in-place re-renders.
 export function subscribeToConversationMessages(conversationId, viewerUserId, onChange) {
   if (!conversationId) return () => {};
+  const hydrate = async (id, type) => {
+    try {
+      const { data } = await supabase
+        .from('conversation_messages')
+        .select(CONVERSATION_MESSAGE_SELECT)
+        .eq('id', id)
+        .maybeSingle();
+      if (data) onChange?.({ type, message: mapConversationMessageRow(data, viewerUserId) });
+    } catch (e) {
+      console.warn('conversation_messages realtime hydrate failed', e);
+    }
+  };
   const channel = supabase
     .channel(`lr_conv_msgs_${conversationId}`)
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'conversation_messages', filter: `conversation_id=eq.${conversationId}` },
-      async (payload) => {
-        try {
-          const { data } = await supabase
-            .from('conversation_messages')
-            .select(CONVERSATION_MESSAGE_SELECT)
-            .eq('id', payload.new.id)
-            .maybeSingle();
-          if (data) onChange?.({ type: 'INSERT', message: mapConversationMessageRow(data, viewerUserId) });
-        } catch (e) {
-          console.warn('conversation_messages INSERT hydrate failed', e);
-        }
+      (payload) => { hydrate(payload.new.id, 'INSERT'); }
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'conversation_messages', filter: `conversation_id=eq.${conversationId}` },
+      (payload) => { hydrate(payload.new.id, 'UPDATE'); }
+    )
+    // message_attachments have no conversation_id, so we listen broadly
+    // and let the caller filter by whether the message_id is in our
+    // visible set. Per-conversation volume is tiny — fine to over-subscribe.
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'message_attachments' },
+      (payload) => {
+        const att = mapMessageAttachmentRow(payload.new);
+        if (att) onChange?.({ type: 'ATTACHMENT_INSERT', attachment: att });
       }
     )
     .subscribe();
   return () => supabase.removeChannel(channel);
+}
+
+// Soft-delete: stamps `deleted_at` so the bubble renders as a
+// WhatsApp-style "Message deleted" tombstone for everyone. RLS already
+// limits UPDATE to own messages or agency. We avoid hard-delete so the
+// tombstone preserves the conversation flow + reply parent.
+export async function softDeleteMessage(messageId) {
+  if (!messageId) return;
+  const { error } = await supabase
+    .from('conversation_messages')
+    .update({ deleted_at: new Date().toISOString(), body: '' })
+    .eq('id', messageId);
+  if (error) throw error;
+}
+
+// Upload one file + insert one row into message_attachments. Reuses
+// the existing post-plan-attachments bucket — its RLS only checks the
+// first path segment is the caller's accountId, so the new path
+// scheme `<accountId>/messages/<messageId>/<filename>` slots in
+// cleanly without a new bucket + new policy block.
+//
+// Returns the mapped attachment row.
+export async function addMessageAttachment({ accountId, messageId, file, uploaderId }) {
+  if (!accountId || !messageId || !file) {
+    throw new Error('addMessageAttachment: accountId, messageId, file required');
+  }
+  const safeName = (file.name || 'file').replace(/[^A-Za-z0-9._-]+/g, '_');
+  const path = `${accountId}/messages/${messageId}/${Date.now()}_${safeName}`;
+  const { error: upErr } = await supabase.storage
+    .from(CONVERSATION_ATTACHMENTS_BUCKET)
+    .upload(path, file, {
+      contentType: file.type || 'application/octet-stream',
+      upsert: false,
+    });
+  if (upErr) throw upErr;
+  const mt = file.type || '';
+  let kind = 'file';
+  if (mt.startsWith('image/')) kind = 'image';
+  else if (mt.startsWith('video/')) kind = 'video';
+  const { data, error } = await supabase
+    .from('message_attachments')
+    .insert({
+      message_id: messageId,
+      kind,
+      storage_path: path,
+      filename: file.name || null,
+      mime_type: mt || null,
+      size_bytes: file.size != null ? file.size : null,
+      uploaded_by: uploaderId || null,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return mapMessageAttachmentRow(data);
 }
 
 // =====================================================================

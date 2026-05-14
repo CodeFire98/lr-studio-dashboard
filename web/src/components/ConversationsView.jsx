@@ -1,18 +1,15 @@
 /* eslint-disable */
-/* ConversationsView — unified per-brand chat (PR 2).
-   One thread per brand: brand sees their chat with the agency, agency
-   sees the same chat scoped via BrandPicker. Optional plan-tag chip,
-   Slack-style thread drawer for replies, realtime updates. Attachments
-   land in PR 3.
+/* ConversationsView — unified per-brand chat (PR 2 + polish).
+   One thread per brand. Slack-style threads, optional plan-tag chip,
+   image/video/file attachments, soft-deletable bubbles (right-click).
+   Realtime: INSERT, UPDATE (covers soft-delete) and new attachment
+   rows arriving for visible messages.
 
-   Layout: full-width feed (scrolls) + composer pinned at the bottom.
-   Click "Reply in thread" on any message → drawer slides in from the
-   right with the parent pinned + replies + its own composer.
-
-   Deep-linking: `?plan=<uuid|prefix>` on the URL pre-fills the composer
-   tag and pops the user straight into "I'm here to talk about plan X."
-   That's the handoff for the "💬 Discuss this plan" button on
-   PostPlanDetailView. */
+   Layout: `.conv-wrap` is the scrolling container; `.conv-head` and
+   `.conv-composer-wrap` use `position: sticky` so they stay visible
+   regardless of scroll. Auto-scroll to bottom on mount + after send;
+   stays put if the user has scrolled up to read history (tracked via
+   stuckToBottomRef). */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Icon } from './Icon.jsx';
@@ -26,11 +23,11 @@ import {
   addConversationMessage,
   subscribeToConversationMessages,
   markConversationSeen,
+  softDeleteMessage,
+  addMessageAttachment,
   loadPostPlans,
 } from '../lib/db.js';
 
-// Short-UUID matcher mirroring App.jsx's `findFullId` flow so `?plan=a3f9c2d8`
-// resolves to the full plan row.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function resolveFullPlanId(prefixOrId, plans) {
   if (!prefixOrId) return null;
@@ -38,18 +35,38 @@ function resolveFullPlanId(prefixOrId, plans) {
   const m = plans?.find?.((p) => p?.id && p.id.startsWith(prefixOrId));
   return m?.id || null;
 }
-
 function shortenId(id) {
   if (!id) return id;
   return UUID_RE.test(id) ? id.slice(0, 8) : id;
 }
+function formatPlanRowTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+}
+function formatBytes(n) {
+  if (n == null) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // ----- Plan-chip card ------------------------------------------------
-// Renders inside a message bubble when the sender tagged a plan.
-// Clickable — navigates to the plan detail. The non-clickable variant
-// is used inside the composer's "tag chip" affordance above the
-// textarea before send.
-function PlanChip({ plan, brandSlug, navigate, removable, onRemove }) {
+function PlanChip({ plan, brandSlug, navigate, removable, onRemove, deletedPlaceholder }) {
+  // Deleted-plan tombstone: rendered when the message still references
+  // a plan id but the plan no longer exists for this brand (deleted).
+  if (deletedPlaceholder) {
+    return (
+      <div className="conv-plan-chip is-deleted" aria-label="Plan deleted">
+        <Icon name="calendar" size={14} />
+        <span className="conv-plan-chip-concept">Plan deleted</span>
+      </div>
+    );
+  }
   if (!plan) return null;
   const handleClick = () => {
     if (removable || !plan?.id) return;
@@ -88,9 +105,6 @@ function PlanChip({ plan, brandSlug, navigate, removable, onRemove }) {
 }
 
 // ----- Plan-tag dropdown --------------------------------------------
-// Click 🔖 next to the composer → this opens. Searchable list of the
-// brand's plans (most recent first). Picking a plan sets it as the
-// composer's tag chip; clicking outside or pressing Esc closes.
 function PlanTagDropdown({ plans, onPick, onClose }) {
   const [q, setQ] = useState('');
   const inputRef = useRef(null);
@@ -110,13 +124,14 @@ function PlanTagDropdown({ plans, onPick, onClose }) {
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
+    // Latest scheduledAt first — most chatter happens about upcoming or
+    // recent work, so the agency / brand sees the most relevant rows
+    // at the top. Older plans push down.
     const ranked = [...(plans || [])].sort((a, b) => {
-      // Newest scheduledAt first — agency typically wants to chat about
-      // the upcoming / recent work, not last quarter's posts.
       return (b.scheduledAt || '').localeCompare(a.scheduledAt || '');
     });
-    if (!ql) return ranked.slice(0, 40);
-    return ranked.filter((p) => (p.concept || '').toLowerCase().includes(ql)).slice(0, 40);
+    if (!ql) return ranked.slice(0, 60);
+    return ranked.filter((p) => (p.concept || '').toLowerCase().includes(ql)).slice(0, 60);
   }, [plans, q]);
 
   return (
@@ -140,13 +155,40 @@ function PlanTagDropdown({ plans, onPick, onClose }) {
               className="conv-tag-item"
               onClick={() => onPick?.(p)}
             >
-              <span className="conv-tag-item-concept">{p.concept || 'Untitled plan'}</span>
+              <div className="conv-tag-item-meta">
+                <span className="conv-tag-item-concept">{p.concept || 'Untitled plan'}</span>
+                <span className="conv-tag-item-time">{formatPlanRowTime(p.scheduledAt)}</span>
+              </div>
               <StatusPill status={p.status} />
             </button>
           ))
         )}
       </div>
     </div>
+  );
+}
+
+// ----- Attachment renderer (inside a message bubble) ----------------
+function AttachmentBlock({ attachment }) {
+  if (!attachment) return null;
+  const { kind, url, filename, sizeBytes, mimeType } = attachment;
+  if (kind === 'image' && url) {
+    return (
+      <a href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt={filename || 'image'} className="conv-attachment-image" />
+      </a>
+    );
+  }
+  if (kind === 'video' && url) {
+    return <video src={url} controls preload="metadata" className="conv-attachment-video" />;
+  }
+  // File chip — opens in a new tab on click.
+  return (
+    <a className="conv-attachment-file" href={url || '#'} target="_blank" rel="noreferrer">
+      <Icon name="paperclip" size={14} />
+      <span className="conv-attachment-file-name">{filename || 'attachment'}</span>
+      {sizeBytes != null && <span className="conv-attachment-file-meta">{formatBytes(sizeBytes)}</span>}
+    </a>
   );
 }
 
@@ -161,8 +203,15 @@ function MessageBubble({
   brandSlug,
   navigate,
   onReplyClick,
+  onContextMenu,
 }) {
   if (!message) return null;
+  const isDeleted = !!message.deletedAt;
+  // "Plan deleted" tombstone: the message references a plan id but the
+  // plan no longer exists in the brand's loaded plans (deleted). FK was
+  // dropped in 0043 so the orphaned id is the only signal.
+  const taggedPlanMissing = !!message.taggedPostPlanId && !plan;
+
   return (
     <div
       className={
@@ -170,6 +219,10 @@ function MessageBubble({
         (message.from === 'me' ? 'conv-msg-me' : 'conv-msg-them') +
         (isActiveThread ? ' conv-msg-active' : '')
       }
+      onContextMenu={(e) => {
+        if (isDeleted) return;
+        onContextMenu?.(e, message);
+      }}
     >
       <Avatar person={message.who} size="sm" />
       <div className="conv-msg-body">
@@ -177,13 +230,25 @@ function MessageBubble({
           <strong className="conv-msg-name">{message.who?.name || 'Someone'}</strong>
           <span className="conv-msg-time">{message.time}</span>
         </div>
-        {message.body && (
-          <div className="conv-msg-text">{message.body}</div>
+        {isDeleted ? (
+          <div className="conv-msg-tombstone">Message deleted</div>
+        ) : (
+          <>
+            {message.body && <div className="conv-msg-text">{message.body}</div>}
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="conv-msg-attachments">
+                {message.attachments.map((a) => (
+                  <AttachmentBlock key={a.id} attachment={a} />
+                ))}
+              </div>
+            )}
+            {plan && (
+              <PlanChip plan={plan} brandSlug={brandSlug} navigate={navigate} />
+            )}
+            {taggedPlanMissing && <PlanChip deletedPlaceholder />}
+          </>
         )}
-        {plan && (
-          <PlanChip plan={plan} brandSlug={brandSlug} navigate={navigate} />
-        )}
-        {showReplyAffordance && !isThreadParent && (
+        {showReplyAffordance && !isThreadParent && !isDeleted && (
           <div className="conv-msg-actions">
             <button
               type="button"
@@ -203,11 +268,6 @@ function MessageBubble({
 }
 
 // ----- Composer ------------------------------------------------------
-// Used both inline at the bottom of the feed AND inside the thread
-// drawer. `parentMessageId` (if set) routes the send through the
-// thread; otherwise it's a top-level message. Plan-tag affordance is
-// only shown on the main composer (replies inherit the parent's
-// context already — adding a different plan tag would be confusing).
 function Composer({
   draft,
   onDraftChange,
@@ -219,37 +279,69 @@ function Composer({
   showTagAffordance,
   autoFocus,
   busy,
+  pendingFiles,
+  onPickFiles,
+  onRemoveFile,
 }) {
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
   }, [autoFocus]);
 
   const onKeyDown = (e) => {
-    // Cmd/Ctrl+Enter sends; plain Enter inserts a newline (familiar
-    // chat-style: shift+enter and ctrl+enter both fire send).
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
-      if (draft.trim() && !busy) onSubmit?.();
+      if (canSend) onSubmit?.();
     }
   };
 
-  // Auto-grow up to a cap, then scroll inside.
+  // Auto-grow textarea up to the CSS cap (132px = ~5 lines). After
+  // that the textarea scrolls internally — the composer-wrap height
+  // stays bounded so it can't push itself out of the sticky viewport.
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = 'auto';
-    const next = Math.min(ta.scrollHeight, 160);
+    const next = Math.min(ta.scrollHeight, 132);
     ta.style.height = next + 'px';
   }, [draft]);
 
-  const canSend = !!draft.trim() && !busy;
+  const canSend = (!!draft.trim() || (pendingFiles?.length || 0) > 0) && !busy;
+
+  const onFileInputChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    onPickFiles?.(files);
+    // Reset so picking the same file twice still triggers onChange.
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   return (
     <div className="conv-composer">
       {taggedPlan && (
         <div className="conv-composer-tag">
           <PlanChip plan={taggedPlan} removable onRemove={onClearTag} />
+        </div>
+      )}
+      {pendingFiles && pendingFiles.length > 0 && (
+        <div className="conv-composer-pending-files">
+          {pendingFiles.map((f, i) => (
+            <span key={i} className="conv-pending-file">
+              <Icon name="paperclip" size={12} />
+              <span className="conv-pending-file-name">{f.name}</span>
+              <span style={{ color: 'var(--ink-4)', fontSize: 11 }}>{formatBytes(f.size)}</span>
+              <button
+                type="button"
+                className="conv-pending-file-remove"
+                aria-label={`Remove ${f.name}`}
+                onClick={() => onRemoveFile?.(i)}
+              >
+                <Icon name="x" size={12} />
+              </button>
+            </span>
+          ))}
         </div>
       )}
       <div className="conv-composer-row">
@@ -264,6 +356,26 @@ function Composer({
           disabled={busy}
         />
         <div className="conv-composer-actions">
+          {/* Attach file/image/video — always available, including in
+              the thread composer. Hidden native input + icon button. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={onFileInputChange}
+            accept="image/*,video/*,application/pdf,application/zip,application/x-zip-compressed,text/*"
+          />
+          <button
+            type="button"
+            className="conv-composer-icon-btn"
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach file"
+            aria-label="Attach file"
+            disabled={busy}
+          >
+            <Icon name="paperclip" size={16} />
+          </button>
           {showTagAffordance && (
             <button
               type="button"
@@ -271,8 +383,9 @@ function Composer({
               onClick={onOpenTagDropdown}
               title={taggedPlan ? 'Change tagged plan' : 'Tag a post plan (optional)'}
               aria-label="Tag a post plan"
+              disabled={busy}
             >
-              <Icon name="paperclip" size={16} />
+              <Icon name="calendar" size={16} />
             </button>
           )}
           <button
@@ -291,12 +404,10 @@ function Composer({
 }
 
 // ----- Thread drawer -------------------------------------------------
-// Slides in from the right when the user clicks "Reply in thread" on
-// any feed message. Parent pinned at top; replies stack below; own
-// composer at the bottom. Close with ✕ or Esc.
 function ThreadDrawer({
   parent,
   parentPlan,
+  parentTaggedMissing,
   replies,
   brandSlug,
   navigate,
@@ -305,6 +416,10 @@ function ThreadDrawer({
   onSubmit,
   onClose,
   busy,
+  pendingFiles,
+  onPickFiles,
+  onRemoveFile,
+  onContextMenu,
 }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
@@ -330,18 +445,25 @@ function ThreadDrawer({
         <div className="conv-drawer-parent">
           <MessageBubble
             message={parent}
-            plan={parentPlan}
+            plan={parentTaggedMissing ? null : parentPlan}
             isThreadParent
             brandSlug={brandSlug}
             navigate={navigate}
           />
+          {parentTaggedMissing && <div style={{ marginLeft: 36, marginTop: -6 }}><PlanChip deletedPlaceholder /></div>}
         </div>
         <div className="conv-drawer-replies" ref={repliesRef}>
           {(!replies || replies.length === 0) ? (
             <div className="conv-drawer-empty">Be the first to reply.</div>
           ) : (
             replies.map((r) => (
-              <MessageBubble key={r.id} message={r} brandSlug={brandSlug} navigate={navigate} />
+              <MessageBubble
+                key={r.id}
+                message={r}
+                brandSlug={brandSlug}
+                navigate={navigate}
+                onContextMenu={onContextMenu}
+              />
             ))
           )}
         </div>
@@ -354,10 +476,49 @@ function ThreadDrawer({
             autoFocus
             busy={busy}
             showTagAffordance={false}
+            pendingFiles={pendingFiles}
+            onPickFiles={onPickFiles}
+            onRemoveFile={onRemoveFile}
           />
         </div>
       </aside>
     </>
+  );
+}
+
+// ----- Right-click context menu --------------------------------------
+function ContextMenu({ x, y, onDelete, onClose }) {
+  const menuRef = useRef(null);
+  useEffect(() => {
+    const onDoc = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) onClose?.(); };
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+  // Clamp to viewport so the menu never opens half off-screen on the
+  // bottom row of messages.
+  const left = Math.min(x, window.innerWidth - 200);
+  const top = Math.min(y, window.innerHeight - 80);
+  return (
+    <div
+      ref={menuRef}
+      className="conv-context-menu"
+      style={{ left, top }}
+      role="menu"
+    >
+      <button
+        type="button"
+        className="conv-context-item is-danger"
+        onClick={() => { onDelete?.(); onClose?.(); }}
+      >
+        <Icon name="trash" size={13} />
+        Delete message
+      </button>
+    </div>
   );
 }
 
@@ -369,29 +530,28 @@ export default function ConversationsView({ accountId, accountName, userId, bran
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [conversation, setConversation] = useState(null);     // {id, accountId}
-  const [messages, setMessages] = useState([]);               // top-level only, ascending
-  const [replyCounts, setReplyCounts] = useState(() => new Map()); // parentId → count
-  const [plans, setPlans] = useState([]);                     // for the tag dropdown
+  const [conversation, setConversation] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [replyCounts, setReplyCounts] = useState(() => new Map());
+  const [plans, setPlans] = useState([]);
   const [draft, setDraft] = useState('');
+  const [pendingFiles, setPendingFiles] = useState([]);
   const [taggedPlanId, setTaggedPlanId] = useState(null);
   const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Thread state
   const [threadParentId, setThreadParentId] = useState(null);
   const [threadReplies, setThreadReplies] = useState([]);
   const [threadDraft, setThreadDraft] = useState('');
+  const [threadPendingFiles, setThreadPendingFiles] = useState([]);
   const [threadSending, setThreadSending] = useState(false);
 
-  const feedRef = useRef(null);
-  // Tracks whether the feed is scrolled to (near) the bottom — used to
-  // decide whether a realtime INSERT auto-scrolls or just stays put so
-  // the user reading older messages isn't yanked away.
+  // Right-click context menu on own messages.
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, messageId }
+
+  const wrapRef = useRef(null);
   const stuckToBottomRef = useRef(true);
-  // Latest accountId we marked seen for, to avoid stamping repeatedly
-  // on every realtime tick.
   const seenForAccountRef = useRef(null);
 
   const plansById = useMemo(() => {
@@ -402,23 +562,20 @@ export default function ConversationsView({ accountId, accountName, userId, bran
 
   const taggedPlan = taggedPlanId ? plansById.get(taggedPlanId) || null : null;
 
-  // ----- Mount: load conversation + messages + plans + subscribe -----
+  // ----- Mount -----
   useEffect(() => {
     if (!accountId || !userId) return;
     let cancelled = false;
     setLoading(true);
+    setMessages([]);
+    setReplyCounts(new Map());
 
     (async () => {
       try {
         const conv = await loadConversationForAccount(accountId);
         if (cancelled) return;
         setConversation(conv);
-        if (!conv) {
-          setMessages([]);
-          setReplyCounts(new Map());
-          setLoading(false);
-          return;
-        }
+        if (!conv) { setLoading(false); return; }
         const [msgs, brandPlans] = await Promise.all([
           loadConversationMessages(conv.id, userId),
           loadPostPlans({ accountId }),
@@ -426,7 +583,6 @@ export default function ConversationsView({ accountId, accountName, userId, bran
         if (cancelled) return;
         setMessages(msgs);
         setPlans(brandPlans);
-        // Pull reply counts in one query for the messages we just loaded.
         const ids = msgs.map((m) => m.id);
         if (ids.length > 0) {
           loadThreadReplyCountsForMessages(ids)
@@ -434,7 +590,6 @@ export default function ConversationsView({ accountId, accountName, userId, bran
             .catch((e) => console.warn('loadThreadReplyCountsForMessages failed', e));
         }
         setLoading(false);
-        // Mark seen once data is in — Sidebar badge clears.
         if (seenForAccountRef.current !== accountId) {
           seenForAccountRef.current = accountId;
           markConversationSeen({ userId, accountId }).catch((e) =>
@@ -450,40 +605,55 @@ export default function ConversationsView({ accountId, accountName, userId, bran
     return () => { cancelled = true; };
   }, [accountId, userId]);
 
-  // ----- Realtime: append new messages -----
+  // ----- Realtime -----
   useEffect(() => {
     if (!conversation?.id || !userId) return;
     const unsub = subscribeToConversationMessages(conversation.id, userId, (evt) => {
-      if (evt.type !== 'INSERT' || !evt.message) return;
-      const m = evt.message;
-      if (m.parentMessageId) {
-        // Reply: bump the parent's count + push into thread state if open.
-        setReplyCounts((prev) => {
-          const next = new Map(prev);
-          next.set(m.parentMessageId, (next.get(m.parentMessageId) || 0) + 1);
-          return next;
-        });
-        setThreadParentId((openId) => {
-          if (openId === m.parentMessageId) {
-            setThreadReplies((prev) =>
-              prev.some((r) => r.id === m.id) ? prev : [...prev, m]
-            );
-          }
-          return openId;
-        });
-      } else {
-        setMessages((prev) =>
-          prev.some((x) => x.id === m.id) ? prev : [...prev, m]
-        );
+      if (!evt) return;
+      if (evt.type === 'INSERT' && evt.message) {
+        const m = evt.message;
+        if (m.parentMessageId) {
+          setReplyCounts((prev) => {
+            const next = new Map(prev);
+            next.set(m.parentMessageId, (next.get(m.parentMessageId) || 0) + 1);
+            return next;
+          });
+          setThreadParentId((openId) => {
+            if (openId === m.parentMessageId) {
+              setThreadReplies((prev) => prev.some((r) => r.id === m.id) ? prev : [...prev, m]);
+            }
+            return openId;
+          });
+        } else {
+          setMessages((prev) => prev.some((x) => x.id === m.id) ? prev : [...prev, m]);
+        }
+        markConversationSeen({ userId, accountId }).catch(() => {});
+        return;
       }
-      // Realtime stamps a "you've seen up to this moment" for the brand
-      // so the user's own new reads don't keep the badge red.
-      markConversationSeen({ userId, accountId }).catch(() => {});
+      if (evt.type === 'UPDATE' && evt.message) {
+        // Covers soft-deletes (deleted_at flip) and future edited_at
+        // changes. Replace in place across both panes.
+        const m = evt.message;
+        setMessages((prev) => prev.map((x) => x.id === m.id ? m : x));
+        setThreadReplies((prev) => prev.map((x) => x.id === m.id ? m : x));
+        return;
+      }
+      if (evt.type === 'ATTACHMENT_INSERT' && evt.attachment) {
+        const a = evt.attachment;
+        const mergeAtt = (msg) => {
+          if (msg.id !== a.messageId) return msg;
+          if ((msg.attachments || []).some((x) => x.id === a.id)) return msg;
+          return { ...msg, attachments: [...(msg.attachments || []), a] };
+        };
+        setMessages((prev) => prev.map(mergeAtt));
+        setThreadReplies((prev) => prev.map(mergeAtt));
+        return;
+      }
     });
     return unsub;
   }, [conversation?.id, userId, accountId]);
 
-  // ----- Deep-link: preselect a plan tag from ?plan=<id|prefix> -----
+  // ----- Deep-link: ?plan=<id|prefix> -----
   useEffect(() => {
     if (plans.length === 0) return;
     const params = new URLSearchParams(location.search);
@@ -494,27 +664,26 @@ export default function ConversationsView({ accountId, accountName, userId, bran
   }, [location.search, plans]);
 
   // ----- Scroll behavior -----
-  // After the feed renders (load or new message), scroll to bottom if
-  // the user is already at the bottom OR this is the initial load.
   useEffect(() => {
-    if (!feedRef.current) return;
+    if (!wrapRef.current) return;
     if (stuckToBottomRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+      wrapRef.current.scrollTop = wrapRef.current.scrollHeight;
     }
   }, [messages.length, loading]);
 
-  const onFeedScroll = useCallback((e) => {
+  const onWrapScroll = useCallback((e) => {
     const el = e.currentTarget;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     stuckToBottomRef.current = distance < 80;
   }, []);
 
-  // ----- Open / close thread -----
+  // ----- Threads -----
   const openThread = useCallback(async (parent) => {
     if (!parent?.id) return;
     setThreadParentId(parent.id);
     setThreadReplies([]);
     setThreadDraft('');
+    setThreadPendingFiles([]);
     try {
       const replies = await loadThreadReplies(parent.id, userId);
       setThreadReplies(replies);
@@ -527,6 +696,7 @@ export default function ConversationsView({ accountId, accountName, userId, bran
     setThreadParentId(null);
     setThreadReplies([]);
     setThreadDraft('');
+    setThreadPendingFiles([]);
   }, []);
 
   const threadParent = useMemo(() => {
@@ -536,40 +706,61 @@ export default function ConversationsView({ accountId, accountName, userId, bran
   const threadParentPlan = threadParent?.taggedPostPlanId
     ? plansById.get(threadParent.taggedPostPlanId) || null
     : null;
+  const threadParentTaggedMissing = !!threadParent?.taggedPostPlanId && !threadParentPlan;
 
-  // ----- Send handlers -----
+  // ----- Send -----
+  // Uploads happen AFTER message insert so the messageId is known and
+  // the storage path can include it. Send is gated busy until both
+  // the message AND every file finishes.
   const sendTopLevel = useCallback(async () => {
     const body = draft.trim();
-    if (!body || !conversation?.id || !userId || sending) return;
+    if ((!body && pendingFiles.length === 0) || !conversation?.id || !userId || sending) return;
     setSending(true);
     try {
       const inserted = await addConversationMessage({
         conversationId: conversation.id,
         authorId: userId,
-        body,
+        body: body || '',
         taggedPostPlanId: taggedPlanId || null,
       });
-      // Optimistically append (realtime will dedupe).
       setMessages((prev) => prev.some((x) => x.id === inserted.id) ? prev : [...prev, inserted]);
-      setDraft('');
-      setTaggedPlanId(null);
       stuckToBottomRef.current = true;
+      // Optimistic clears so the composer feels snappy.
+      setDraft('');
+      setPendingFiles([]);
+      setTaggedPlanId(null);
+      if (pendingFiles.length > 0) {
+        for (const f of pendingFiles) {
+          try {
+            const att = await addMessageAttachment({
+              accountId, messageId: inserted.id, file: f, uploaderId: userId,
+            });
+            setMessages((prev) => prev.map((m) =>
+              m.id === inserted.id
+                ? { ...m, attachments: [...(m.attachments || []), att] }
+                : m
+            ));
+          } catch (e) {
+            console.error('attachment upload failed', e);
+          }
+        }
+      }
     } catch (e) {
       console.error('send failed', e);
     } finally {
       setSending(false);
     }
-  }, [draft, conversation?.id, userId, taggedPlanId, sending]);
+  }, [draft, pendingFiles, conversation?.id, userId, taggedPlanId, sending, accountId]);
 
   const sendReply = useCallback(async () => {
     const body = threadDraft.trim();
-    if (!body || !conversation?.id || !userId || !threadParentId || threadSending) return;
+    if ((!body && threadPendingFiles.length === 0) || !conversation?.id || !userId || !threadParentId || threadSending) return;
     setThreadSending(true);
     try {
       const inserted = await addConversationMessage({
         conversationId: conversation.id,
         authorId: userId,
-        body,
+        body: body || '',
         parentMessageId: threadParentId,
       });
       setThreadReplies((prev) => prev.some((x) => x.id === inserted.id) ? prev : [...prev, inserted]);
@@ -579,17 +770,59 @@ export default function ConversationsView({ accountId, accountName, userId, bran
         return next;
       });
       setThreadDraft('');
+      const files = threadPendingFiles;
+      setThreadPendingFiles([]);
+      for (const f of files) {
+        try {
+          const att = await addMessageAttachment({
+            accountId, messageId: inserted.id, file: f, uploaderId: userId,
+          });
+          setThreadReplies((prev) => prev.map((m) =>
+            m.id === inserted.id
+              ? { ...m, attachments: [...(m.attachments || []), att] }
+              : m
+          ));
+        } catch (e) {
+          console.error('thread attachment upload failed', e);
+        }
+      }
     } catch (e) {
       console.error('reply send failed', e);
     } finally {
       setThreadSending(false);
     }
-  }, [threadDraft, conversation?.id, userId, threadParentId, threadSending]);
+  }, [threadDraft, threadPendingFiles, conversation?.id, userId, threadParentId, threadSending, accountId]);
 
   const onPickPlan = useCallback((p) => {
     setTaggedPlanId(p.id);
     setTagDropdownOpen(false);
   }, []);
+
+  // ----- Context menu (right-click on own message) -----
+  const handleMessageContextMenu = useCallback((e, message) => {
+    if (!message || message.authorId !== userId) return;  // own messages only for v1
+    if (message.deletedAt) return;
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, messageId: message.id });
+  }, [userId]);
+
+  const handleDeleteMessage = useCallback(async () => {
+    const id = contextMenu?.messageId;
+    if (!id) return;
+    // Optimistic flip — realtime UPDATE will confirm.
+    const stamp = new Date().toISOString();
+    setMessages((prev) => prev.map((m) =>
+      m.id === id ? { ...m, deletedAt: stamp, body: '' } : m
+    ));
+    setThreadReplies((prev) => prev.map((m) =>
+      m.id === id ? { ...m, deletedAt: stamp, body: '' } : m
+    ));
+    try {
+      await softDeleteMessage(id);
+    } catch (e) {
+      console.error('softDeleteMessage failed', e);
+    }
+  }, [contextMenu?.messageId]);
 
   // ----- Render -----
   const composerPlaceholder = isAgency
@@ -597,18 +830,18 @@ export default function ConversationsView({ accountId, accountName, userId, bran
     : 'Message your agency…';
 
   return (
-    <div className="conv-wrap">
+    <div className="conv-wrap" ref={wrapRef} onScroll={onWrapScroll}>
       <header className="conv-head">
         <div>
           <div className="conv-title">Conversations</div>
           <div className="conv-sub">
             Chat with your {isAgency ? <strong>{accountName || 'brand'}</strong> : <strong>agency</strong>}.
-            Tag a post plan if you want context, or just say hi.
+            Tag a post plan if you want context, attach files, or just say hi.
           </div>
         </div>
       </header>
 
-      <div className="conv-feed" ref={feedRef} onScroll={onFeedScroll}>
+      <div className="conv-feed">
         {loading ? (
           <div className="conv-feed-empty">Loading messages…</div>
         ) : messages.length === 0 ? (
@@ -629,6 +862,7 @@ export default function ConversationsView({ accountId, accountName, userId, bran
                 brandSlug={brandSlug}
                 navigate={navigate}
                 onReplyClick={openThread}
+                onContextMenu={handleMessageContextMenu}
               />
             );
           })
@@ -646,6 +880,9 @@ export default function ConversationsView({ accountId, accountName, userId, bran
           placeholder={composerPlaceholder}
           showTagAffordance
           busy={sending}
+          pendingFiles={pendingFiles}
+          onPickFiles={(files) => setPendingFiles((prev) => [...prev, ...files])}
+          onRemoveFile={(i) => setPendingFiles((prev) => prev.filter((_, idx) => idx !== i))}
         />
         {tagDropdownOpen && (
           <PlanTagDropdown
@@ -660,6 +897,7 @@ export default function ConversationsView({ accountId, accountName, userId, bran
         <ThreadDrawer
           parent={threadParent}
           parentPlan={threadParentPlan}
+          parentTaggedMissing={threadParentTaggedMissing}
           replies={threadReplies}
           brandSlug={brandSlug}
           navigate={navigate}
@@ -668,6 +906,19 @@ export default function ConversationsView({ accountId, accountName, userId, bran
           onSubmit={sendReply}
           onClose={closeThread}
           busy={threadSending}
+          pendingFiles={threadPendingFiles}
+          onPickFiles={(files) => setThreadPendingFiles((prev) => [...prev, ...files])}
+          onRemoveFile={(i) => setThreadPendingFiles((prev) => prev.filter((_, idx) => idx !== i))}
+          onContextMenu={handleMessageContextMenu}
+        />
+      )}
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onDelete={handleDeleteMessage}
+          onClose={() => setContextMenu(null)}
         />
       )}
     </div>
