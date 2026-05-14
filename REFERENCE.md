@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 7 of 9**: scheduled refresh cron + sort affordances. New `/api/engagement/refresh-cron` (Vercel Cron, `0 */6 * * *`) reads eligible publications, computes tiered cadence (6h / daily / 3d / weekly by publication age + auto-demote-to-weekly after 3 consecutive failures), scrapes up to 5 due rows per fire, writes snapshots through the shared persistence helper. Scraper functions extracted from `refresh.ts` into a new `_shared.ts` so both the on-demand and the cron routes use the same dispatch + normalizer + DB write. LivePostsView grows a Sort dropdown (Recently posted / Most likes / Most engagement) — non-"recent" modes render a flat leaderboard instead of the month-grouped chronology.)
+**Last updated:** 2026-05-12 (**Live Posts engagement feature — PR 8 of 9**: monthly-report data hook. New `loadEngagementForBrandRange(accountId, fromISO, toISO)` in db.js — single read-only helper that returns one entry per brand publication with `firstSnapshot` / `lastSnapshot` / `snapshotCount` / per-metric `delta` (like / comment / share / save / view / bookmark / reaction + `totalEngagementDelta` sum) / `note` (no-snapshots-in-range or single-snapshot-only). Pure consumer of the cron-driven snapshot history; no new UI, no new schema, no new routes. Future monthly-report builder consumes this directly.)
+
+**Previous (2026-05-12):** PR 7 of 9 — scheduled refresh cron + sort affordances. New `/api/engagement/refresh-cron` (Vercel Cron, `0 */6 * * *`) reads eligible publications, computes tiered cadence (6h / daily / 3d / weekly by publication age + auto-demote-to-weekly after 3 consecutive failures), scrapes up to 5 due rows per fire, writes snapshots through the shared persistence helper. Scraper functions extracted from `refresh.ts` into a new `_shared.ts` so both the on-demand and the cron routes use the same dispatch + normalizer + DB write. LivePostsView grows a Sort dropdown (Recently posted / Most likes / Most engagement) — non-"recent" modes render a flat leaderboard instead of the month-grouped chronology.)
 
 **Previous (2026-05-12):** PRs 5+6 — LinkedIn wire-up via `supreme_coder/linkedin-post` (6.4M runs, 13k users, "No cookies · $1 per 1k"), X intentionally not supported in MVP (3-actor preflight found no viable actor without hostile pricing). Image-proxy allowlist extended to `*.licdn.com`. LinkedIn auto-refresh fires on mark-posted alongside IG.
 
@@ -37,6 +39,23 @@
 
 Newest at top. Each entry: date, what changed, and which sections of this
 doc were updated. When you make material changes, add a new dated entry.
+
+### 2026-05-12 — Live Posts engagement: monthly-report data hook (PR 8 of 9)
+Read-only db.js helper that consumes the snapshot history the PR 7 cron is now building up. No UI, no schema, no new routes — just a single function the future monthly-report builder consumes.
+
+- **[`loadEngagementForBrandRange(accountId, fromISO, toISO)`](web/src/lib/db.js)** — returns one entry per brand publication:
+  - `publication` (mapped row, same shape `LivePostsView` consumes)
+  - `plan` (concept, scheduledAt, platforms, accountName)
+  - `firstSnapshot` — earliest snapshot with `fetched_at` in range, or `null`
+  - `lastSnapshot` — latest snapshot in range, or `null`
+  - `snapshotCount` — how many snapshots fell in the range
+  - `delta` — `{ likeDelta, commentDelta, shareDelta, saveDelta, viewDelta, bookmarkDelta, reactionDelta, totalEngagementDelta }`, or `null` if only 0-1 snapshots fell in the range
+  - `note` — `'no_snapshots_in_range'` / `'single_snapshot_only'` / `null`
+- **"First/last in range" semantic**: earliest with `fetched_at >= fromISO` and latest with `fetched_at <= toISO`. Snapshots outside the range are ignored — they'd give a misleadingly long curve. If a publication has zero snapshots in the period (e.g. first scraped after period end), we surface that as `note: 'no_snapshots_in_range'` so the report can render an "insufficient data" cell.
+- **Delta semantics**: `last - first` per metric. Can be negative (LinkedIn unliked, IG removed by user). `totalEngagementDelta` sums the "loud" engagement metrics (likes + comments + shares) — views/saves/bookmarks deliberately excluded; they're visibility signals, not engagement actions. If ANY contributing delta is null (because a count wasn't exposed at one of the bounds), `totalEngagementDelta` is null — the consumer falls back to per-metric deltas it does have. Singular snapshots return `delta=null` because one sample tells us a value, not a change.
+- **Cost**: 2 queries (publications + snapshots in range). Snapshots query is indexed on `(publication_id, fetched_at desc)` so the range filter is cheap. At full rollout (~30k snapshots/month across 1000 publications) the snapshot query is still well under a second.
+
+No tests — the repo has no test runner; helper is small + heavily commented. The monthly-report UI (separate workstream, not part of this 9-PR series) will exercise it.
 
 ### 2026-05-12 — Live Posts engagement: scheduled refresh + sort affordances (PR 7 of 9)
 Adds the cron leg of the engagement feature so engagement curves grow over time (not just the one snapshot from mark-posted + the occasional manual Refresh-now). Also a small UI polish for browsing live posts by leaderboard.
