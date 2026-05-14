@@ -366,11 +366,7 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
         ))}
 
         {isBusy && messages.length > 0 && (
-          <div className="copilot-typing">
-            <span className="copilot-dot" />
-            <span className="copilot-dot" />
-            <span className="copilot-dot" />
-          </div>
+          <CopilotStatus status={status} messages={messages} />
         )}
 
         {error && (
@@ -413,6 +409,114 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
       </footer>
     </div>
   );
+};
+
+// CopilotStatus — replaces the old 3-dot-only typing indicator with a
+// descriptive label of what the copilot is currently doing. Derived
+// entirely from useChat's `status` + the latest assistant message's
+// parts — no extra server channel needed. Updates in real time as the
+// model moves through tool calls / text generation.
+//
+// Heuristics:
+//   - status === 'submitted'                  → "Thinking…"
+//   - last part is a running tool call        → friendly tool headline
+//     ("Consulting the launch-strategy playbook…")
+//   - last part is text being streamed        → "Writing the response…"
+//   - default                                 → "Thinking…"
+//
+// The 3-dot animation stays — it's small, lively, and reinforces "still
+// working". The label sits beside it so the admin always knows WHAT.
+function CopilotStatus({ status, messages }) {
+  const label = deriveStatusLabel(status, messages);
+  return (
+    <div className="copilot-typing">
+      <span className="copilot-dot" />
+      <span className="copilot-dot" />
+      <span className="copilot-dot" />
+      <span className="copilot-status-label">{label}</span>
+    </div>
+  );
+}
+
+function deriveStatusLabel(status, messages) {
+  if (status === "submitted") return "Thinking…";
+  if (status !== "streaming") return "Thinking…";
+
+  // Find the latest assistant message and inspect its newest part.
+  let lastAssistant = null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "assistant") {
+      lastAssistant = messages[i];
+      break;
+    }
+  }
+  if (!lastAssistant || !Array.isArray(lastAssistant.parts) || lastAssistant.parts.length === 0) {
+    return "Thinking…";
+  }
+
+  // Walk from the end backwards, skipping framework markers, until we
+  // find something signal-bearing.
+  for (let i = lastAssistant.parts.length - 1; i >= 0; i -= 1) {
+    const part = lastAssistant.parts[i];
+    const partType = part?.type;
+    if (partType === "step-start" || partType === "step-end") continue;
+    if (typeof partType === "string" && partType.startsWith("tool-")) {
+      const toolName = partType.slice("tool-".length);
+      const isRunning = part.state === "input-streaming" || part.state === "input-available";
+      if (isRunning) {
+        return runningToolLabel(toolName, part.input);
+      }
+      // Tool finished — that means a step boundary just passed and the
+      // model is composing its next move. Show "Thinking…" rather than
+      // mirroring the just-completed tool's headline.
+      return "Thinking…";
+    }
+    if (partType === "text") {
+      // Text is the most recent activity → model is writing.
+      // If text is empty, we're still in "thinking" mode just before
+      // the first token lands.
+      const text = typeof part.text === "string" ? part.text : "";
+      return text.trim().length === 0 ? "Thinking…" : "Writing the response…";
+    }
+  }
+  return "Thinking…";
+}
+
+// Mirror of ToolCard's running-state headlines. Duplicated rather than
+// extracted because the two components have different ergonomics
+// (ToolCard needs state + input + output; CopilotStatus only sees the
+// in-flight tool call) and the headlines themselves are short.
+function runningToolLabel(toolName, input) {
+  if (toolName === "create_post_plan_draft") return "Drafting a post plan…";
+  if (toolName === "write_brand_note") return "Saving a brand note…";
+  if (toolName === "load_skill") {
+    const slug = typeof input?.slug === "string" ? input.slug : "";
+    const title = SKILL_SLUG_TITLES[slug] || slug;
+    return title ? `Consulting the ${title} playbook…` : "Consulting a marketing playbook…";
+  }
+  if (toolName === "load_skill_reference") {
+    const slug = typeof input?.slug === "string" ? input.slug : "";
+    const ref = typeof input?.reference_name === "string"
+      ? input.reference_name.replace(/-/g, " ")
+      : "";
+    const title = SKILL_SLUG_TITLES[slug] || slug;
+    if (ref && title) return `Pulling “${ref}” from the ${title} playbook…`;
+    if (ref) return `Pulling “${ref}”…`;
+    return "Pulling a deep-dive reference…";
+  }
+  return `Running ${toolName}…`;
+}
+
+// Skill slug → human title — duplicated from ToolCard for the same
+// reason. If this list grows, lift it to a shared module.
+const SKILL_SLUG_TITLES = {
+  "social-content": "social content",
+  "content-strategy": "content strategy",
+  "copywriting": "copywriting",
+  "copy-editing": "copy editing",
+  "marketing-psychology": "marketing psychology",
+  "marketing-ideas": "marketing ideas",
+  "launch-strategy": "launch strategy",
 };
 
 // renderPart — dispatches a UIMessage `parts[]` entry to the right component.
