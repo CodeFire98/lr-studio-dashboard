@@ -35,13 +35,23 @@
 //   - Default model: claude-sonnet-4-6
 //   - Per-step output cap: 1500 tokens
 //   - Tool loop cap: 8 steps (stopWhen: stepCountIs(8))
+//
+// GOTCHA — DO NOT use unescaped backticks inside SYSTEM_PROMPT.
+//   The template literal is delimited by backticks. Any unescaped
+//   backtick INSIDE the prompt (e.g. wrapping `## Industry signals` for
+//   markdown emphasis) terminates the literal early and produces invalid
+//   JS that Vercel ships anyway — every cold start then dies with
+//   `SyntaxError: Invalid or unexpected token` → FUNCTION_INVOCATION_FAILED.
+//   Vite doesn't compile API routes so the local build misses it; Vercel's
+//   esbuild emits broken JS without flagging. If you need to emphasise a
+//   token in the system prompt, use *italics*, **bold**, or just plain
+//   text — Claude doesn't care.
 // =====================================================================
 
-// Diagnostic: this log fires at MODULE LOAD. If we don't see it in Vercel
-// function logs, the module never loaded — the function bundle itself is
-// broken or one of the imports below threw before this line. Cheap, gone
-// once we diagnose the FUNCTION_INVOCATION_FAILED reproducing in PR #89.
-console.log("[chat] module-load-start");
+// One module-load log so we can confirm cold starts are happening when
+// debugging future deploy issues. Negligible cost, fires once per
+// function instance lifetime (not per request).
+console.log("[chat] module-load-ok");
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -64,8 +74,6 @@ import {
   loadSkillReference,
   SKILL_SLUGS,
 } from "../../src/lib/skillRegistry.js";
-
-console.log("[chat] module-load-imports-ok");
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -474,7 +482,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "POST required" });
-  console.log("[chat] step:enter method=" + req.method);
 
   if (!ANTHROPIC_API_KEY) {
     return res.status(500).json({
@@ -501,7 +508,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!Array.isArray(body.messages) || !body.messages.length) {
     return res.status(400).json({ error: "messages must be a non-empty array" });
   }
-  console.log(`[chat] step:body-ok accountId=${body.accountId} msgs=${body.messages.length}`);
 
   const authHeader =
     (req.headers["authorization"] as string | undefined) ??
@@ -518,7 +524,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     error: userErr,
   } = await userClient.auth.getUser();
   if (userErr || !user) return res.status(401).json({ error: "Unauthorized" });
-  console.log(`[chat] step:auth-ok user=${user.id}`);
 
   const serviceClient = createClient(SUPABASE_URL, SERVICE_ROLE, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -533,7 +538,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!profile?.is_agency) {
     return res.status(403).json({ error: "Co-pilot is agency-only for now" });
   }
-  console.log(`[chat] step:agency-ok`);
 
   if (!WHITELIST.includes(body.accountId)) {
     return res.status(403).json({
@@ -547,11 +551,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // reason about upcoming plans, cadence gaps, top performers, and
     // voice anchors. The inline-copy and image routes leave it off so
     // they don't pay for context they can't act on.
-    console.log(`[chat] step:brand-ctx-start accountId=${body.accountId}`);
     brandContext = await loadAndCompileBrandContext(serviceClient, body.accountId, {
       includeCalendar: true,
     });
-    console.log(`[chat] step:brand-ctx-ok chars=${brandContext.length}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: `Failed to compile brand context: ${msg}` });
@@ -566,8 +568,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // they're generated. pipeUIMessageStreamToResponse handles Content-Type
   // + Cache-Control + the AI SDK's data-stream protocol headers itself.
   res.setHeader("X-Accel-Buffering", "no");
-
-  console.log(`[chat] step:brand-ctx-injection-ok`);
 
   // Tool implementations live INSIDE the handler so they can close over
   // accountId + user.id + serviceClient without globally-mutable plumbing.
@@ -705,7 +705,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // UIMessage[] from the client is converted to ModelMessage[] via
     // convertToModelMessages — handles text + tool-call + tool-result
     // parts uniformly.
-    console.log(`[chat] step:streamText-start tools=${Object.keys(tools).length}`);
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS_PER_TURN,
