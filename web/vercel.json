@@ -13,6 +13,9 @@
     },
     "api/engagement/refresh-cron.ts": {
       "maxDuration": 60
+    },
+    "api/ai/chat.ts": {
+      "includeFiles": "src/data/skills/**"
     }
   },
   "crons": [
