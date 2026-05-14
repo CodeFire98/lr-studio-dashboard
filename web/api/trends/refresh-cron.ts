@@ -38,7 +38,7 @@
 // them.
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const CRON_SECRET = process.env.CRON_SECRET ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -132,15 +132,25 @@ function buildQueries(brandKit: {
   return queries;
 }
 
+// Supabase's PostgREST `account:accounts(name)` join returns an OBJECT
+// (single FK), but @supabase/supabase-js default generics widen the
+// result type to an array. We coerce to a hand-written shape in the
+// loop. Typed as `unknown` here to bypass the over-eager array inference
+// without forcing the rest of the file to live with `any`.
 type BrandRow = {
   account_id: string;
   industry: string | null;
   trend_hashtags: string[] | null;
-  account: { name: string | null } | null;
+  account: { name: string | null } | { name: string | null }[] | null;
 };
 
+// Use SupabaseClient<any> rather than ReturnType<typeof createClient> —
+// the latter has more specific generic args that don't match what the
+// caller passes (PostgREST generics `<any, "public", "public", any, any>`
+// vs. broader `<any, any, any, any, any>`). Generic widening fixes the
+// TS2345 in the build log.
 async function refreshBrand(
-  serviceClient: ReturnType<typeof createClient>,
+  serviceClient: SupabaseClient,
   brand: BrandRow,
 ): Promise<{ inserted: number; queriesFired: number; error?: string }> {
   const queries = buildQueries(brand);
@@ -247,12 +257,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     error?: string;
   }> = [];
 
+  // Helper: extract the brand name from the joined `accounts(name)` shape.
+  // PostgREST returns a single object at runtime, but Supabase's default
+  // generics may widen to an array. Handle both gracefully.
+  const brandNameOf = (b: BrandRow): string | null => {
+    const acc = b.account;
+    if (!acc) return null;
+    if (Array.isArray(acc)) return acc[0]?.name ?? null;
+    return acc.name ?? null;
+  };
+
   for (const brand of (brandRows || []) as BrandRow[]) {
     try {
       const r = await refreshBrand(serviceClient, brand);
       summary.push({
         account_id: brand.account_id,
-        name: brand.account?.name ?? null,
+        name: brandNameOf(brand),
         inserted: r.inserted,
         queries_fired: r.queriesFired,
         ...(r.error ? { error: r.error } : {}),
@@ -261,7 +281,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const msg = ex instanceof Error ? ex.message : String(ex);
       summary.push({
         account_id: brand.account_id,
-        name: brand.account?.name ?? null,
+        name: brandNameOf(brand),
         inserted: 0,
         queries_fired: 0,
         error: msg,
