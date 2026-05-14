@@ -496,6 +496,8 @@ function renderPart(part, idx, messageId, role, ctx) {
 function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan, brandSlug }) {
   const isPlan = toolName === "create_post_plan_draft";
   const isNote = toolName === "write_brand_note";
+  const isLoadSkill = toolName === "load_skill";
+  const isLoadSkillRef = toolName === "load_skill_reference";
 
   const isRunning = state === "input-streaming" || state === "input-available";
   const isOk = state === "output-available";
@@ -526,19 +528,42 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
     return null;
   }
 
+  // Friendly slug → title mapping for the skill tiles. Kept inline (and
+  // small) so the tile doesn't need to wait on a tool response to render
+  // a nice headline. Slugs that don't match fall back to the raw slug.
+  const skillSlugTitles = {
+    "social-content": "social content",
+    "content-strategy": "content strategy",
+    "copywriting": "copywriting",
+    "copy-editing": "copy editing",
+    "marketing-psychology": "marketing psychology",
+    "marketing-ideas": "marketing ideas",
+    "launch-strategy": "launch strategy",
+  };
+  const skillTitle = input?.slug ? (skillSlugTitles[input.slug] || input.slug) : null;
+  const refTitle = input?.reference_name ? String(input.reference_name).replace(/-/g, " ") : null;
+
   let headline;
   if (statusKey === "running") {
     headline = isPlan
       ? "Drafting a post plan…"
       : isNote
         ? "Saving a brand note…"
-        : `Running ${toolName}…`;
+        : isLoadSkill
+          ? (skillTitle ? `Consulting the ${skillTitle} playbook…` : "Consulting a marketing playbook…")
+          : isLoadSkillRef
+            ? (skillTitle && refTitle ? `Pulling “${refTitle}” from the ${skillTitle} playbook…` : "Pulling a deep-dive reference…")
+            : `Running ${toolName}…`;
   } else if (statusKey === "ok") {
     headline = isPlan
       ? "Created an AI draft plan"
       : isNote
         ? (input?.is_pinned ? "Saved a pinned brand note" : "Saved a brand note")
-        : `Ran ${toolName}`;
+        : isLoadSkill
+          ? (skillTitle ? `Loaded the ${skillTitle} playbook` : "Loaded a marketing playbook")
+          : isLoadSkillRef
+            ? (skillTitle && refTitle ? `Loaded “${refTitle}” from ${skillTitle}` : "Loaded a deep-dive reference")
+            : `Ran ${toolName}`;
   } else {
     headline = `${toolName} failed`;
   }

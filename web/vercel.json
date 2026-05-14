@@ -16,6 +16,9 @@
     },
     "api/ai/chat.ts": {
       "includeFiles": "src/data/skills/**"
+    },
+    "api/ai/copy.ts": {
+      "includeFiles": "src/data/skills/**"
     }
   },
   "crons": [

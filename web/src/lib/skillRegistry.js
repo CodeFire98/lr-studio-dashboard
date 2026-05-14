@@ -206,6 +206,118 @@ export function loadSkillReference(slug, referenceName) {
   };
 }
 
+// =====================================================================
+// Inline-copy guidance compiler — used by /api/ai/copy
+// =====================================================================
+//
+// The inline "AI draft" / "Redraft" surface is single-shot, not agentic
+// — it can't call load_skill at runtime. Instead, we extract the
+// platform-specific section from social-content/references/platforms.md
+// AND the full copywriting SKILL.md body, and inject them up front as
+// a cached system block. Two things change vs the hardcoded
+// PLATFORM_GUIDANCE that used to live in /api/ai/copy:
+//
+//   1. The platform conventions are now sourced from the skill files
+//      (single source of truth — update once, all surfaces benefit).
+//   2. The copywriting frameworks (AIDA / PAS / Before-After-Bridge /
+//      hooks) flow into every inline draft, not just chat-loaded ones.
+//
+// Token cost: ~2-3K cached tokens per inline call. Cache hits across
+// back-to-back drafts within the same 5-min TTL.
+
+const PLATFORM_TO_HEADING = {
+  instagram: 'Instagram',
+  linkedin: 'LinkedIn',
+  x: 'Twitter/X',
+};
+
+// Extract a single H2 section from a markdown file by its heading text.
+// Returns the section body (the heading itself is included for context).
+// Used to pull just one platform's guidance from platforms.md instead of
+// dumping all 5 platforms (~1.4K tokens of which 80% would be irrelevant).
+function extractSection(markdown, heading) {
+  if (typeof markdown !== 'string' || !heading) return '';
+  const lines = markdown.split('\n');
+  const startMarker = `## ${heading}`;
+  let startIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === startMarker) {
+      startIdx = i;
+      break;
+    }
+  }
+  if (startIdx === -1) return '';
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith('## ')) {
+      endIdx = i;
+      break;
+    }
+  }
+  return lines.slice(startIdx, endIdx).join('\n').trim();
+}
+
+let _cachedCopywritingSkillBody = null;
+let _cachedPlatformsMarkdown = null;
+
+function getCopywritingSkillBody() {
+  if (_cachedCopywritingSkillBody !== null) return _cachedCopywritingSkillBody;
+  const raw = readMarkdownFile(path.join(SKILLS_DIR, 'copywriting', 'SKILL.md'));
+  _cachedCopywritingSkillBody = stripFrontmatter(raw);
+  return _cachedCopywritingSkillBody;
+}
+
+function getPlatformsMarkdown() {
+  if (_cachedPlatformsMarkdown !== null) return _cachedPlatformsMarkdown;
+  _cachedPlatformsMarkdown = readMarkdownFile(
+    path.join(SKILLS_DIR, 'social-content', 'references', 'platforms.md'),
+  );
+  return _cachedPlatformsMarkdown;
+}
+
+// Returns a markdown-formatted system-prompt block tailored to one
+// platform. Caches the underlying file reads in module memory so that
+// back-to-back inline-copy calls don't re-hit disk.
+//
+// Falls back to an empty string on unknown platform — caller can choose
+// to skip injection entirely in that case.
+export function compileCopyGuidance(platform) {
+  const heading = PLATFORM_TO_HEADING[platform];
+  if (!heading) return '';
+
+  let platformSection = '';
+  try {
+    platformSection = extractSection(getPlatformsMarkdown(), heading);
+  } catch {
+    // file missing in this bundle — skip the platform section, still
+    // ship copywriting guidance below.
+  }
+
+  let copywritingBody = '';
+  try {
+    copywritingBody = getCopywritingSkillBody();
+  } catch {
+    // same: degrade gracefully.
+  }
+
+  const blocks = ['# Marketing playbook excerpts (loaded for this inline draft)'];
+  blocks.push(
+    'Two pieces of universal craft below — apply them on top of the brand voice. The brand voice from the context above always wins on tension; these are how-to-write defaults, not what-to-say constraints.',
+  );
+
+  if (platformSection) {
+    blocks.push('## Platform conventions');
+    blocks.push(platformSection);
+  }
+
+  if (copywritingBody) {
+    blocks.push('## Copywriting frameworks & hooks (universal)');
+    blocks.push(copywritingBody);
+  }
+
+  return blocks.join('\n\n');
+}
+
 // Returns the menu block to inject into the system prompt. Kept terse —
 // just enough for the model to route to the right skill without loading.
 export function compileSkillMenu() {
