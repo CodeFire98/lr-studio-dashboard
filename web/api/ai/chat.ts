@@ -52,6 +52,12 @@ import {
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
+import {
+  compileSkillMenu,
+  loadSkill,
+  loadSkillReference,
+  SKILL_SLUGS,
+} from "../../src/lib/skillRegistry.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -253,12 +259,16 @@ When drafting copy via create_post_plan_draft, match these platform conventions.
 - read_brand_context — already compiled into the system message; you don't need to call this unless the admin explicitly says "refresh my brand context"
 - create_post_plan_draft — create a real post_plans row pre-filled with concept and per-platform copy. status='drafting', ai_generated=true. The admin will edit and submit for review.
 - write_brand_note — persist a fact about the brand to the brand_kit_notes table. Used when the admin tells you to remember something. The note flows into the brand context on every future AI call (chat + inline copy). Pin always-true facts; leave others non-pinned.
+- load_skill — fetch one of the marketing playbooks listed below. Use when its description matches the work. Loaded body rides in context for the rest of the conversation.
+- load_skill_reference — fetch a deep-dive reference doc from an already-loaded skill (e.g. post templates, copy frameworks, idea catalogues). Call when the SKILL response lists the reference and it looks directly useful.
+
+__SKILL_MENU__
 
 ## What you don't do
 
 - Don't publish anything. You can only create drafts.
 - Don't touch other brands. You're scoped to the active brand only.
-- Don't claim to schedule posts — you create drafts on a date; the agency owns the workflow.`;
+- Don't claim to schedule posts — you create drafts on a date; the agency owns the workflow.`.replace("__SKILL_MENU__", compileSkillMenu());
 
 // The request body carries the UIMessage[] from useChat plus our custom
 // accountId field (configured via DefaultChatTransport's body option on
@@ -295,6 +305,28 @@ const createPostPlanDraftInput = z.object({
     })
     .describe(
       "Per-platform draft copy keyed by platform slug. Each value is a string containing the actual caption / tweet / post body. Match the brand voice. Cap Instagram at ~2,200 chars, X at ~280 chars, LinkedIn at ~3,000 chars.",
+    ),
+});
+
+// Zod enum from the registry's slug list — keeps the schema in sync with
+// the registry without hand-listing slugs in two places.
+const skillSlugSchema = z.enum(SKILL_SLUGS as [string, ...string[]]);
+
+const loadSkillInput = z.object({
+  slug: skillSlugSchema.describe(
+    "Slug of the marketing playbook to load. Must match one of the slugs from the 'Available marketing playbooks' menu in the system prompt. Loaded body stays in context for the rest of this conversation — don't re-load the same skill.",
+  ),
+});
+
+const loadSkillReferenceInput = z.object({
+  slug: skillSlugSchema.describe(
+    "Slug of the parent marketing playbook. Must be a skill you've already loaded — the response from load_skill lists its available_references.",
+  ),
+  reference_name: z
+    .string()
+    .min(1)
+    .describe(
+      "Name of the reference doc to load — must be one of the strings from the parent skill's `available_references` array. Examples: 'post-templates' (from social-content), 'copy-frameworks' (from copywriting), 'ideas-by-category' (from marketing-ideas).",
     ),
 });
 
@@ -479,6 +511,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             created_at: data.created_at,
           },
         };
+      },
+    }),
+    load_skill: tool({
+      description:
+        "Fetch a marketing playbook (e.g. social-content, copywriting, launch-strategy). Returns the full markdown body of the playbook plus a list of deeper reference docs available for that skill. The body stays in context for the rest of this conversation, so you don't need to re-load. Use when the admin's request is well-served by the skill — read the playbook first, THEN apply its frameworks/templates/checklists when drafting or planning. Don't load speculatively.",
+      inputSchema: loadSkillInput,
+      execute: async (input): Promise<ToolExecResult> => {
+        // Pure file read — no DB, no auth. Already gated by the surrounding
+        // route's agency + brand-allowlist checks.
+        return loadSkill(input.slug);
+      },
+    }),
+    load_skill_reference: tool({
+      description:
+        "Fetch a deep-dive reference doc from an already-loaded marketing playbook. Examples: 'post-templates' (social-content) for ready-to-adapt post structures, 'copy-frameworks' (copywriting) for AIDA/PAS/etc., 'ideas-by-category' (marketing-ideas) for the 140-idea catalogue. The parent skill's load_skill response lists which references are available. Use sparingly — references are deeper material than the SKILL itself.",
+      inputSchema: loadSkillReferenceInput,
+      execute: async (input): Promise<ToolExecResult> => {
+        return loadSkillReference(input.slug, input.reference_name);
       },
     }),
   };
