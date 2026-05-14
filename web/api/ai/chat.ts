@@ -35,7 +35,23 @@
 //   - Default model: claude-sonnet-4-6
 //   - Per-step output cap: 1500 tokens
 //   - Tool loop cap: 8 steps (stopWhen: stepCountIs(8))
+//
+// GOTCHA — DO NOT use unescaped backticks inside SYSTEM_PROMPT.
+//   The template literal is delimited by backticks. Any unescaped
+//   backtick INSIDE the prompt (e.g. wrapping `## Industry signals` for
+//   markdown emphasis) terminates the literal early and produces invalid
+//   JS that Vercel ships anyway — every cold start then dies with
+//   `SyntaxError: Invalid or unexpected token` → FUNCTION_INVOCATION_FAILED.
+//   Vite doesn't compile API routes so the local build misses it; Vercel's
+//   esbuild emits broken JS without flagging. If you need to emphasise a
+//   token in the system prompt, use *italics*, **bold**, or just plain
+//   text — Claude doesn't care.
 // =====================================================================
+
+// One module-load log so we can confirm cold starts are happening when
+// debugging future deploy issues. Negligible cost, fires once per
+// function instance lifetime (not per request).
+console.log("[chat] module-load-ok");
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -222,12 +238,13 @@ const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social
   2. **Time:** 09:00 in the brand's timezone (see the ## Today block).
   3. **Platforms:** if the brand's strategy mentions primary platforms, use those. Otherwise infer from past approved posts and Top performers. If still ambiguous, default to Instagram (most brands' primary).
   4. **Concept:** derive from upcoming moments + brand pillars + cadence gaps + the admin's hints. Lean on the brand's pillars — rotating across them avoids monotone calendars.
-- **Be proactive.** When the conversation opens (no prior assistant messages in this turn's history) or the admin asks an open-ended question like "what should I post?", lead with what's most relevant right now: upcoming holidays/festivals on the brand's market, cadence gaps, what top-performing recent posts can be built on, the freshest items in `## Industry signals` (the cached news block populated by the daily trend cron), anything in the brand notes that's time-bound. Then offer 2-3 concrete next moves. Don't just dump information — propose action.
-- **Use Industry signals before searching.** The `## Industry signals` block is refreshed daily by a Firecrawl cron and is the cheapest source of trend awareness — read from it first. Call `web_search` ONLY when the admin asks about something the cached signals don't cover (a specific recent event, a competitor announcement, a niche topic, a fresh data point from "today" or "this week"). Don't fire `web_search` speculatively or for broad questions already answered by the cached signals — it costs credits per call.
+- **Be proactive.** When the conversation opens (no prior assistant messages in this turn's history) or the admin asks an open-ended question like "what should I post?", lead with what's most relevant right now: upcoming holidays/festivals on the brand's market, cadence gaps, what top-performing recent posts can be built on, the freshest items in the ## Industry signals section (the cached news block populated by the daily trend cron), anything in the brand notes that's time-bound. Then offer 2-3 concrete next moves. Don't just dump information — propose action.
+- **Use Industry signals before searching.** The ## Industry signals block is refreshed daily by a Firecrawl cron and is the cheapest source of trend awareness — read from it first. Call web_search ONLY when the admin asks about something the cached signals don't cover (a specific recent event, a competitor announcement, a niche topic, a fresh data point from "today" or "this week"). Don't fire web_search speculatively or for broad questions already answered by the cached signals — it costs credits per call.
 - **Use the calendar context.** Before creating a draft, glance at the Upcoming calendar block. Don't propose a date that's already busy on every targeted platform. Don't suggest content concepts that duplicate something already drafted within 7 days. If the calendar is empty, that's the most important signal — propose filling it, not analysing it.
 - When the admin tells you to remember something about the brand — phrases like "remember that…", "from now on…", "make a note that…", "the founder hates the word X", "we always tag Y on milestone posts", "no holiday content before Oct 15" — call the write_brand_note tool. Pin facts that are ALWAYS-true; leave non-pinned for time-bound or context-specific facts. The note becomes part of the brand context on every future call — for chat AND for inline copy generation.
 - After calling a tool, briefly tell the admin what you did and link them to the result if applicable. Don't just go silent.
 - **Don't announce internal failures.** If a tool call fails and you retry successfully on the next step, present the final result as if it worked the first time. Don't say "let me try that again", "apologies for the error", or any variant. The admin doesn't need to see plumbing slips.
+- **End every turn with suggest_follow_ups.** After your text reply and any other tool calls, call suggest_follow_ups with 2-4 chips the admin would plausibly want to send next. The chips render as click-to-prefill buttons above the textarea. Make them SPECIFIC to what you just did, not generic. Good examples after drafting 3 plans: "Add 2 more in a different pillar", "Move all three to next week instead", "Generate hero images for these", "Polish the LinkedIn copy on the second one". Good examples after a proactive brief: "Plan a 3-post Diwali series", "Fill my Tuesday gap with a community post", "What is trending in eco-fashion this week?", "Show me the engagement on last month's IG". Good examples after loading a skill: "Apply this to next week's calendar", "Draft a post with this framework", "Show me 3 more idea angles". Bad chips: "Tell me more", "Continue", "Yes please", "Anything else?" — these add no value. Do not repeat the admin's last message.
 
 ## Platform craft (universal — applies to every brand)
 
@@ -267,6 +284,7 @@ When drafting copy via create_post_plan_draft, match these platform conventions.
 - load_skill — fetch one of the marketing playbooks listed below. Use when its description matches the work. Loaded body rides in context for the rest of the conversation.
 - load_skill_reference — fetch a deep-dive reference doc from an already-loaded skill (e.g. post templates, copy frameworks, idea catalogues). Call when the SKILL response lists the reference and it looks directly useful.
 - web_search — search the live web (Firecrawl) for information NOT in the cached ## Industry signals block. Use sparingly — see the "Use Industry signals before searching" rule above. Costs credits per call.
+- suggest_follow_ups — emit 2-4 quick-reply chips the admin can click. Call at the END of every turn (after your text reply + any other tool calls). See the "End every turn with suggest_follow_ups" rule above for specifics.
 
 __SKILL_MENU__
 
@@ -343,6 +361,16 @@ const webSearchInput = z.object({
     .max(300)
     .describe(
       "The search query. Make it specific and grounded in the brand's market — e.g. 'sustainable kidswear trends India 2026' not 'fashion trends'. The cached ## Industry signals block already covers daily-refreshed broad trends for this brand; only call web_search when you need information NOT in those signals — a specific recent event, a competitor announcement, current news on a niche topic, etc.",
+    ),
+});
+
+const suggestFollowUpsInput = z.object({
+  chips: z
+    .array(z.string().min(3).max(120))
+    .min(2)
+    .max(4)
+    .describe(
+      "2-4 short, actionable quick-reply chips the admin can click to send as their next message. Each chip is a complete message-ready string (not a topic label). Make them CONTEXTUAL to what you just did, not generic. Examples after creating a draft: 'Add 2 more variations in a different pillar', 'Move all three to next week instead', 'Generate hero images for these'. Examples after a brief: 'Plan a 3-post Diwali series', 'Fill my Tuesday gap with a community post', 'What is trending in eco-fashion this week?'. AVOID 'tell me more', 'continue', 'go on' — those add no value. AVOID repeating the user's just-typed message. The chips PREFILL the textarea (admin can edit before sending) so write them in first-person admin voice ('Add 2 more…' not 'You should add 2 more…').",
     ),
 });
 
@@ -439,6 +467,15 @@ async function performWebSearch(query: string): Promise<ToolExecResult> {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Top-level try/catch — surfaces ANY uncaught throw as a JSON error
+  // response so the chat panel shows a real message instead of Vercel's
+  // generic FUNCTION_INVOCATION_FAILED. The handler is large with many
+  // pre-stream steps (auth + brand context + tool setup); any of them
+  // could throw an unhandled exception, and prior to this wrap it would
+  // crash the function process. Diagnostic breadcrumbs (console.log
+  // "[chat] step:...") flow into Vercel function logs to pinpoint
+  // where things go wrong when something does throw.
+  try {
   // CORS — match the other API routes.
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "authorization, x-client-info, apikey, content-type");
@@ -630,6 +667,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return performWebSearch(input.query);
       },
     }),
+    suggest_follow_ups: tool({
+      description:
+        "Emit 2-4 quick-reply chips the admin can click to send as their next message. These chips render ABOVE the textarea in the chat panel — clicking one prefills the textarea (admin can edit before sending). Call this once near the END of every turn, AFTER your text reply and any other tool calls. Make chips CONTEXTUAL to what just happened (the post plans you drafted, the playbook you loaded, the trend articles you surfaced) and ACTIONABLE (each chip is a complete message the admin would plausibly want to send next). The tool just echoes the chips back as the UI hook — there's no side-effect; the only purpose is to surface the chips in the panel.",
+      inputSchema: suggestFollowUpsInput,
+      execute: async (input): Promise<ToolExecResult> => {
+        // No side effect — the chips are the result. CopilotPanel reads
+        // them out of the latest assistant message's tool-call output
+        // and renders them above the textarea.
+        return { ok: true, result: { chips: input.chips } };
+      },
+    }),
   };
 
   try {
@@ -768,10 +816,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error("[chat] streamText/pipe error:", msg, err instanceof Error ? err.stack : "");
     if (!res.headersSent) {
       return res.status(500).json({ error: msg });
     }
     // Stream already started — best we can do is end the response.
     res.end();
+  }
+
+  } catch (topLevelErr) {
+    // Top-level safety net. Surfaces real error messages instead of
+    // letting Vercel return generic FUNCTION_INVOCATION_FAILED. Returns
+    // JSON if headers haven't been sent yet; otherwise just ends the
+    // already-started response so the function doesn't crash.
+    const msg = topLevelErr instanceof Error ? topLevelErr.message : String(topLevelErr);
+    const stack = topLevelErr instanceof Error ? (topLevelErr.stack || "") : "";
+    console.error("[chat] TOP-LEVEL UNHANDLED:", msg, stack);
+    if (!res.headersSent) {
+      try {
+        return res.status(500).json({ error: `Chat handler crashed: ${msg}`, stack: stack.slice(0, 800) });
+      } catch {
+        // res might be in a weird state — fall through to end()
+      }
+    }
+    try { res.end(); } catch {}
   }
 }

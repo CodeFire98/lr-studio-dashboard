@@ -15,10 +15,18 @@
       "maxDuration": 60
     },
     "api/ai/chat.ts": {
-      "includeFiles": "src/data/skills/**"
+      "includeFiles": "src/data/skills/**",
+      "maxDuration": 60
     },
     "api/ai/copy.ts": {
-      "includeFiles": "src/data/skills/**"
+      "includeFiles": "src/data/skills/**",
+      "maxDuration": 30
+    },
+    "api/ai/image.ts": {
+      "maxDuration": 30
+    },
+    "api/ai/suggestions.ts": {
+      "maxDuration": 20
     },
     "api/trends/refresh-cron.ts": {
       "maxDuration": 60

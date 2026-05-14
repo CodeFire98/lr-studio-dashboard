@@ -369,7 +369,13 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
           <CopilotStatus status={status} messages={messages} />
         )}
 
-        {error && (
+        {/* Gate the error banner on messages.length > 0 so that
+            clicking "Start new" (which resets messages) doesn't leave a
+            stale error from the previous conversation sitting around.
+            useChat doesn't expose a setError, so this is the cleanest
+            way to reset the error UI on conversation reset. The error
+            naturally re-renders on the next failed sendMessage anyway. */}
+        {error && messages.length > 0 && (
           <div className="copilot-error">
             <Icon name="alert" size={12} /> {error.message || String(error)}
           </div>
@@ -377,6 +383,23 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
       </div>
 
       <footer className="copilot-input">
+        <CopilotFollowUpChips
+          messages={messages}
+          isBusy={isBusy}
+          onPick={(text) => {
+            setDraft(text);
+            // Focus on next tick so the textarea has the new value when
+            // it gains focus — caret lands at the end.
+            requestAnimationFrame(() => {
+              const el = textareaRef.current;
+              if (el) {
+                el.focus();
+                const end = el.value.length;
+                el.setSelectionRange(end, end);
+              }
+            });
+          }}
+        />
         <textarea
           ref={textareaRef}
           value={draft}
@@ -410,6 +433,69 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
     </div>
   );
 };
+
+// CopilotFollowUpChips — quick-reply chips above the textarea sourced
+// from the model's `suggest_follow_ups` tool call on the latest
+// assistant message. Click a chip → prefill the textarea (admin can
+// edit, then send normally via Enter / Send button).
+//
+// Lifecycle:
+//   - Chips appear after the assistant finishes a turn that ended with
+//     a `suggest_follow_ups` tool call (the model is instructed to call
+//     it at the end of every reply).
+//   - Chips disappear the moment the admin sends a new message (the
+//     "latest message" becomes a user message → no chips to extract).
+//   - Chips disappear while a turn is streaming (isBusy → hidden).
+//   - Chips disappear if there's no follow-up tool call on the latest
+//     reply (model forgot to emit one — graceful degradation).
+function CopilotFollowUpChips({ messages, isBusy, onPick }) {
+  if (isBusy) return null;
+  const chips = extractLatestFollowUpChips(messages);
+  if (!chips || !chips.length) return null;
+  return (
+    <div className="copilot-followups" role="group" aria-label="Suggested follow-ups">
+      {chips.map((chip, i) => (
+        <button
+          key={i}
+          type="button"
+          className="copilot-followup-chip"
+          onClick={() => onPick(chip)}
+          title="Click to prefill the message — edit if you want, then send."
+        >
+          {chip}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function extractLatestFollowUpChips(messages) {
+  if (!Array.isArray(messages)) return null;
+  // Walk backward — the latest message may be a user message (admin
+  // just sent something and the next reply hasn't landed yet) or the
+  // assistant's most recent turn. Chips ride on the latest ASSISTANT
+  // message only.
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.role !== "assistant") return null; // newest message is user → chips gone
+    if (!Array.isArray(m.parts)) return null;
+    for (let j = m.parts.length - 1; j >= 0; j -= 1) {
+      const part = m.parts[j];
+      if (part?.type !== "tool-suggest_follow_ups") continue;
+      if (part.state !== "output-available") return null;
+      // execute() returns { ok: true, result: { chips: [...] } } — same
+      // wrapping as the other tools. Unwrap defensively.
+      const out = part.output;
+      const inner = out && typeof out === "object" && "ok" in out ? out : null;
+      const chips = inner?.ok && Array.isArray(inner.result?.chips) ? inner.result.chips : null;
+      if (!chips || !chips.length) return null;
+      return chips.filter((c) => typeof c === "string" && c.trim().length > 0);
+    }
+    return null; // latest assistant message has no follow-up call
+  }
+  return null;
+}
 
 // CopilotStatus — replaces the old 3-dot-only typing indicator with a
 // descriptive label of what the copilot is currently doing. Derived
@@ -460,6 +546,10 @@ function deriveStatusLabel(status, messages) {
     const part = lastAssistant.parts[i];
     const partType = part?.type;
     if (partType === "step-start" || partType === "step-end") continue;
+    // suggest_follow_ups is the model's "emit chips at the end" call —
+    // not a user-visible action. Skip past it so the status reflects
+    // the actual work that preceded it.
+    if (partType === "tool-suggest_follow_ups") continue;
     if (typeof partType === "string" && partType.startsWith("tool-")) {
       const toolName = partType.slice("tool-".length);
       const isRunning = part.state === "input-streaming" || part.state === "input-available";
@@ -569,6 +659,10 @@ function renderPart(part, idx, messageId, role, ctx) {
   }
   if (typeof part.type === "string" && part.type.startsWith("tool-")) {
     const toolName = part.type.slice("tool-".length);
+    // suggest_follow_ups is a UI-only signal — chips render above the
+    // textarea via CopilotFollowUpChips, not as a tile in the message
+    // thread. Drop the part to avoid a redundant tile.
+    if (toolName === "suggest_follow_ups") return null;
     return (
       <ToolCard
         key={`${messageId}-${part.toolCallId || idx}`}
