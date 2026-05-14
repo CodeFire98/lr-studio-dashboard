@@ -5474,19 +5474,20 @@ input, textarea { font: inherit; color: inherit; }
    Conversations — unified per-brand chat (PR 2)
    ===================================================================== */
 
-/* Outer wrap is the scrolling container. Header sticks to the top,
-   composer sticks to the bottom — both stay visible as the feed
-   scrolls. Auto-scroll-to-bottom on mount + after sending writes to
-   conv-wrap's scrollTop directly. */
+/* The chat lives inside .main, but .main itself doesn't scroll — the
+   page body does. We override .main into a fixed-height non-scrolling
+   container (rule below at `.main:has(.conv-wrap)`); .conv-wrap then
+   becomes the scroll container at the actual viewport height. Header
+   sticks to the top of conv-wrap, composer sticks to the bottom. With
+   little content the feed flex-grows to push the composer down to the
+   viewport bottom anyway. */
 .conv-wrap {
-  display: block;
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  min-height: 0;
-  max-width: 860px;
-  margin: 0 auto;
   width: 100%;
-  position: relative;
   overflow-y: auto;
+  background: var(--surface);
 }
 .conv-head {
   padding: 18px 22px 14px;
@@ -5509,13 +5510,20 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 .conv-feed {
-  /* No own scroll — the parent .conv-wrap scrolls. Feed is just a
-     vertical stack of messages between the sticky header and the
-     sticky composer. */
+  /* No own scroll — the parent .conv-wrap scrolls. Feed grows to fill
+     the space between the sticky header and sticky composer so the
+     composer stays at the viewport bottom even when content is short.
+     With max-width and centered, the feed reads as a sensible column
+     on wide screens. */
+  flex: 1 1 auto;
   padding: 18px 22px 12px;
   display: flex;
   flex-direction: column;
   gap: 18px;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 .conv-feed-empty {
   color: var(--ink-3);
@@ -5644,7 +5652,8 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--ink-1);
 }
 
-/* Composer (used for both top-level + thread reply) */
+/* Composer (used for both top-level + thread reply). Sticky to the
+   bottom of conv-wrap so it stays visible while the feed scrolls. */
 .conv-composer-wrap {
   position: sticky;
   bottom: 0;
@@ -5652,6 +5661,15 @@ input, textarea { font: inherit; color: inherit; }
   border-top: 1px solid var(--line);
   background: var(--surface);
   padding: 12px 22px 16px;
+  width: 100%;
+  /* Match .conv-feed's centered column so the composer aligns with
+     the messages above it, but the sticky bg stretches the full pane. */
+}
+.conv-composer-wrap > .conv-composer,
+.conv-composer-wrap > .conv-tag-pop {
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
 }
 .conv-composer {
   display: flex;
@@ -5679,13 +5697,13 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--surface);
   color: var(--ink-1);
   outline: none;
-  /* Cap explicit + min so the auto-grow JS doesn't blow past a sane
-     ceiling even if scrollHeight reports unusual values on first
-     paint. After ~5 lines the textarea scrolls internally instead of
-     pushing the composer-wrap taller and (visually) "out of view". */
-  min-height: 40px;
-  max-height: 132px;
-  overflow-y: auto;
+  /* Native auto-grow in modern browsers — the textarea sizes itself
+     to its content but respects the max-height cap. Falls back to the
+     JS auto-grow in older browsers (still wired in ConversationsView). */
+  field-sizing: content;
+  min-height: 40px !important;
+  max-height: 132px !important;
+  overflow-y: auto !important;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 .conv-composer-textarea:focus {
@@ -6035,13 +6053,24 @@ input, textarea { font: inherit; color: inherit; }
   }
 }
 
-/* The main app pane sets fixed height — make sure the conv view can
-   actually use it. conv-wrap is the scrolling container itself, so
-   .main just needs to give it room and not duplicate the scroll. */
+/* The conversations view needs the page to NOT scroll at the body
+   level — sticky header + sticky composer only work if their scroll
+   ancestor is .conv-wrap. We do that by pinning .main to the viewport
+   height and hiding its own overflow; .conv-wrap inside is the
+   actual scrolling container. */
 .main:has(.conv-wrap) {
+  height: 100vh;
+  max-height: 100vh;
   min-height: 0;
   overflow: hidden;
   padding: 0;
+}
+/* The header centers its own content too, matching .conv-feed's max-
+   width so labels line up vertically with messages below. */
+.main:has(.conv-wrap) .conv-head > * {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
 }
 
 /* "Discuss this plan" button on PostPlanDetailView toolbar */
