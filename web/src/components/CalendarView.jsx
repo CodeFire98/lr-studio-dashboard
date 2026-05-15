@@ -17,7 +17,36 @@ import {
   loadPostPlanListRollups,
   loadPublicationsForPlanIds,
   subscribeToAllPostPlanPublications,
+  updatePostPlan,
 } from '../lib/db.js';
+
+// =====================================================================
+// Drag-to-reschedule helper. Given the plan's existing scheduled_at and
+// a YYYY-MM-DD target (local time), returns a new ISO timestamp on the
+// target date with the same hour/minute/second preserved. Brand-new
+// plans without a scheduled_at default to 9am on the target day, mirror
+// of the stub-create behaviour.
+// =====================================================================
+function rescheduleToDate(scheduledAtIso, targetIso) {
+  const [y, m, d] = targetIso.split('-').map(Number);
+  if (!scheduledAtIso) {
+    return new Date(y, m - 1, d, 9, 0, 0, 0).toISOString();
+  }
+  const orig = new Date(scheduledAtIso);
+  if (isNaN(orig.getTime())) {
+    return new Date(y, m - 1, d, 9, 0, 0, 0).toISOString();
+  }
+  return new Date(
+    y, m - 1, d,
+    orig.getHours(), orig.getMinutes(), orig.getSeconds(), orig.getMilliseconds(),
+  ).toISOString();
+}
+
+// MIME-ish marker stored on dataTransfer so foreign drag sources (image
+// drags from elsewhere on the page, OS file drags, etc.) don't trip the
+// drop handler. We read it back in onDragOver to decide whether to allow
+// the drop at all.
+const DRAG_MIME = 'application/x-lr-plan-id';
 import { DuplicateDatePicker } from './DuplicateDatePicker.jsx';
 import { UpdateBrandModal } from './UpdateBrandModal.jsx';
 
@@ -155,7 +184,7 @@ function buildMonthMatrix(viewYear, viewMonth) {
   return cells;
 }
 
-const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
+const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, draggable = false, isDragging = false, onDragStart, onDragEnd }) => {
   const displayStatus = post.displayStatus || post.status;
   const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
@@ -174,6 +203,9 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
         onContextMenu?.(e, post);
       }}
       title={hoverTitle}
+      draggable={draggable}
+      onDragStart={draggable ? (e) => onDragStart?.(e, post) : undefined}
+      onDragEnd={draggable ? () => onDragEnd?.() : undefined}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -190,8 +222,10 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
         color: 'var(--ink-1)',
         fontSize: 11.5,
         lineHeight: 1.25,
-        cursor: 'pointer',
+        cursor: draggable ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
         minWidth: 0,
+        opacity: isDragging ? 0.4 : 1,
+        transition: 'opacity 120ms ease',
       }}
     >
       {post.platforms?.slice(0, 3).map((p) => (
@@ -229,7 +263,7 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
 // platform icons. Trello-stack rather than a calendar time grid: dates
 // matter more than times for content planning, and a stacked column
 // gives each plan enough room to be scannable without opening it.
-const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
+const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0, draggable = false, isDragging = false, onDragStart, onDragEnd }) => {
   const displayStatus = post.displayStatus || post.status;
   const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
@@ -243,9 +277,15 @@ const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
         e.stopPropagation();
         onContextMenu?.(e, post);
       }}
+      draggable={draggable}
+      onDragStart={draggable ? (e) => onDragStart?.(e, post) : undefined}
+      onDragEnd={draggable ? () => onDragEnd?.() : undefined}
       style={{
         background: cfg.background,
         borderLeft: `3px solid ${cfg.color}`,
+        cursor: draggable ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
+        opacity: isDragging ? 0.4 : 1,
+        transition: 'opacity 120ms ease',
       }}
     >
       <div className="cal-week-card-row">
@@ -272,7 +312,7 @@ const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0 }) => {
   );
 };
 
-const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu }) => {
+const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu, dragState, onChipDragStart, onChipDragEnd, onCellDragOver, onCellDragLeave, onCellDrop }) => {
   const cells = useMemo(
     () => buildMonthMatrix(viewDate.getFullYear(), viewDate.getMonth()),
     [viewDate]
@@ -323,20 +363,34 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
           // from stray clicks on empty space below the day number. Now
           // only the explicit `+` button creates — matches week view.
           const canCreate = isAdmin && c.inMonth;
+          // Drop target highlight — only when there's an active drag AND
+          // the hover iso matches this cell. The source cell (where the
+          // chip currently lives) is intentionally NOT highlighted, since
+          // dropping there is a no-op.
+          const isDropTarget =
+            isAdmin && dragState?.planId && dragState?.overIso === c.iso && dragState?.sourceIso !== c.iso;
           return (
             <div
               key={c.iso + '_' + i}
+              onDragOver={isAdmin ? (e) => onCellDragOver?.(e, c.iso) : undefined}
+              onDragLeave={isAdmin ? (e) => onCellDragLeave?.(e, c.iso) : undefined}
+              onDrop={isAdmin ? (e) => onCellDrop?.(e, c.iso) : undefined}
               style={{
                 padding: 6,
                 borderRight: (i % 7 === 6) ? 'none' : '1px solid var(--line-2)',
                 borderBottom: i < 35 ? '1px solid var(--line-2)' : 'none',
-                background: c.isToday
+                background: isDropTarget
+                  ? 'color-mix(in oklab, var(--accent) 16%, var(--surface))'
+                  : c.isToday
                   ? 'color-mix(in oklab, var(--accent) 8%, var(--surface))'
                   : c.inMonth ? 'var(--surface)' : 'var(--surface-2)',
+                outline: isDropTarget ? '2px dashed var(--accent)' : 'none',
+                outlineOffset: isDropTarget ? -2 : 0,
                 opacity: c.inMonth ? 1 : 0.55,
                 display: 'flex',
                 flexDirection: 'column',
                 minWidth: 0,
+                transition: 'background 120ms ease, outline-color 120ms ease',
               }}
             >
               <div
@@ -396,6 +450,10 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                     onOpen={onOpenPost}
                     onContextMenu={onChipContextMenu}
                     unreadCount={unreadByPlan?.get(p.id) || 0}
+                    draggable={isAdmin && p.displayStatus !== 'posted'}
+                    isDragging={dragState?.planId === p.id}
+                    onDragStart={onChipDragStart}
+                    onDragEnd={onChipDragEnd}
                   />
                 ))}
                 {overflow > 0 && (
@@ -429,7 +487,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
   );
 };
 
-const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu }) => {
+const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu, dragState, onChipDragStart, onChipDragEnd, onCellDragOver, onCellDragLeave, onCellDrop }) => {
   const days = useMemo(() => {
     const todayIso = isoLocalDate(new Date());
     const out = [];
@@ -453,8 +511,20 @@ const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
       {days.map((d) => {
         const posts = postsByDate.get(d.iso) || [];
         const cellClickable = isAdmin;
+        const isDropTarget =
+          isAdmin && dragState?.planId && dragState?.overIso === d.iso && dragState?.sourceIso !== d.iso;
         return (
-          <div key={d.iso} className={'cal-week-col' + (d.isToday ? ' is-today' : '')}>
+          <div
+            key={d.iso}
+            className={
+              'cal-week-col'
+              + (d.isToday ? ' is-today' : '')
+              + (isDropTarget ? ' is-drop-target' : '')
+            }
+            onDragOver={isAdmin ? (e) => onCellDragOver?.(e, d.iso) : undefined}
+            onDragLeave={isAdmin ? (e) => onCellDragLeave?.(e, d.iso) : undefined}
+            onDrop={isAdmin ? (e) => onCellDrop?.(e, d.iso) : undefined}
+          >
             <div
               className="cal-week-col-head"
               role={cellClickable ? 'button' : undefined}
@@ -489,6 +559,10 @@ const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                     onOpen={onOpenPost}
                     onContextMenu={onChipContextMenu}
                     unreadCount={unreadByPlan?.get(p.id) || 0}
+                    draggable={isAdmin && p.displayStatus !== 'posted'}
+                    isDragging={dragState?.planId === p.id}
+                    onDragStart={onChipDragStart}
+                    onDragEnd={onChipDragEnd}
                   />
                 ))
               )}
@@ -805,6 +879,7 @@ const CalendarView = ({
   setRoute,
   unreadByPlan,
   onPlanCreated,
+  onPlanChanged,  // called with the updated plan after a drag-reschedule
   auth = null,  // optional — drives the time-of-day greeting tail above the title
 }) => {
   const isAdmin = mode === 'admin';
@@ -827,6 +902,15 @@ const CalendarView = ({
     return new Date();
   });
   const [creating, setCreating] = useState(false);
+  // Drag-to-reschedule state. `planId` is the plan currently being
+  // dragged (null when idle); `sourceIso` is the local-day cell it
+  // started in (used to suppress the drop-target highlight on its own
+  // cell, since same-day drops are no-ops); `overIso` is the cell the
+  // pointer is currently hovering. Lives on the parent so MonthGrid and
+  // WeekGrid both render against the same source of truth — switching
+  // views mid-drag isn't a real flow we need to support, but keeping
+  // state here means the visual feedback stays consistent.
+  const [dragState, setDragState] = useState({ planId: null, sourceIso: null, overIso: null });
 
   const weekStart = useMemo(() => startOfWeek(viewDate), [viewDate]);
 
@@ -993,6 +1077,76 @@ const CalendarView = ({
     if (!post) return;
     setRoute?.({ view: 'plan', id: post.id });
   };
+
+  // --- Drag-to-reschedule handlers ------------------------------------
+  // HTML5 drag-and-drop is enough here: lightweight, no extra dep, and
+  // it composes with the existing click/right-click behaviour on chips.
+  // We stash the plan id on `dataTransfer` under a custom MIME so foreign
+  // drag sources (OS file drags, image drags from elsewhere) don't trip
+  // the drop handler.
+  const handleChipDragStart = (e, post) => {
+    if (!isAdmin) return;
+    if (!post?.id) return;
+    if (post.displayStatus === 'posted') return; // belt-and-suspenders; chip is non-draggable already
+    try {
+      e.dataTransfer.setData(DRAG_MIME, post.id);
+      // Also set text/plain as a fallback so the browser doesn't reject
+      // the drag in some corner cases (older Safari has been picky).
+      e.dataTransfer.setData('text/plain', post.id);
+      e.dataTransfer.effectAllowed = 'move';
+    } catch {
+      // setData can throw under permission-restricted iframes; ignore.
+    }
+    const sourceIso = post.scheduledAt ? isoLocalDate(new Date(post.scheduledAt)) : null;
+    setDragState({ planId: post.id, sourceIso, overIso: null });
+  };
+  const handleChipDragEnd = () => {
+    setDragState({ planId: null, sourceIso: null, overIso: null });
+  };
+  const handleCellDragOver = (e, iso) => {
+    // Only accept our own drag mime — keeps file drags from triggering
+    // the highlight. `types` is a string array of available MIMEs on the
+    // current drag operation; `getData` is not allowed in `dragover`.
+    if (!e.dataTransfer.types?.includes(DRAG_MIME)) return;
+    e.preventDefault(); // required to allow the drop
+    e.dataTransfer.dropEffect = 'move';
+    setDragState((prev) => (prev.overIso === iso ? prev : { ...prev, overIso: iso }));
+  };
+  const handleCellDragLeave = (e, iso) => {
+    // Only clear if we're actually leaving the cell — `dragleave` fires
+    // for child elements too. Use `relatedTarget` to disambiguate: if
+    // the new target is inside the same cell, ignore.
+    const next = e.relatedTarget;
+    if (next && e.currentTarget?.contains?.(next)) return;
+    setDragState((prev) => (prev.overIso === iso ? { ...prev, overIso: null } : prev));
+  };
+  const handleCellDrop = async (e, iso) => {
+    if (!isAdmin) return;
+    e.preventDefault();
+    const planId = e.dataTransfer.getData(DRAG_MIME) || e.dataTransfer.getData('text/plain');
+    setDragState({ planId: null, sourceIso: null, overIso: null });
+    if (!planId) return;
+    const plan = decoratedPostPlans.find((p) => p.id === planId);
+    if (!plan) return;
+    // Same-day drop — nothing to do.
+    const currentIso = plan.scheduledAt ? isoLocalDate(new Date(plan.scheduledAt)) : null;
+    if (currentIso === iso) return;
+    const nextScheduledAt = rescheduleToDate(plan.scheduledAt, iso);
+    // Optimistic: update parent state immediately so the chip jumps to
+    // the new cell without waiting on the server. If the server write
+    // fails we revert.
+    const optimistic = { ...plan, scheduledAt: nextScheduledAt };
+    onPlanChanged?.(optimistic);
+    try {
+      const updated = await updatePostPlan(plan.id, { scheduledAt: nextScheduledAt });
+      onPlanChanged?.(updated);
+    } catch (err) {
+      console.error('[Calendar] reschedule failed', err);
+      onPlanChanged?.(plan); // revert
+      alert(`Could not reschedule: ${err?.message || err}`);
+    }
+  };
+  // --------------------------------------------------------------------
 
   // Context menu handlers for chip right-click. Brand users get the
   // browser default menu — they can't duplicate plans (no edit access),
@@ -1184,6 +1338,12 @@ const CalendarView = ({
           isAdmin={isAdmin}
           unreadByPlan={unreadByPlan}
           onChipContextMenu={handleChipContextMenu}
+          dragState={dragState}
+          onChipDragStart={handleChipDragStart}
+          onChipDragEnd={handleChipDragEnd}
+          onCellDragOver={handleCellDragOver}
+          onCellDragLeave={handleCellDragLeave}
+          onCellDrop={handleCellDrop}
         />
       )}
       {viewMode === 'list' && (
@@ -1206,6 +1366,12 @@ const CalendarView = ({
           isAdmin={isAdmin}
           unreadByPlan={unreadByPlan}
           onChipContextMenu={handleChipContextMenu}
+          dragState={dragState}
+          onChipDragStart={handleChipDragStart}
+          onChipDragEnd={handleChipDragEnd}
+          onCellDragOver={handleCellDragOver}
+          onCellDragLeave={handleCellDragLeave}
+          onCellDrop={handleCellDrop}
         />
       )}
 
