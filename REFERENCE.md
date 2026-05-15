@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-15 (**AI Co-pilot: two QoL fixes — refresh produces fresh suggestions, scroll detaches during streaming.** (1) The welcome-screen Refresh button was producing near-identical suggestions every click — temp 0.9 + identical (within-day) prompts let the model converge on the same output. The route now accepts a `previousSuggestions` array, the client accumulates every suggestion it's shown into a session-local ref capped at 16, and the server prompt explicitly names them with "DO NOT repeat or paraphrase". A 6-char nonce is also injected per-call so even the first refresh produces byte-different input. While the refresh is in flight, the old chips are hidden so the admin gets immediate "new ones coming" feedback. (2) During streaming the user was being pulled to the bottom on every token, making it impossible to read earlier messages mid-generation. Added stick-to-bottom logic: a scroll listener on the message container maintains a `stickToBottomRef`; the auto-scroll only fires when the user is within 64px of the bottom. Scrolling up detaches; scrolling back to the bottom re-engages. When detached during streaming, a "New tokens below" pill surfaces above the composer to jump back to the latest. Both changes live in `web/src/components/CopilotPanel.jsx` + `web/api/ai/suggestions.ts` + a small CSS rule for the jump-pill.)
+**Last updated:** 2026-05-15 (**Post-plan attachments: editable captions.** New `caption` column on `post_plan_attachments` — optional, nullable, user-editable label distinct from `filename` (which stays the immutable source-of-truth for downloads). Inline click-to-edit on the attachment tile: agency users see "Add a caption…" placeholder in italic when empty, click to flip to a text input (autofocus, max 280 chars, Enter saves, Escape cancels). Pencil affordance reveals on hover. When a caption is set, the tile shows caption as the primary label and demotes filename + uploader to a single secondary line. Lightbox header uses the caption when present; the Download button still uses filename so the file lands with its real name. Brand users see captions read-only. Optimistic write with revert-on-failure. Migration `0046_post_plan_attachment_caption.sql`. New `updatePostPlanAttachment(id, { caption })` helper in `web/src/lib/db.js`. Lives in `web/src/components/PostPlanDetailView.jsx`.)
+
+**Previous (2026-05-15):** **AI Co-pilot: two QoL fixes — refresh produces fresh suggestions, scroll detaches during streaming.** (1) The welcome-screen Refresh button was producing near-identical suggestions every click — temp 0.9 + identical (within-day) prompts let the model converge on the same output. The route now accepts a `previousSuggestions` array, the client accumulates every suggestion it's shown into a session-local ref capped at 16, and the server prompt explicitly names them with "DO NOT repeat or paraphrase". A 6-char nonce is also injected per-call so even the first refresh produces byte-different input. While the refresh is in flight, the old chips are hidden so the admin gets immediate "new ones coming" feedback. (2) During streaming the user was being pulled to the bottom on every token, making it impossible to read earlier messages mid-generation. Added stick-to-bottom logic: a scroll listener on the message container maintains a `stickToBottomRef`; the auto-scroll only fires when the user is within 64px of the bottom. Scrolling up detaches; scrolling back to the bottom re-engages. When detached during streaming, a "New tokens below" pill surfaces above the composer to jump back to the latest. Both changes live in `web/src/components/CopilotPanel.jsx` + `web/api/ai/suggestions.ts` + a small CSS rule for the jump-pill.
 
 **Previous (2026-05-15):** **AI Co-pilot: commit-on-click for proposed post plans.** The `create_post_plan_draft` tool no longer inserts into `post_plans` when the model calls it — the tool now just echoes the proposed payload back as `{ proposed: true, … }` and the inline ToolCard renders an "Open plan →" CTA. The DB INSERT happens on the client when the admin clicks "Open plan", via a new `commitAiDraftPlan` helper in `web/src/lib/db.js`. Rationale: if the model produces five plans in a thread and the admin only engages with two, only those two should land on the calendar — un-reviewed AI output shouldn't pollute the planning surface. ToolCard tracks per-card `committedId` + `committing` state so a second click is idempotent (just navigates). Tool description + system-prompt bullet rewritten so the model frames its replies as proposals ("I've drafted a plan for you to open"), not fait accompli. After commit, the headline flips from "Drafted a post plan — open to add" to "Added to the calendar". No schema change, no migration. Legacy tool history that returned a real `id` is still respected as already-committed.
 
@@ -64,6 +66,33 @@
 ---
 
 ## Recent changes log
+
+### 2026-05-15 — Post-plan attachments: editable captions
+Small but high-value UX add on the attachments grid. Files have always had a `filename` (the original upload name, used for downloads), but agency teams want a human-readable label they can edit *after* upload — so a grid of references reads as *"Hero close-up"* / *"Maya's testimonial frame"* / *"Backup B-roll"* instead of *"IMG_2384.jpg"* / *"FINAL_v3_REAL.mov"*.
+
+**Schema:** migration `0046_post_plan_attachment_caption.sql` adds a nullable `caption text` column on `post_plan_attachments`. No data migration — existing rows stay null and the UI falls back to filename. No RLS change — existing agency/owner write policies already cover caption edits.
+
+**Tile UI (`PostPlanDetailView.jsx` → `AttachmentTile`):**
+- **Primary label**: caption when set, otherwise filename (italic + dim "Add a caption…" placeholder for agency on empty captions).
+- **Secondary line**: when caption is set, this becomes `<filename> · uploader · size` (compact). When caption is empty, it's the original `<uploader> · <size>`. So filename never disappears — it just demotes.
+- **Edit affordance**: agency-only. Hover reveals a small pencil icon next to the label. Click the label OR the pencil → flips to an inline `<input>` (autofocus, `maxLength=280`, Enter blurs/saves, Escape reverts, blur saves).
+- **Brand users**: see captions read-only. The placeholder shows the filename (no "Add a caption…" prompt) and the pencil never appears.
+
+**Lightbox:** header uses caption when present (falls back to filename otherwise). The Download button always uses `filename` regardless — captions don't have extensions, and a downloaded file with no extension breaks downstream tooling.
+
+**Save path:**
+- Client: new `updatePostPlanAttachment(id, { caption })` helper in `web/src/lib/db.js`. Empty/whitespace-only input is normalized to `null` server-side so list views can fall back to filename uniformly without an empty-string edge case. Caps caption length at 280 chars defensively.
+- UI: optimistic — the tile updates immediately on save, then persists. On failure the previous value is restored and the error is surfaced.
+
+**Touched files:**
+- [supabase/migrations/0046_post_plan_attachment_caption.sql](supabase/migrations/0046_post_plan_attachment_caption.sql) — new column.
+- [web/src/lib/db.js](web/src/lib/db.js) — `caption` in the row mapper; new `updatePostPlanAttachment` helper.
+- [web/src/components/PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx) — `AttachmentTile` caption editor; `handleAttachmentCaptionEdit` optimistic-update handler; threading `onCaptionEdit` through `AttachmentsCard`.
+
+**Operator action required (the user does this, not Claude):**
+- Apply migration `0046_post_plan_attachment_caption.sql` via the Supabase Dashboard's SQL editor (or `supabase db push` if the CLI is available). It's a single non-destructive `ALTER TABLE ADD COLUMN`; no backfill or downtime.
+
+- **Sections touched:** Recent changes log; `Last updated`; §6 Migrations (new `0046_post_plan_attachment_caption.sql` row — full §6 sweep deferred); §6 Data model (post_plan_attachments gained `caption text` — covered in this entry's body).
 
 ### 2026-05-15 — AI Co-pilot: refresh produces fresh suggestions + scroll detaches during streaming
 Two small but visible UX wins on the Co-pilot panel, bundled.
