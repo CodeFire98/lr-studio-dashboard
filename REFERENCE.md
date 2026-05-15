@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-14 (**Live Posts engagement — X re-enabled** via `scrape.badger/twitter-tweets-scraper`. Second-pass actor shootout found a viable tweet-by-ID Apify actor at $0.0002/result (cheapest in the X scraper market — `apidojo/tweet-scraper` and friends only do profile/search input, `kaitoeasyapi` charges for empty results, `pratikdani/twitter-posts-scraper` works but is 100× the cost). New `scrapeX(liveUrl)` in `web/api/engagement/scraper-lib.ts` extracts the tweet ID from `/status/<id>`, calls the actor with `{ id }` input, normalizes `favorite_count` → `like_count`, `retweet_count` → `share_count`, view/reply/bookmark counts via field-name probing (only `favorite_count`/`retweet_count` are confirmed in the actor's visible 20-key dump; the rest may exist past key 20 — `availability_notes` reports which ones came back null). Dispatch, cron eligible platforms, on-paste auto-refresh allowlist, and LivePostsView X-tile UI all flipped: X tiles now render the standard metrics row + "Refresh now" button instead of the "X engagement not tracked" badge. §13 X-skip decision reversed.)
+**Last updated:** 2026-05-15 (**Engagement refresh cron moved off Vercel onto Supabase pg_cron + Edge Function.** Vercel Hobby capped us at one cron-fire/day × 60s function timeout × 5 scrapes per fire = 5 publications/day max, which doesn't scale past the first brand. Moved the orchestrator to a new Supabase Edge Function `engagement-refresh` (Deno port of `web/api/engagement/refresh-cron.ts`'s logic, same tier cadence + priority sort, but with `Promise.allSettled` chunks of 3 and a per-run cap of 20). Trigger is now a pg_cron job inside Postgres calling the function via `pg_net.http_post()` — `CRON_SECRET` + project URL stored in Supabase Vault so the job statement doesn't hardcode them. New `cron_run_log` table (one row per fire, success or fail, with eligible/due/processed/failed/blocked counts + per-publication detail jsonb) means "did the cron run?" is a one-line SELECT instead of a log-spelunk. Schedule tightened to `30 0 * * *` UTC = 6:00 AM IST (was effectively ~6:30+ before). Vercel cron route + the `0 1 * * *` entry both removed; on-paste auto-refresh route (`/api/engagement/refresh`) stays — it's user-triggered, not cron. New SQL migration `0045_engagement_refresh_cron.sql`. Email alerts on failed/blocked deferred — the cron_run_log row carries enough detail for now, will wire a `send-email` template later.)
+
+**Previous (2026-05-14):** **Live Posts engagement — X re-enabled** via `scrape.badger/twitter-tweets-scraper`. Second-pass actor shootout found a viable tweet-by-ID Apify actor at $0.0002/result (cheapest in the X scraper market — `apidojo/tweet-scraper` and friends only do profile/search input, `kaitoeasyapi` charges for empty results, `pratikdani/twitter-posts-scraper` works but is 100× the cost). New `scrapeX(liveUrl)` in `web/api/engagement/scraper-lib.ts` extracts the tweet ID from `/status/<id>`, calls the actor with `{ id }` input, normalizes `favorite_count` → `like_count`, `retweet_count` → `share_count`, view/reply/bookmark counts via field-name probing (only `favorite_count`/`retweet_count` are confirmed in the actor's visible 20-key dump; the rest may exist past key 20 — `availability_notes` reports which ones came back null). Dispatch, cron eligible platforms, on-paste auto-refresh allowlist, and LivePostsView X-tile UI all flipped: X tiles now render the standard metrics row + "Refresh now" button instead of the "X engagement not tracked" badge. §13 X-skip decision reversed.
 
 **Previous (2026-05-14):** **AI Co-pilot web search + daily trend snapshots — PR 3 of N**. New migration `0044_brand_trend_snapshots` (append-only Firecrawl /search cache). New `/api/trends/refresh-cron` Vercel Cron fires daily at 06:00 IST per AI_COPILOT_BRAND_IDS allowlisted brand — 2 Firecrawl /search queries per brand (industry trends + hashtag pulse), writes top 5 deduped results per query. ~60 credits/month per brand. Brand-context compiler grows a `## Industry signals (recent trend articles)` section that surfaces the latest cached signals (max 7 days old) into the chat system prompt — model leads proactively with what's in the news, no per-call Firecrawl spend. New `web_search` tool on `/api/ai/chat` for on-demand drill-down beyond the cached signals — Firecrawl /search, top 5 results, costs credits per call. System prompt updated with a "Use Industry signals before searching" rule and a more concrete proactive-opening rule that names the new section. CopilotPanel ToolCard + CopilotStatus learn friendly labels: "Searching the web for 'sustainable fashion India trends'…" → "Read 5 results from the web". Needs `FIRECRAWL_API_KEY` in Vercel env (already set per prior PRs).)
 
@@ -52,6 +54,53 @@
 ---
 
 ## Recent changes log
+
+### 2026-05-15 — Engagement refresh cron: moved to Supabase pg_cron + Edge Function
+Vercel Hobby was capping engagement throughput at 5 scrapes/day (1 cron-fire × 60s timeout × ~10s/scrape). Today only 5 of 7 eligible Bamboo Bear + Epigamia publications were getting refreshed daily; the rest rotated in over multiple days. Once we onboard more brands, that math breaks badly. Moved the cron orchestrator off Vercel onto Supabase.
+
+**The move:**
+- New Edge Function `supabase/functions/engagement-refresh/index.ts` — Deno port of the old Vercel route. Same tier cadence (daily / 3-day / weekly based on publication age) and same "oldest-snapshot-first" priority sort, with two upgrades enabled by the bigger budget: `Promise.allSettled` chunks of 3 + per-run cap of 20 (was serial + 5).
+- Scraper logic (IG / LinkedIn / X dispatchers) is inlined into the Edge Function rather than shared from `scraper-lib.ts`. Different runtime (Deno vs Node), so a clean inline copy beats fragile cross-runtime imports. The Vercel route `/api/engagement/refresh` (on-paste auto-refresh, user-triggered) still imports from `scraper-lib.ts` and is unchanged.
+- Trigger is a pg_cron job inside Postgres that calls the Edge Function via `pg_net.http_post()`. `CRON_SECRET` + project URL are stored in Supabase Vault so the cron statement doesn't hardcode them.
+- Schedule tightened to `30 0 * * *` UTC = **6:00 AM IST** (the old Vercel cron was `0 1 * * *` = 6:30 AM IST; the user expected 6:00, and pg_cron has no platform-side scheduling drift so it actually fires on-the-minute now).
+- Per-run cap is 20 publications today. At Pro-Supabase 400s wall-clock × `Promise.allSettled` of 3, we have ~80-100s of headroom; bump the cap as scale grows. To re-cadence (e.g. hourly), `SELECT cron.unschedule(...)` + `SELECT cron.schedule(...)` with a new cron expression — no code change, no redeploy.
+
+**Observability:**
+- New table `public.cron_run_log` (append-only, agency-read RLS) — every fire writes one row with `started_at`, `finished_at`, `duration_ms`, `status`, `pubs_eligible`, `pubs_due`, `pubs_processed`, `pubs_failed`, `pubs_blocked`, `error_message`, and a `details` jsonb of per-publication scrape outcomes. Single SELECT answers "did the cron run today and what did it do?". Replaces hunting through edge function logs.
+- pg_net's `net._http_response` table holds the raw HTTP response from the cron call (the pg_net call is fire-and-forget from cron.job's perspective).
+- Email alerts on failure are intentionally deferred. The cron_run_log row already carries enough detail to debug; pushing them via Resend needs a new `send-email` template, which is a follow-up.
+
+**What was removed:**
+- `web/api/engagement/refresh-cron.ts` — deleted.
+- `vercel.json` — removed the `/api/engagement/refresh-cron` cron entry and the `api/engagement/refresh-cron.ts` functions entry. Brings the project back from 3 Vercel crons (over Hobby's 2-cron limit) down to 2: `/api/daily-digest` + `/api/trends/refresh-cron`.
+
+**Operator action required (the user does these, not Claude):**
+1. **Apply the migration** `supabase/migrations/0045_engagement_refresh_cron.sql` via the Supabase Dashboard's SQL editor or `supabase db push`. This installs `pg_cron` + `pg_net`, creates `cron_run_log`, seeds two placeholder Vault rows, and registers the `engagement-refresh-daily` cron job.
+2. **Set the two Vault secrets** in Supabase Dashboard → Project Settings → Vault:
+   - `engagement_cron_secret` ← the same value as Vercel's `CRON_SECRET` env var.
+   - `engagement_project_url` ← `https://<project-ref>.supabase.co`.
+   These start as `REPLACE_ME` placeholders so the migration applies cleanly; the cron won't actually authenticate until the operator overwrites them.
+3. **Deploy the Edge Function** — `supabase functions deploy engagement-refresh` (or paste into the Supabase Dashboard if the local PAT is still 403'ing on multipart).
+4. **Set the function's `CRON_SECRET` secret** — `supabase secrets set CRON_SECRET=<same-value-as-Vercel>` (or via Dashboard → Edge Functions → engagement-refresh → Secrets). The function reads `Deno.env.get("CRON_SECRET")` to validate the bearer.
+
+**Verify after applying** (queries in the migration's footer comment, also reproduced here):
+```sql
+-- Schedule exists?
+select jobname, schedule, command from cron.job where jobname = 'engagement-refresh-daily';
+-- Vault populated?
+select name, decrypted_secret from vault.decrypted_secrets where name in ('engagement_cron_secret','engagement_project_url');
+-- Manually trigger (skip the wait for next 6 AM IST):
+select net.http_post(
+  url := (select decrypted_secret from vault.decrypted_secrets where name = 'engagement_project_url')
+         || '/functions/v1/engagement-refresh',
+  headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer '||(select decrypted_secret from vault.decrypted_secrets where name = 'engagement_cron_secret')),
+  body := '{}'::jsonb
+);
+-- What did the run do?
+select * from cron_run_log order by started_at desc limit 5;
+```
+
+**Sections touched**: Recent changes log; `Last updated`; §6 Migrations (new `0045_engagement_refresh_cron.sql` row); §10 Edge functions / API routes (new `engagement-refresh` Supabase Edge Function — covered in this entry's body for now, full §10 sweep deferred); §13 Known decisions (new entry: "engagement cron on Supabase pg_cron + Edge Function over Vercel cron, to lift Hobby's 1-cron-fire/day × 60s × 5-scrape ceiling without paying for Vercel Pro").
 
 ### 2026-05-14 — Live Posts engagement: X re-enabled via scrape.badger
 Reverses the 2026-05-12 "X intentionally skipped" decision after a second-pass actor shootout found a viable tweet-by-ID Apify actor.
@@ -1347,6 +1396,8 @@ Recent batch:
 - `0041_post_engagement` — two new tables (`post_engagement_snapshots`, `post_embed_cache`) attached to `post_plan_publications` for the Live Posts engagement + embeds feature. Snapshots is append-only (powers monthly reports); embed cache is 1:1 with publications. Read RLS = agency OR account-members-of-the-parent-plan; **no client INSERT/UPDATE/DELETE policies** — writes are service-role only via `/api/engagement/refresh`. Both tables added to `supabase_realtime`. See §13 entry on snapshots-vs-columns and the engagement-scraping decision log.
 - `0042_conversations` — Conversations PR 1: four new tables (`conversations` + `conversation_messages` + `message_attachments` + `conversation_views`) backing the unified per-brand chat. RLS: agency OR account-members read; self-author write on messages; agency-or-uploader on attachments; own-rows on views. Realtime: first three tables in `supabase_realtime`. Backfill: one `conversations` row per existing brand account, every `post_plan_comments` row copied into `conversation_messages` with the plan auto-tagged. Trigger: `accounts_ensure_brand_conversation` provisions a conversation on every new `accounts` INSERT with `type='brand'`. **The legacy `post_plan_comments` table is intentionally not dropped** — kept as a rollback escape hatch for one bake cycle, then deleted in a follow-up. See §13 entry on `conversation_messages`-vs-`messages` naming.
 - `0043_conversation_messages_tagged_plan_decouple` — drops the FK on `conversation_messages.tagged_post_plan_id`. The column stays as a UUID but no longer cascades-set-null when a plan is deleted, so deleted-plan messages keep their orphaned id → the bubble can detect "tagged a plan that no longer exists" and render a "Plan deleted" tombstone chip. Tiny migration — single `drop constraint if exists`.
+- `0044_brand_trend_snapshots` — adds the `brand_trend_snapshots` table for the AI Co-pilot daily trend cache. Append-only, RLS mirrors `post_engagement_snapshots`. Service-role-only writes via `/api/trends/refresh-cron`.
+- `0045_engagement_refresh_cron` — moves the engagement-refresh cron from Vercel to Supabase pg_cron. **Installs the `pg_cron` and `pg_net` extensions**, creates the `cron_run_log` observability table (agency-readable, service-role writes), seeds two **Vault** secrets the cron statement reads at fire time (`engagement_cron_secret` + `engagement_project_url` — both start as `REPLACE_ME` placeholders; operator overwrites via Dashboard → Vault), and registers cron job `engagement-refresh-daily` on schedule `30 0 * * *` UTC (= 6:00 AM IST) which calls `<project_url>/functions/v1/engagement-refresh` with the bearer secret. Re-cadencing is a SQL-only change: `cron.unschedule('engagement-refresh-daily')` + `cron.schedule(...)` with the new expr. To verify after applying, see the migration's footer comment block.
 
 ---
 
@@ -1635,6 +1686,76 @@ SUPABASE_ACCESS_TOKEN=<PAT> \
   supabase functions deploy enrich-brand-kit \
   --project-ref vmfwnfflhvskadkfnvds
 ```
+
+### `engagement-refresh`
+
+Daily cron orchestrator that refreshes engagement snapshots for every IG / LinkedIn / X publication with a `live_url`. Replaces the old Vercel cron route `/api/engagement/refresh-cron` (deleted 2026-05-15).
+
+**Why this lives on Supabase, not Vercel.** Vercel Hobby caps cron jobs at once-per-day and serverless function timeouts at 60s. With ~10s per scrape that ceilings us at 5 publications/day, which doesn't scale past the first brand. Supabase Edge Functions get a 400s wall-clock budget on Pro, are co-located with Postgres (no inter-cloud DB hop), and pg_cron can fire as often as every minute. Same code shape, ~16× the throughput per fire.
+
+**Trigger:** a pg_cron job inside Postgres calls this function via `pg_net.http_post()`. The schedule is registered by migration `0045_engagement_refresh_cron.sql`:
+
+```
+jobname:  engagement-refresh-daily
+schedule: 30 0 * * *           — daily at 00:30 UTC = 6:00 AM IST
+url:      <vault: engagement_project_url>/functions/v1/engagement-refresh
+auth:     Bearer <vault: engagement_cron_secret>
+timeout:  390000ms             — just under the function's 400s ceiling
+```
+
+To re-cadence (e.g. hourly when scale demands): `SELECT cron.unschedule('engagement-refresh-daily'); SELECT cron.schedule('engagement-refresh-daily', '0 * * * *', $cron$ ... $cron$);` — SQL only, no code change, no redeploy.
+
+**Algorithm** (identical tiering to the old Vercel route; see [supabase/functions/engagement-refresh/index.ts](supabase/functions/engagement-refresh/index.ts) for the source):
+
+1. Load publications where `platform IN ('instagram','linkedin','x')` and `live_url IS NOT NULL`.
+2. Load the latest snapshot per publication + the last-3 status streak.
+3. Tier each publication by time-since-publication: <14 days → daily, 15-60 days → every 3 days, 60+ days → weekly. Auto-demote to weekly if the last 3 attempts all failed/blocked (stops burning Apify credit on a permanently-broken URL).
+4. Sort by oldest-snapshot-first (never-scraped go to the top).
+5. Take the top **20** (was 5 on Vercel). Scrape in chunks of **3** with `Promise.allSettled`. Persist each into `post_engagement_snapshots` + upsert `post_embed_cache`.
+
+**Auth:** `Authorization: Bearer <CRON_SECRET>`. The function reads `Deno.env.get("CRON_SECRET")` and does a literal string compare. Same pattern as `send-email`'s daily-digest path. The pg_cron job pulls the value from `vault.decrypted_secrets` so the cron statement doesn't hardcode it.
+
+**Observability:**
+- Every run inserts one row into `public.cron_run_log` (success or fail) with `started_at`, `finished_at`, `duration_ms`, `status`, `pubs_eligible`, `pubs_due`, `pubs_processed`, `pubs_failed`, `pubs_blocked`, `error_message`, and a `details` jsonb of per-publication outcomes. Single SELECT answers "did the cron run today and what did it do?":
+  ```sql
+  select * from cron_run_log where function_name = 'engagement-refresh' order by started_at desc limit 5;
+  ```
+- pg_net's `net._http_response` table holds the raw HTTP response from the cron-side call.
+- Email alerts on failure are deferred. When we want them, add an `engagement-cron-alert` template to `send-email` and call it from this function on `runError || failed > 0 || blocked > 0`.
+
+**Env vars** (set with `supabase secrets set ...` or via Dashboard → Edge Functions → Secrets):
+
+| Var | Required | Source |
+|---|---|---|
+| `CRON_SECRET` | yes | Same opaque string as Vercel's `CRON_SECRET` (so a future re-merge of the cron back onto Vercel doesn't change the auth path) |
+| `APIFY_API_TOKEN` | yes | `apify_api_...` |
+| `SUPABASE_URL` | auto | Injected by platform |
+| `SUPABASE_SERVICE_ROLE_KEY` | auto | Injected by platform |
+
+**Manually trigger a run** (useful right after deploy or for spot-debug):
+```sql
+select net.http_post(
+  url := (select decrypted_secret from vault.decrypted_secrets where name = 'engagement_project_url')
+         || '/functions/v1/engagement-refresh',
+  headers := jsonb_build_object(
+    'Content-Type', 'application/json',
+    'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'engagement_cron_secret')
+  ),
+  body := '{}'::jsonb
+);
+```
+
+**Note about `web/api/engagement/refresh.ts`** — the on-paste auto-refresh route is **unchanged**. That route is user-triggered (fired from `PostPlanDetailView` on mark-posted), Vercel-hosted, and shares `scraper-lib.ts` with no other consumer now that the cron route is gone. Both code paths use the same Apify actors and the same `persistScrapeResult` shape, so a snapshot inserted by either looks identical.
+
+#### Deploying the edge function
+
+```sh
+SUPABASE_ACCESS_TOKEN=<PAT> \
+  supabase functions deploy engagement-refresh \
+  --project-ref vmfwnfflhvskadkfnvds
+```
+
+If the local PAT 403's on `/functions/deploy` (legacy issue from 2026-04-27, may still bite), the alternative is paste-into-Dashboard at Project Settings → Edge Functions → New Function. The function code is self-contained — no external imports beyond `@supabase/supabase-js` and the shared `_shared/cors.ts`.
 
 ### `send-email`
 
