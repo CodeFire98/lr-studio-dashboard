@@ -978,6 +978,7 @@ const App = () => {
         setRoute={setRoute}
         unreadByPlan={unreadByPlan}
         onPlanCreated={upsertPostPlan}
+        onPlanChanged={upsertPostPlan}
         auth={auth}
       />
     );

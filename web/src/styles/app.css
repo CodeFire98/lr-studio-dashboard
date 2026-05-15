@@ -4186,6 +4186,13 @@ input, textarea { font: inherit; color: inherit; }
 .cal-week-col.is-today {
   background: color-mix(in oklab, var(--accent) 8%, var(--surface));
 }
+/* Drop target while drag-rescheduling a post chip. The dashed outline
+   tracks the inset corners so we don't add real layout thickness. */
+.cal-week-col.is-drop-target {
+  background: color-mix(in oklab, var(--accent) 16%, var(--surface));
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
 .cal-week-col-head {
   display: flex;
   align-items: baseline;
