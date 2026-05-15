@@ -189,16 +189,25 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCap
   const startEditingCaption = (e) => {
     if (!canEditCaption) return;
     if (e) { e.stopPropagation(); e.preventDefault(); }
-    setCaptionDraft(caption);
+    // Pre-fill the input with the CURRENT displayed label (caption when
+    // set, filename otherwise) so the user can either tweak the existing
+    // value or wipe and start fresh. Matches what they see on screen.
+    setCaptionDraft(caption || att.filename || '');
     setEditingCaption(true);
   };
   const commitCaption = () => {
     setEditingCaption(false);
-    onCaptionSave?.(att, captionDraft.trim());
+    const next = captionDraft.trim();
+    // If the user kept the input identical to the filename (i.e. didn't
+    // actually customize it), don't persist a redundant copy of the
+    // filename as the caption. Store null instead so the UI's
+    // caption-or-filename fallback keeps working uniformly.
+    const normalized = next === (att.filename || '').trim() ? '' : next;
+    onCaptionSave?.(att, normalized);
   };
   const cancelCaption = () => {
     setEditingCaption(false);
-    setCaptionDraft(caption);
+    setCaptionDraft(caption || att.filename || '');
   };
   const primaryLabel = caption || att.filename;
   const openInLightbox = () => {
@@ -301,7 +310,7 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCap
               if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
               if (e.key === 'Escape') { e.preventDefault(); cancelCaption(); }
             }}
-            placeholder="Add a caption…"
+            placeholder={att.filename || 'Add a caption…'}
             maxLength={280}
             style={{
               fontSize: 12,
@@ -321,11 +330,11 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCap
               type="button"
               onClick={canEditCaption ? startEditingCaption : openInLightbox}
               title={canEditCaption
-                ? (caption ? 'Click to edit caption' : 'Click to add a caption')
+                ? (caption ? 'Click to edit caption' : 'Click to edit — defaults to filename')
                 : `Preview ${primaryLabel}`}
               style={{
                 fontSize: 12,
-                color: caption ? 'var(--ink-1)' : 'var(--ink-3)',
+                color: 'var(--ink-1)',
                 background: 'transparent',
                 border: 0,
                 padding: 0,
@@ -335,19 +344,18 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCap
                 whiteSpace: 'nowrap',
                 textAlign: 'left',
                 font: 'inherit',
-                fontStyle: caption ? 'normal' : 'italic',
                 flex: 1,
                 minWidth: 0,
               }}
             >
-              {caption || (canEditCaption ? 'Add a caption…' : att.filename)}
+              {primaryLabel}
             </button>
             {canEditCaption && hovering && (
               <button
                 type="button"
                 onClick={startEditingCaption}
-                aria-label={caption ? 'Edit caption' : 'Add caption'}
-                title={caption ? 'Edit caption' : 'Add caption'}
+                aria-label={caption ? 'Edit caption' : 'Edit caption (defaults to filename)'}
+                title={caption ? 'Edit caption' : 'Edit caption (defaults to filename)'}
                 style={{
                   border: 0,
                   background: 'transparent',

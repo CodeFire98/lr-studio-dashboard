@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-15 (**Post-plan attachments: editable captions.** New `caption` column on `post_plan_attachments` — optional, nullable, user-editable label distinct from `filename` (which stays the immutable source-of-truth for downloads). Inline click-to-edit on the attachment tile: agency users see "Add a caption…" placeholder in italic when empty, click to flip to a text input (autofocus, max 280 chars, Enter saves, Escape cancels). Pencil affordance reveals on hover. When a caption is set, the tile shows caption as the primary label and demotes filename + uploader to a single secondary line. Lightbox header uses the caption when present; the Download button still uses filename so the file lands with its real name. Brand users see captions read-only. Optimistic write with revert-on-failure. Migration `0046_post_plan_attachment_caption.sql`. New `updatePostPlanAttachment(id, { caption })` helper in `web/src/lib/db.js`. Lives in `web/src/components/PostPlanDetailView.jsx`.)
+**Last updated:** 2026-05-15 (**Post-plan attachments: editable captions.** New `caption` column on `post_plan_attachments` — optional, nullable, user-editable label distinct from `filename`. Empty caption renders the filename as the primary label; clicking the label (or the pencil-on-hover) opens an inline input pre-filled with the filename, which the agency can keep, tweak, or replace entirely. Saving the same string as the filename is normalized to null on the client so we don't store redundant copies. Lightbox header uses the caption when present; the Download button always uses filename so the file lands with its real name. Brand users see captions read-only. Optimistic write with revert-on-failure. Migration `0046_post_plan_attachment_caption.sql` also adds the missing UPDATE RLS policy on `post_plan_attachments` (existing migration 0021 had SELECT/INSERT/DELETE policies but no UPDATE — caption saves were silently failing with PostgREST's "Cannot coerce the result to a single JSON object" until this gap was closed). New `updatePostPlanAttachment(id, { caption })` helper in `web/src/lib/db.js`. Lives in `web/src/components/PostPlanDetailView.jsx`.)
 
 **Previous (2026-05-15):** **AI Co-pilot: two QoL fixes — refresh produces fresh suggestions, scroll detaches during streaming.** (1) The welcome-screen Refresh button was producing near-identical suggestions every click — temp 0.9 + identical (within-day) prompts let the model converge on the same output. The route now accepts a `previousSuggestions` array, the client accumulates every suggestion it's shown into a session-local ref capped at 16, and the server prompt explicitly names them with "DO NOT repeat or paraphrase". A 6-char nonce is also injected per-call so even the first refresh produces byte-different input. While the refresh is in flight, the old chips are hidden so the admin gets immediate "new ones coming" feedback. (2) During streaming the user was being pulled to the bottom on every token, making it impossible to read earlier messages mid-generation. Added stick-to-bottom logic: a scroll listener on the message container maintains a `stickToBottomRef`; the auto-scroll only fires when the user is within 64px of the bottom. Scrolling up detaches; scrolling back to the bottom re-engages. When detached during streaming, a "New tokens below" pill surfaces above the composer to jump back to the latest. Both changes live in `web/src/components/CopilotPanel.jsx` + `web/api/ai/suggestions.ts` + a small CSS rule for the jump-pill.
 
@@ -70,27 +70,30 @@
 ### 2026-05-15 — Post-plan attachments: editable captions
 Small but high-value UX add on the attachments grid. Files have always had a `filename` (the original upload name, used for downloads), but agency teams want a human-readable label they can edit *after* upload — so a grid of references reads as *"Hero close-up"* / *"Maya's testimonial frame"* / *"Backup B-roll"* instead of *"IMG_2384.jpg"* / *"FINAL_v3_REAL.mov"*.
 
-**Schema:** migration `0046_post_plan_attachment_caption.sql` adds a nullable `caption text` column on `post_plan_attachments`. No data migration — existing rows stay null and the UI falls back to filename. No RLS change — existing agency/owner write policies already cover caption edits.
+**Schema:** migration `0046_post_plan_attachment_caption.sql` does two things:
+- Adds a nullable `caption text` column on `post_plan_attachments`. No data migration — existing rows stay null and the UI falls back to filename.
+- **Fills an RLS gap discovered during initial testing:** migration 0021 had defined SELECT/INSERT/DELETE policies on `post_plan_attachments` but no UPDATE policy. With RLS enabled, the default for missing policies is deny — caption saves were failing silently with PostgREST's *"Cannot coerce the result to a single JSON object"* error (the UPDATE matched 0 rows, the chained `.select().single()` then errored). New `post_plan_attachments_update_own_or_agency` policy mirrors the existing DELETE policy: uploader OR agency. Migration is idempotent (`add column if not exists`, `drop policy if exists` before create) so it's safe to re-run if a partial version is already in place.
 
-**Tile UI (`PostPlanDetailView.jsx` → `AttachmentTile`):**
-- **Primary label**: caption when set, otherwise filename (italic + dim "Add a caption…" placeholder for agency on empty captions).
-- **Secondary line**: when caption is set, this becomes `<filename> · uploader · size` (compact). When caption is empty, it's the original `<uploader> · <size>`. So filename never disappears — it just demotes.
-- **Edit affordance**: agency-only. Hover reveals a small pencil icon next to the label. Click the label OR the pencil → flips to an inline `<input>` (autofocus, `maxLength=280`, Enter blurs/saves, Escape reverts, blur saves).
-- **Brand users**: see captions read-only. The placeholder shows the filename (no "Add a caption…" prompt) and the pencil never appears.
+**Tile UI (`PostPlanDetailView.jsx` -> `AttachmentTile`):**
+- **Primary label**: caption when set, **otherwise the filename itself** (no italic placeholder, no "Add a caption..." prompt -- the filename IS the default caption visually). Click the label to edit.
+- **Secondary line**: when caption is set, this becomes `<filename> | uploader | size` (compact). When caption is empty (filename is the primary), it's `<uploader> | <size>`.
+- **Edit affordance**: agency-only. Hover reveals a small pencil icon next to the label. Click the label OR the pencil flips to an inline `<input>` (autofocus, `maxLength=280`, Enter blurs/saves, Escape reverts, blur saves). The input is **pre-filled with the current displayed label** (caption if set, filename if not) so the agency can tweak rather than re-type from scratch.
+- **No-op on identity save**: if the user saves the input without changing it from the filename, the client normalizes to `null` so we don't store a redundant copy of the filename as the caption.
+- **Brand users**: see captions read-only. The label is whatever the agency set (or the filename if nothing was set), and the pencil never appears.
 
-**Lightbox:** header uses caption when present (falls back to filename otherwise). The Download button always uses `filename` regardless — captions don't have extensions, and a downloaded file with no extension breaks downstream tooling.
+**Lightbox:** header uses caption when present (falls back to filename otherwise). The Download button always uses `filename` regardless -- captions don't have extensions, and a downloaded file with no extension breaks downstream tooling.
 
 **Save path:**
 - Client: new `updatePostPlanAttachment(id, { caption })` helper in `web/src/lib/db.js`. Empty/whitespace-only input is normalized to `null` server-side so list views can fall back to filename uniformly without an empty-string edge case. Caps caption length at 280 chars defensively.
-- UI: optimistic — the tile updates immediately on save, then persists. On failure the previous value is restored and the error is surfaced.
+- UI: optimistic -- the tile updates immediately on save, then persists. On failure the previous value is restored and the error is alerted.
 
 **Touched files:**
-- [supabase/migrations/0046_post_plan_attachment_caption.sql](supabase/migrations/0046_post_plan_attachment_caption.sql) — new column.
-- [web/src/lib/db.js](web/src/lib/db.js) — `caption` in the row mapper; new `updatePostPlanAttachment` helper.
-- [web/src/components/PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx) — `AttachmentTile` caption editor; `handleAttachmentCaptionEdit` optimistic-update handler; threading `onCaptionEdit` through `AttachmentsCard`.
+- [supabase/migrations/0046_post_plan_attachment_caption.sql](supabase/migrations/0046_post_plan_attachment_caption.sql) -- new column + missing UPDATE policy.
+- [web/src/lib/db.js](web/src/lib/db.js) -- `caption` in the row mapper; new `updatePostPlanAttachment` helper.
+- [web/src/components/PostPlanDetailView.jsx](web/src/components/PostPlanDetailView.jsx) -- `AttachmentTile` caption editor; `handleAttachmentCaptionEdit` optimistic-update handler; threading `onCaptionEdit` through `AttachmentsCard`.
 
 **Operator action required (the user does this, not Claude):**
-- Apply migration `0046_post_plan_attachment_caption.sql` via the Supabase Dashboard's SQL editor (or `supabase db push` if the CLI is available). It's a single non-destructive `ALTER TABLE ADD COLUMN`; no backfill or downtime.
+- Apply migration `0046_post_plan_attachment_caption.sql` via the Supabase Dashboard's SQL editor (or `supabase db push` if the CLI is available). It's an `ALTER TABLE ADD COLUMN` plus a `CREATE POLICY`; both are idempotent (safe to re-run if a partial version was applied earlier).
 
 - **Sections touched:** Recent changes log; `Last updated`; §6 Migrations (new `0046_post_plan_attachment_caption.sql` row — full §6 sweep deferred); §6 Data model (post_plan_attachments gained `caption text` — covered in this entry's body).
 
