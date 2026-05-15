@@ -279,7 +279,7 @@ When drafting copy via create_post_plan_draft, match these platform conventions.
 ## Available tools
 
 - read_brand_context — already compiled into the system message; you don't need to call this unless the admin explicitly says "refresh my brand context"
-- create_post_plan_draft — create a real post_plans row pre-filled with concept and per-platform copy. status='drafting', ai_generated=true. The admin will edit and submit for review.
+- create_post_plan_draft — PROPOSE a post plan as an inline card in the chat. The post is NOT added to the calendar yet — only the admin clicking "Open plan" on the card commits the row. If they ignore the card, the proposal evaporates. When you reply in chat after calling this tool, talk about it as a proposal ("I've drafted a plan for X — open it to add to the calendar"), NOT as something already in the calendar.
 - write_brand_note — persist a fact about the brand to the brand_kit_notes table. Used when the admin tells you to remember something. The note flows into the brand context on every future AI call (chat + inline copy). Pin always-true facts; leave others non-pinned.
 - load_skill — fetch one of the marketing playbooks listed below. Use when its description matches the work. Loaded body rides in context for the rest of the conversation.
 - load_skill_reference — fetch a deep-dive reference doc from an already-loaded skill (e.g. post templates, copy frameworks, idea catalogues). Call when the SKILL response lists the reference and it looks directly useful.
@@ -578,36 +578,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const tools = {
     create_post_plan_draft: tool({
       description:
-        "Create a new post plan as an AI draft in this brand's calendar. The plan lands at status='drafting' with ai_generated=true. The admin reviews and edits in the existing post-plan detail view, then submits for review through the standard workflow. Use this whenever the admin asks you to plan a post or draft content — don't just describe the post, create it.",
+        "Propose a post plan for the admin to review as an inline card in this chat. The plan is NOT yet added to the brand's calendar — it only commits to the database when the admin clicks 'Open plan' on the card. If they never click, the proposal evaporates with the chat session. Use this whenever the admin asks you to plan a post or draft content — propose the full draft (concept, platforms, copy) and let them decide what to keep. When you respond in chat after calling this tool, frame the post as a *proposal* the admin can review, not a fait accompli that's already on the calendar.",
       inputSchema: createPostPlanDraftInput,
       execute: async (input): Promise<ToolExecResult> => {
-        const insertRow = {
-          account_id: body.accountId,
-          scheduled_at: input.scheduled_at,
-          platforms: input.platforms,
-          concept: input.concept,
-          copy_variants: input.copy_variants,
-          status: "drafting",
-          created_by: user.id,
-          ai_generated: true,
-          ai_draft_payload: input,
-        };
-
-        const { data, error } = await serviceClient
-          .from("post_plans")
-          .insert(insertRow)
-          .select("id, scheduled_at, platforms, concept, status")
-          .single();
-
-        if (error) return { ok: false, error: `insert failed: ${error.message}` };
+        // NOTE: No DB write here. We deliberately defer the post_plans
+        // INSERT to the client side — the admin commits by clicking
+        // "Open plan" on the inline tool card, which calls
+        // `commitAiDraftPlan` (web/src/lib/db.js). The rationale: if the
+        // model produces 5 plans in a thread and the admin only engages
+        // with 2 of them, only those 2 should land on the calendar. The
+        // remaining 3 should not pollute the calendar with un-reviewed
+        // AI output.
+        //
+        // The tool result echoes the proposed payload back to the model
+        // so its next message can reference what it just drafted. The
+        // `proposed: true` + missing `id` are the signals the client
+        // ToolCard uses to render the "Open plan" CTA in "commit-on-click"
+        // mode instead of "navigate-to-existing-row" mode.
         return {
           ok: true,
           result: {
-            id: data.id,
-            scheduled_at: data.scheduled_at,
-            platforms: data.platforms,
-            concept: data.concept,
-            status: data.status,
+            proposed: true,
+            scheduled_at: input.scheduled_at,
+            platforms: input.platforms,
+            concept: input.concept,
+            copy_variants: input.copy_variants,
+            status: "drafting",
           },
         };
       },

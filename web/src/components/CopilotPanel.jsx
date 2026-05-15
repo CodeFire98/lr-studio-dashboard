@@ -99,7 +99,7 @@ const SUGGESTIONS_SCHEMA = z.object({
   suggestions: z.array(z.string()),
 });
 
-const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan, brandSlug }) => {
+const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan, onCommitDraft, brandSlug }) => {
   // DefaultChatTransport handles auth header injection per request and
   // appends accountId to the request body. Memoized on accountId so brand
   // switches rebuild the transport (otherwise it closes over stale value).
@@ -361,7 +361,7 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
 
         {messages.map((m) => (
           <div key={m.id} className={`copilot-msg copilot-msg-${m.role}`}>
-            {m.parts.map((part, idx) => renderPart(part, idx, m.id, m.role, { onNavigateToPlan, brandSlug }))}
+            {m.parts.map((part, idx) => renderPart(part, idx, m.id, m.role, { onNavigateToPlan, onCommitDraft, brandSlug }))}
           </div>
         ))}
 
@@ -672,6 +672,7 @@ function renderPart(part, idx, messageId, role, ctx) {
         output={part.output}
         errorText={part.errorText}
         onNavigateToPlan={ctx.onNavigateToPlan}
+        onCommitDraft={ctx.onCommitDraft}
         brandSlug={ctx.brandSlug}
       />
     );
@@ -699,7 +700,7 @@ function renderPart(part, idx, messageId, role, ctx) {
 // The SYSTEM_PROMPT also instructs the model not to announce internal
 // failures, so the post-recovery text reads as if the first attempt
 // worked.
-function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan, brandSlug }) {
+function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan, onCommitDraft, brandSlug }) {
   const isPlan = toolName === "create_post_plan_draft";
   const isNote = toolName === "write_brand_note";
   const isLoadSkill = toolName === "load_skill";
@@ -719,7 +720,20 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
   const innerError = inner && !inner.ok ? inner.error : null;
   const displayError = innerError || errorText;
 
-  const planId = isPlan && ok && result?.id ? result.id : null;
+  // Plan tile state. The tool no longer inserts on the server — the
+  // result is `{ proposed: true, scheduled_at, platforms, concept,
+  // copy_variants, status }` (see web/api/ai/chat.ts). The "Open plan"
+  // click is what actually inserts the post_plans row. Once committed,
+  // we stash the resulting plan id locally so subsequent clicks just
+  // navigate instead of double-inserting.
+  const isProposedPlan = isPlan && ok && result?.proposed === true;
+  // Tolerate legacy/server-committed shape too — if some path still
+  // returns a real id (e.g. older history before this change), we'll
+  // treat it as already-committed and skip the commit step on click.
+  const legacyCommittedId = isPlan && ok && result?.id ? result.id : null;
+  const [committedId, setCommittedId] = useState(legacyCommittedId);
+  const [committing, setCommitting] = useState(false);
+  const [commitError, setCommitError] = useState(null);
 
   let statusKey = "running";
   if (isError || (!ok && inner)) statusKey = "error";
@@ -770,7 +784,7 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
               : `Running ${toolName}…`;
   } else if (statusKey === "ok") {
     headline = isPlan
-      ? "Created an AI draft plan"
+      ? (committedId ? "Added to the calendar" : "Drafted a post plan — open to add")
       : isNote
         ? (input?.is_pinned ? "Saved a pinned brand note" : "Saved a brand note")
         : isLoadSkill
@@ -815,13 +829,50 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
       {statusKey === "error" && displayError && (
         <div className="copilot-tool-error">{displayError}</div>
       )}
-      {planId && (
-        <button
-          className="copilot-tool-cta"
-          onClick={() => onNavigateToPlan?.(planId, brandSlug)}
-        >
-          Open plan →
-        </button>
+      {isPlan && ok && (isProposedPlan || committedId) && (
+        <>
+          <button
+            className="copilot-tool-cta"
+            disabled={committing}
+            onClick={async () => {
+              if (committing) return;
+              // Already committed once — just navigate.
+              if (committedId) {
+                onNavigateToPlan?.(committedId, brandSlug);
+                return;
+              }
+              // First click on a proposed draft → commit, then navigate.
+              if (!onCommitDraft) {
+                setCommitError("Commit handler missing — refresh and retry.");
+                return;
+              }
+              setCommitting(true);
+              setCommitError(null);
+              try {
+                const plan = await onCommitDraft(result);
+                if (plan?.id) {
+                  setCommittedId(plan.id);
+                  onNavigateToPlan?.(plan.id, brandSlug);
+                } else {
+                  setCommitError("Could not add to calendar (no plan id returned).");
+                }
+              } catch (e) {
+                setCommitError(e?.message || "Could not add to calendar.");
+              } finally {
+                setCommitting(false);
+              }
+            }}
+          >
+            {committing
+              ? "Adding to calendar…"
+              : committedId
+                ? "Open plan →"
+                : "Open plan →"}
+          </button>
+          {commitError && (
+            <div className="copilot-tool-error" role="alert">{commitError}</div>
+          )}
+        </>
       )}
     </div>
   );
