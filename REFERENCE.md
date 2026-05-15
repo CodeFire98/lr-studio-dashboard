@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-15 (**Reset scroll to top on SPA route changes.** Opening a post plan from the calendar used to land mid-page (near the Copy card) because React Router does client-side route changes and the browser doesn't auto-reset scroll on those — the scroll-y from the calendar carried into the detail view. Fixed with a single `useEffect` in `App.jsx` that calls `window.scrollTo(0, 0)` on `location.pathname` change. Gated on `navigationType !== 'POP'` so back/forward browser nav still restores the previous scroll position (the browser's own `history.scrollRestoration: 'auto'` is left alone for that). Applies to every route in the SPA, not just post-plan opens.)
+**Last updated:** 2026-05-15 (**AI Co-pilot: commit-on-click for proposed post plans.** The `create_post_plan_draft` tool no longer inserts into `post_plans` when the model calls it — the tool now just echoes the proposed payload back as `{ proposed: true, … }` and the inline ToolCard renders an "Open plan →" CTA. The DB INSERT happens on the client when the admin clicks "Open plan", via a new `commitAiDraftPlan` helper in `web/src/lib/db.js`. Rationale: if the model produces five plans in a thread and the admin only engages with two, only those two should land on the calendar — un-reviewed AI output shouldn't pollute the planning surface. ToolCard tracks per-card `committedId` + `committing` state so a second click is idempotent (just navigates). Tool description + system-prompt bullet rewritten so the model frames its replies as proposals ("I've drafted a plan for you to open"), not fait accompli. After commit, the headline flips from "Drafted a post plan — open to add" to "Added to the calendar". No schema change, no migration. Legacy tool history that returned a real `id` is still respected as already-committed.)
+
+**Previous (2026-05-15):** **Reset scroll to top on SPA route changes.** Opening a post plan from the calendar used to land mid-page (near the Copy card) because React Router does client-side route changes and the browser doesn't auto-reset scroll on those — the scroll-y from the calendar carried into the detail view. Fixed with a single `useEffect` in `App.jsx` that calls `window.scrollTo(0, 0)` on `location.pathname` change. Gated on `navigationType !== 'POP'` so back/forward browser nav still restores the previous scroll position (the browser's own `history.scrollRestoration: 'auto'` is left alone for that). Applies to every route in the SPA, not just post-plan opens.
 
 **Previous (2026-05-15):** **Calendar / post-plan QoL pass — three bundled UX wins.** (1) Month + Week calendar views accept HTML5 drag of post chips to a different day cell; only the date portion of `scheduled_at` changes (time-of-day preserved); same-day drops are no-ops; posted plans are non-draggable; optimistic write with revert-on-failure. (2) When an admin saves the first piece of copy on a still-untitled post plan, the `concept` is auto-filled from the first non-empty line of that copy (emoji/punctuation stripped, sentence-first preferred, truncated at word boundary) — fires exactly once per plan, surfaces a dismissible sparkles callout with Undo. (3) Both auto-generation paths for the post-plan `concept` now target **5-10 words** instead of full sentences: the `create_post_plan_draft` zod field demands a HEADLINE not a sentence (with concrete examples + `.min(3).max(80)` hard cap), and the auto-title cap drops from 60 → 50 chars.
 
@@ -60,6 +62,34 @@
 ---
 
 ## Recent changes log
+
+### 2026-05-15 — AI Co-pilot: commit proposed post plans only when the admin opens them
+Behaviour shift on the `create_post_plan_draft` tool. Previously, the model calling the tool inserted a row into `post_plans` immediately; the inline tile in the chat was just an "Open plan →" link to that already-created row. Result: when the model proposed five plans in one thread, all five landed on the calendar even if the admin only cared about two — five "✨ AI draft" tiles to triage later, easy to lose track of.
+
+**The change:** the tool's `execute()` no longer writes to the DB. It returns the proposed payload (`{ proposed: true, scheduled_at, platforms, concept, copy_variants, status }`) and the chat history carries the proposal. The DB INSERT moves to the client, in a new `commitAiDraftPlan({ accountId, userId, draft })` helper in `web/src/lib/db.js`, fired by the ToolCard's "Open plan" click handler. Only proposals the admin actually clicks become rows.
+
+**Card UI states:**
+- **Running** → "Drafting a post plan…" (unchanged).
+- **Output ready, not yet committed** → "Drafted a post plan — open to add" + the "Open plan →" CTA is now a commit-and-navigate action.
+- **Committing** → button disabled with "Adding to calendar…".
+- **Committed** → "Added to the calendar" + subsequent clicks of "Open plan" just navigate (idempotent via local `committedId` state on the ToolCard).
+- **Commit error** → inline error string, button re-enabled so the admin can retry.
+
+**Idempotency / refresh handling:**
+- Within a single session, repeat clicks on the same card after a successful commit don't double-insert — the ToolCard remembers the new `planId` in local state.
+- Across page refreshes, since chat history is currently in-memory (DB-backed conversation persistence is parked), the proposal disappears with the chat. The admin would need to ask again to re-propose. Acceptable: the explicit user-affirmation model is the whole point of the change.
+
+**Tool description + system prompt** were rewritten to match. The model's narrative for the post-tool-call reply now frames the post as a proposal ("I've drafted a plan for X — open it to add to the calendar") rather than as something already on the calendar. Misalignment between what the model says and what the calendar shows would be very confusing otherwise.
+
+**Backwards compatibility:** if any older chat history still has a tool result with a real `id` (pre-change shape), the ToolCard treats it as already-committed and the click goes straight to navigate — no double-insert.
+
+**Touched files:**
+- [web/api/ai/chat.ts](web/api/ai/chat.ts) — tool execute() body + tool description + system-prompt bullet for `create_post_plan_draft`.
+- [web/src/lib/db.js](web/src/lib/db.js) — new `commitAiDraftPlan({ accountId, userId, draft })` helper.
+- [web/src/components/CopilotPanel.jsx](web/src/components/CopilotPanel.jsx) — ToolCard takes an `onCommitDraft` prop; tracks per-card `committedId` / `committing` / `commitError`; headline flips between "Drafted a post plan — open to add" and "Added to the calendar".
+- [web/src/App.jsx](web/src/App.jsx) — wires the `onCommitDraft` handler that calls `commitAiDraftPlan` and seeds App-level state via `upsertPostPlan` so the calendar reflects the new row immediately.
+
+- **Sections touched:** Recent changes log; `Last updated`; §10 Edge functions / API routes (tool-side behaviour of `create_post_plan_draft` — documented in this entry's body; full §10 sweep deferred).
 
 ### 2026-05-15 — Reset window scroll on forward SPA navigation
 Tiny but visible UX bug: opening a post plan from the calendar landed the user mid-page (typically near the Copy card) instead of at the top. Root cause was React Router doing client-side route changes — the browser preserves the previous page's scroll-y on those, so the y-pixel position from the calendar carried straight into the detail view. With both pages having similar vertical extent, this consistently put the user near the middle of the new page.

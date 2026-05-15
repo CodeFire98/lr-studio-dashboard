@@ -1678,6 +1678,46 @@ export async function createPostPlan({
 }
 
 /**
+ * Commit a post plan that the AI Co-pilot PROPOSED in chat (via the
+ * create_post_plan_draft tool). Unlike `createPostPlan` (human-initiated
+ * "Plan a new post" path), this one stamps `ai_generated=true` + saves
+ * the original AI proposal under `ai_draft_payload` so we can compare
+ * what the model said vs what the admin shipped later if we ever care.
+ *
+ * Called from CopilotPanel's ToolCard when the admin clicks "Open plan"
+ * on a proposed-draft tile. The proposed draft lives only in chat-UI
+ * state until this is invoked, so until the click happens the calendar
+ * is untouched.
+ */
+export async function commitAiDraftPlan({ accountId, userId, draft }) {
+  if (!accountId) throw new Error('commitAiDraftPlan: accountId is required');
+  if (!draft || typeof draft !== 'object') {
+    throw new Error('commitAiDraftPlan: draft payload is required');
+  }
+  if (!draft.scheduled_at) {
+    throw new Error('commitAiDraftPlan: draft.scheduled_at is required');
+  }
+  const payload = {
+    account_id: accountId,
+    scheduled_at: draft.scheduled_at,
+    platforms: Array.isArray(draft.platforms) ? draft.platforms : [],
+    concept: draft.concept || '',
+    copy_variants: draft.copy_variants && typeof draft.copy_variants === 'object' ? draft.copy_variants : {},
+    status: 'drafting',
+    created_by: userId ?? null,
+    ai_generated: true,
+    ai_draft_payload: draft,
+  };
+  const { data, error } = await supabase
+    .from('post_plans')
+    .insert(payload)
+    .select(POST_PLAN_SELECT)
+    .single();
+  if (error) throw error;
+  return mapPostPlanRow(data);
+}
+
+/**
  * Duplicate a post plan to one or more target dates.
  * Copies platforms, concept, and copyVariants from the source plan.
  * Each duplicate gets status 'drafting' and scheduled_at at 09:00 local.

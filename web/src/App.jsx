@@ -47,6 +47,7 @@ import {
   skipBrandOnboarding,
   loadPostPlans,
   subscribeToPostPlans,
+  commitAiDraftPlan,
   loadBrandAccounts,
   loadPostPlanUnreadCounts,
   subscribeToPostPlanActivity,
@@ -1204,6 +1205,20 @@ const App = () => {
             userId={auth?.id}
             onClose={() => setCopilotOpen(false)}
             onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setCopilotOpen(false); }}
+            onCommitDraft={async (draft) => {
+              // The AI Co-pilot proposes plans inline but doesn't write
+              // them to the calendar — only the admin clicking "Open plan"
+              // commits the row. Here we INSERT and seed App-level state
+              // so the calendar reflects the new plan immediately instead
+              // of waiting on the realtime round-trip.
+              const plan = await commitAiDraftPlan({
+                accountId: scopeAccountId,
+                userId: auth?.id,
+                draft,
+              });
+              upsertPostPlan(plan);
+              return plan;
+            }}
           />
         </Suspense>
       )}
