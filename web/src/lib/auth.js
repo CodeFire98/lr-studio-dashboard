@@ -93,7 +93,7 @@ function hydrateProfile(user, profileRow, membershipRows, activeAccountId) {
     name,
     initials: profileRow?.initials || initialsFrom(name, user.email),
     role: isAgency
-      ? (activeRole === 'owner' ? 'Agency Owner, L+R' : 'Agency Member')
+      ? (activeRole === 'owner' ? 'Agency Owner, Linkrunner Media' : 'Agency Member')
       : (activeRole === 'owner' ? 'Brand Owner' : 'Brand Lead'),
     activeRole, // 'owner' | 'member' | null — raw role on the active account
     avatarColor: profileRow?.avatar_color || avatarColorFor(user.email || user.id),

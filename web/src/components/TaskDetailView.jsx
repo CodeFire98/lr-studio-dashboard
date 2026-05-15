@@ -628,7 +628,7 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
             <div className="card-head">
               <div>
                 <div className="card-title">Conversation</div>
-                <div className="card-sub">{messages.length} messages between {task.accountName || task.tag} and L+R</div>
+                <div className="card-sub">{messages.length} messages between {task.accountName || task.tag} and Linkrunner Media</div>
               </div>
             </div>
             <div className="thread" ref={threadRef}>
@@ -653,7 +653,7 @@ const TaskDetailView = ({ taskId, tasks, updateTask, setRoute, mode }) => {
             </div>
             <div className="thread-composer">
               <textarea
-                placeholder={mode === "admin" ? "Reply as L+R…" : "Reply to your creative lead…"}
+                placeholder={mode === "admin" ? "Reply as Linkrunner Media…" : "Reply to your creative lead…"}
                 value={reply}
                 onChange={(e) => setReply(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendReply(); }}
