@@ -4,7 +4,7 @@
    /calendar via the GUEST_ALLOWED gate. Brand owners + agency users see
    the full app with sidebar surfaces driven by BrandPicker. */
 import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { Icon } from './components/Icon.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TweaksPanel } from './components/TweaksPanel.jsx';
@@ -212,7 +212,21 @@ const App = () => {
   // brand slug automatically and generates the right URL.
   const location = useLocation();
   const navigate = useNavigate();
+  const navigationType = useNavigationType();
   const route = useMemo(() => parsePathToRoute(location.pathname), [location.pathname]);
+
+  // Reset window scroll on forward navigation (PUSH/REPLACE). Without this,
+  // an SPA route change preserves the current scroll-y from the previous
+  // page, so opening a post plan while scrolled mid-way down the calendar
+  // lands you mid-page on the detail view (near the Copy card, typically).
+  // We deliberately SKIP this on POP — that's back/forward browser nav,
+  // where the browser's own `history.scrollRestoration: 'auto'` restores
+  // the previous scroll position, which is the expected behaviour
+  // ("take me back to where I was in the calendar").
+  useEffect(() => {
+    if (navigationType === 'POP') return;
+    window.scrollTo(0, 0);
+  }, [location.pathname, navigationType]);
 
   // Resolve the current brand slug for URL generation. Priority:
   // 1. The slug already in the URL (route.brandSlug)
