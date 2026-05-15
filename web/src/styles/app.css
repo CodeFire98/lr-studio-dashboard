@@ -4897,6 +4897,32 @@ input, textarea { font: inherit; color: inherit; }
 }
 .copilot-tool-cta:hover { filter: brightness(0.95); }
 
+/* "Jump to latest" pill — appears when the user has scrolled up away
+   from the bottom of the message feed. Positioned just above the
+   composer, centered. Click re-engages auto-scroll. */
+.copilot-jump-latest {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 auto 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  transition: background 120ms, color 120ms, transform 120ms;
+}
+.copilot-jump-latest:hover {
+  background: var(--surface-2);
+  color: var(--ink-1);
+  transform: translateY(-1px);
+}
+
 .copilot-input {
   border-top: 1px solid var(--line);
   padding: var(--space-3);

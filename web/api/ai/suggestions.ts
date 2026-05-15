@@ -101,7 +101,29 @@ DIFFERENT angles each call: the admin will hit Refresh to get new suggestions, s
 
 type RequestBody = {
   accountId?: string;
+  // Optional — accumulated list of suggestions the admin has already
+  // seen across previous refreshes in this session. We pass it back to
+  // the model with explicit instructions to avoid repeating them, which
+  // is the only reliable way to defeat mode-collapse: temperature 0.9 +
+  // identical (within-day) prompts otherwise produce near-identical
+  // output from the same model.
+  previousSuggestions?: string[];
 };
+
+// Cap on how many previous suggestions we feed back to the model. Larger
+// gives stronger anti-repetition signal but bloats the prompt; 16 covers
+// ~4 refreshes worth (4 suggestions × 4 refreshes) which is more than
+// most sessions ever do.
+const MAX_PREVIOUS_SUGGESTIONS = 16;
+
+// Tiny per-call nonce so even the SAME accountId on the SAME date gets a
+// different user message every call. Belt-and-suspenders against the
+// case where previousSuggestions is empty (first-ever call in a session).
+function makeNonce(): string {
+  // 6-char alphanumeric. Crypto.randomUUID is overkill; the goal is just
+  // to keep the user message byte-different across calls.
+  return Math.random().toString(36).slice(2, 8);
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -205,12 +227,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       messages: [
         {
           role: "user",
-          content:
-            // Per-call entropy: the date signal nudges the model toward
-            // seasonally-aware variations without changing the cached
-            // prefix. (The brand context is the cache breakpoint;
-            // the user message is never cached.)
-            `Surface 4 fresh prompt-starter suggestions for the Co-pilot welcome screen. The admin clicks Refresh to get DIFFERENT angles from previous generations, so don't echo the most-obvious starters — explore varied hooks. Today is ${new Date().toISOString().slice(0, 10)}.`,
+          content: (() => {
+            // Per-call entropy: nonce makes the user message byte-unique
+            // even when previousSuggestions is empty, so the model can't
+            // just regurgitate cached "ideal" suggestions from a prior
+            // identical prompt. (The brand context is the cache
+            // breakpoint; the user message is never cached.)
+            const nonce = makeNonce();
+            const date = new Date().toISOString().slice(0, 10);
+
+            // Anti-repetition block. If the admin has already seen prior
+            // suggestions in this session, name them and forbid the model
+            // from echoing or paraphrasing them. This is the only reliable
+            // way to get genuinely different output from the model on
+            // refresh — temp 0.9 alone is not enough.
+            const prior = Array.isArray(body.previousSuggestions)
+              ? body.previousSuggestions
+                  .map((s) => (typeof s === "string" ? s.trim() : ""))
+                  .filter((s) => s.length > 0 && s.length <= 200)
+                  .slice(-MAX_PREVIOUS_SUGGESTIONS)
+              : [];
+
+            const priorBlock = prior.length > 0
+              ? `\n\nALREADY-SHOWN suggestions the admin has seen in this session (DO NOT repeat or paraphrase any of these — pick genuinely different angles, hooks, and content types):\n${prior.map((s) => `- ${s}`).join("\n")}`
+              : "";
+
+            return `Surface 4 fresh prompt-starter suggestions for the Co-pilot welcome screen.
+
+The admin clicks Refresh to get DIFFERENT angles from previous generations. Explore varied hooks — different post types, different platforms, different campaign frames, different audiences, different seasonal hooks.
+
+Today is ${date}. Refresh signal: ${nonce}.${priorBlock}`;
+          })(),
         },
       ],
       onFinish: ({ usage }) => {

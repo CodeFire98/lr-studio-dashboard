@@ -176,12 +176,30 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
   // recovers on a subsequent refresh.
   const [templatedSuggestions, setTemplatedSuggestions] = useState(null);
 
+  // Accumulated list of every suggestion the admin has been shown across
+  // refreshes in this session. We forward it to the server on each
+  // refresh so the model can explicitly avoid repeating them — the only
+  // reliable way to defeat mode-collapse on identical prompts (temp 0.9
+  // alone isn't enough; Anthropic models converge on the same answer for
+  // the same prompt). Capped at 16 to keep the prompt small.
+  const seenSuggestionsRef = useRef([]);
+
+  // "Refresh in flight" flag. While true, we hide the currently-rendered
+  // chips so the admin gets immediate feedback that NEW suggestions are
+  // coming — without it, the old chips linger on screen until the new
+  // stream's first partial arrives (~500ms), which feels like the refresh
+  // did nothing.
+  const [refreshingSuggestions, setRefreshingSuggestions] = useState(false);
+
   // Auto-submit on accountId change (mount + brand switch). Brand
-  // switching also clears the templated fallback so we don't show a
-  // previous brand's chips while the new brand's hook is in flight.
+  // switching also clears the templated fallback AND the seen-suggestions
+  // history so we don't carry one brand's "avoid these" list into the
+  // next brand's generation (would over-constrain the new brand's
+  // suggestions for no reason).
   useEffect(() => {
     if (!accountId) return;
     setTemplatedSuggestions(null);
+    seenSuggestionsRef.current = [];
     suggestionsHook.submit({ accountId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
@@ -206,6 +224,10 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
   //   2. Templated fallback (after hook error)
   //   3. Hardcoded FALLBACK_SUGGESTIONS (cold start / total outage)
   const suggestions = useMemo(() => {
+    // While a refresh is in flight, suppress the prior chips so the
+    // admin sees "new ones coming" rather than the old set lingering
+    // until the new stream starts producing output (~500ms latency).
+    if (refreshingSuggestions) return [];
     const fromHook = suggestionsHook.object?.suggestions;
     if (Array.isArray(fromHook)) {
       // Filter out undefined entries (DeepPartial — server hasn't
@@ -220,27 +242,118 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
       return templatedSuggestions;
     }
     return FALLBACK_SUGGESTIONS;
-  }, [suggestionsHook.object, templatedSuggestions]);
+  }, [refreshingSuggestions, suggestionsHook.object, templatedSuggestions]);
 
   const suggestionsLoading = suggestionsHook.isLoading;
+
+  // Accumulate every suggestion shown into seenSuggestionsRef so the next
+  // refresh can tell the model not to repeat them. We dedupe (case-
+  // insensitive) and cap at 16 to keep the prompt small.
+  useEffect(() => {
+    if (refreshingSuggestions) return;
+    if (!Array.isArray(suggestions) || suggestions.length === 0) return;
+    const seen = seenSuggestionsRef.current;
+    const seenLower = new Set(seen.map((s) => s.toLowerCase()));
+    let changed = false;
+    for (const s of suggestions) {
+      if (typeof s !== "string" || !s.trim()) continue;
+      const key = s.toLowerCase();
+      if (seenLower.has(key)) continue;
+      seenLower.add(key);
+      seen.push(s);
+      changed = true;
+    }
+    if (changed) {
+      // Keep only the most recent 16 entries — older ones don't need
+      // to keep haunting the prompt forever.
+      if (seen.length > 16) {
+        seenSuggestionsRef.current = seen.slice(seen.length - 16);
+      }
+    }
+  }, [suggestions, refreshingSuggestions]);
+
+  // When a refresh produces output, clear the refreshing flag so the
+  // new chips render. We key this on `isLoading` flipping false AFTER
+  // it was true during a refresh — guards against the initial-mount
+  // submit clearing the flag prematurely.
+  useEffect(() => {
+    if (refreshingSuggestions && !suggestionsHook.isLoading) {
+      setRefreshingSuggestions(false);
+    }
+  }, [refreshingSuggestions, suggestionsHook.isLoading]);
 
   const refreshSuggestions = useCallback(() => {
     if (!accountId) return;
     setTemplatedSuggestions(null); // re-attempt AI path; drop stale fallback
-    suggestionsHook.submit({ accountId });
+    setRefreshingSuggestions(true); // hide old chips immediately
+    suggestionsHook.submit({
+      accountId,
+      previousSuggestions: seenSuggestionsRef.current,
+    });
   }, [accountId, suggestionsHook]);
 
   const isBusy = status === "streaming" || status === "submitted";
 
-  // Auto-scroll to bottom when messages or streaming state change.
-  // Same pattern as v1; simpler than the AI Elements Conversation
-  // stick-to-bottom approach, integrates cleanly with .copilot-scroll's
-  // overflow-y: auto.
+  // Stick-to-bottom logic. While the user is at (or near) the bottom of
+  // the message feed, new tokens / new messages auto-scroll the view to
+  // keep the latest content in sight. The moment the user scrolls UP
+  // (mid-stream or otherwise), we stop pulling them back down — they can
+  // read earlier messages while the model keeps generating. Scrolling
+  // back to the bottom re-engages auto-follow.
+  //
+  // Implementation:
+  //   - `stickToBottomRef` carries the current stickiness across renders
+  //     without causing extra re-renders.
+  //   - A scroll listener on the container updates the ref whenever
+  //     scroll position changes (including programmatic scrolls, which
+  //     re-affirm stickiness after we auto-pull to bottom).
+  //   - The auto-scroll effect reads the ref and bails out when the
+  //     user is detached.
+  //
+  // SLOP = px tolerance for "near bottom". Has to be larger than a single
+  // streamed line of text so that fast token append doesn't accidentally
+  // mark us unstuck between scroll-event firings.
+  const SCROLL_SLOP = 64;
+  const stickToBottomRef = useRef(true);
+  // Mirror of the ref in state form, but ONLY for rendering the
+  // "Jump to latest" affordance. Updating this on every scroll would
+  // thrash; we update it lazily via the scroll listener.
+  const [detached, setDetached] = useState(false);
+
+  // Maintain stickToBottomRef as the user (and our own auto-scrolls)
+  // move scrollTop. Only one listener; survives across mounts of inner
+  // content because scrollRef points at the stable container div.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const onScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_SLOP;
+      stickToBottomRef.current = atBottom;
+      setDetached((prev) => (prev === !atBottom ? prev : !atBottom));
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Auto-scroll to bottom when messages or streaming state change —
+  // but ONLY when the user is currently sticking to the bottom. The
+  // listener above keeps stickToBottomRef in sync.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (!stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [messages, isBusy]);
+
+  // Programmatic "jump to latest" — clicked when the user has scrolled
+  // up during streaming and wants to re-engage auto-follow. We scroll
+  // to the bottom; the scroll listener picks that up and flips
+  // stickToBottomRef back to true automatically.
+  const jumpToLatest = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
 
   // Hydrate from localStorage on mount and whenever (userId, accountId)
   // change — switching brands swaps to that brand's persisted thread.
@@ -381,6 +494,24 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
           </div>
         )}
       </div>
+
+      {/* "Jump to latest" pill — surfaces when the user has scrolled UP
+          mid-conversation AND the model is mid-stream. Clicking it
+          re-engages auto-follow by scrolling to the bottom; the scroll
+          listener picks that up and flips stickToBottomRef back to true.
+          Hidden when the user is already at the bottom (no need) and
+          when there's no conversation yet (welcome screen). */}
+      {detached && messages.length > 0 && (
+        <button
+          type="button"
+          className="copilot-jump-latest"
+          onClick={jumpToLatest}
+          aria-label="Scroll to latest message"
+        >
+          {isBusy ? "New tokens below" : "Jump to latest"}
+          <Icon name="chevron-down" size={12} />
+        </button>
+      )}
 
       <footer className="copilot-input">
         <CopilotFollowUpChips
