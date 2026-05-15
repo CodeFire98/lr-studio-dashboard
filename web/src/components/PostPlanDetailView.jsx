@@ -80,6 +80,48 @@ function linkifySegments(text) {
   ));
 }
 
+// =====================================================================
+// Auto-title derivation — when an admin saves the FIRST piece of copy on
+// an untitled post plan, we slot the opening of that copy into the
+// `concept` field so the calendar / lists stop showing "Untitled post".
+// Pure string transform; no external deps. Kept here (module-local) so
+// the rule is obvious from a single read.
+// =====================================================================
+const AUTO_TITLE_MAX_LEN = 60;
+function deriveTitleFromCopy(text, maxLen = AUTO_TITLE_MAX_LEN) {
+  if (!text) return '';
+  // First non-empty line — captions almost always lead with a hook on
+  // line 1, and that's a far better "title" than a mid-paragraph clip.
+  const firstLine = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+  if (!firstLine) return '';
+  // Strip leading emoji + punctuation noise so titles don't start with
+  // a stray emoji, dash, or quote. Prefer Unicode property classes (covers
+  // all emoji ranges); fall back to ASCII punctuation if the runtime
+  // rejects the property escape.
+  let cleaned = firstLine;
+  try {
+    cleaned = cleaned.replace(/^(?:\p{Extended_Pictographic}|\p{P}|\s)+/u, '');
+  } catch {
+    cleaned = cleaned.replace(/^[\s!"#$%&'()*+,\-./:;<=>?@\[\]^_`{|}~]+/, '');
+  }
+  cleaned = cleaned.trim();
+  if (!cleaned) return '';
+  // If the line starts with a complete short sentence, prefer that —
+  // gives nicer titles like "Three reasons we ditched the cold-call"
+  // instead of mid-thought "Three reasons we ditched the cold-call and".
+  const sentenceMatch = cleaned.match(/^[^.!?\n]{8,}?[.!?](?:\s|$)/);
+  if (sentenceMatch && sentenceMatch[0].length <= maxLen + 12) {
+    cleaned = sentenceMatch[0].replace(/[.!?\s]+$/, '').trim();
+  }
+  if (cleaned.length <= maxLen) return cleaned;
+  // Truncate at the last word boundary that's not too short. Falls back
+  // to a hard cut if there's no reasonable space.
+  const cut = cleaned.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  const sliced = lastSpace > Math.floor(maxLen * 0.6) ? cut.slice(0, lastSpace) : cut;
+  return sliced.replace(/[\s,.;:!?-]+$/, '') + '\u2026';
+}
+
 // Status transition → human verb. Used in the activity feed to render
 // "Brand approved", "Agency submitted for review" etc. in past tense.
 // New 3-status workflow first; legacy values kept for historical log
@@ -478,6 +520,11 @@ const PostPlanDetailView = ({
   // to an autofocused input when the user clicks the pencil. Enter saves
   // and exits, Escape cancels and reverts.
   const [titleEditing, setTitleEditing] = useState(false);
+  // One-shot notice shown after we auto-fill the concept from the first
+  // saved copy. Shape: { title, previousConcept } | null. Cleared on
+  // dismiss or after Undo. Not persisted — it's a transient acknowledgement
+  // surface, not a permanent state.
+  const [autoTitleNotice, setAutoTitleNotice] = useState(null);
 
   // Refresh local fields whenever the canonical plan changes.
   useEffect(() => {
@@ -658,7 +705,44 @@ const PostPlanDetailView = ({
     if (((plan?.copyVariants || {})[key] ?? '') === val) return; // already saved
     const next = { ...copyVariants, [key]: val };
     setCopyVariants(next);
-    await persist({ copyVariants: next });
+
+    // Auto-title: if this is the FIRST piece of copy on a still-untitled
+    // post plan, derive a one-line title from the copy and persist it in
+    // the same write. Surface a one-shot callout so the admin notices.
+    // Conditions (read against the canonical `plan`, not local state):
+    //   1. No existing concept on the plan
+    //   2. No saved copy on ANY platform yet
+    //   3. The incoming copy is non-empty after trim
+    const savedVariants = plan?.copyVariants || {};
+    const hasAnySavedCopy = Object.values(savedVariants).some(
+      (v) => typeof v === 'string' && v.trim().length > 0,
+    );
+    const conceptEmpty = !(plan?.concept || '').trim();
+    let derivedTitle = '';
+    if (conceptEmpty && !hasAnySavedCopy && val.trim()) {
+      derivedTitle = deriveTitleFromCopy(val);
+    }
+
+    const patch = { copyVariants: next };
+    if (derivedTitle) {
+      patch.concept = derivedTitle;
+      setConcept(derivedTitle);
+    }
+    await persist(patch);
+
+    if (derivedTitle) {
+      setAutoTitleNotice({ title: derivedTitle, previousConcept: '' });
+    }
+  };
+
+  // Revert an auto-filled title. Restores the previous concept value
+  // (typically empty) and clears the notice.
+  const undoAutoTitle = async () => {
+    if (!autoTitleNotice) return;
+    const prev = autoTitleNotice.previousConcept || '';
+    setAutoTitleNotice(null);
+    setConcept(prev);
+    await persist({ concept: prev });
   };
 
   // Auto-save fallback when the textarea loses focus — preserves the
@@ -1063,6 +1147,80 @@ const PostPlanDetailView = ({
               </>
             )}
           </div>
+          {autoTitleNotice && isAdmin && (
+            <div
+              role="status"
+              style={{
+                marginTop: 12,
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
+                padding: '10px 12px',
+                borderRadius: 8,
+                border: '1px solid var(--line)',
+                background: 'var(--surface-2)',
+                color: 'var(--ink-2)',
+                fontSize: 13,
+                lineHeight: 1.45,
+                maxWidth: 640,
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 22,
+                  height: 22,
+                  flexShrink: 0,
+                  color: 'var(--accent-ink, #7C5CFF)',
+                }}
+              >
+                <Icon name="sparkles" size={16}/>
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: 'var(--ink-1)', marginBottom: 2 }}>
+                  Titled this post from your copy
+                </div>
+                <div style={{ color: 'var(--ink-3)' }}>
+                  Click the title to edit, or undo to clear it.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  onClick={undoAutoTitle}
+                  className="btn btn-sm btn-ghost"
+                  style={{ height: 28, padding: '0 10px', fontSize: 12 }}
+                >
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutoTitleNotice(null)}
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 28,
+                    height: 28,
+                    borderRadius: 6,
+                    border: 0,
+                    background: 'transparent',
+                    color: 'var(--ink-4)',
+                    cursor: 'pointer',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--ink-2)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink-4)'; }}
+                >
+                  <Icon name="x" size={12}/>
+                </button>
+              </div>
+            </div>
+          )}
           <div className="sub" style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
             <StatusPill status={getDisplayStatus({ status }, publications)} size="lg"/>
             {plan?.aiGenerated && (
