@@ -318,8 +318,10 @@ const createPostPlanDraftInput = z.object({
     .describe("Platforms this post targets. Subset of ['instagram', 'linkedin', 'x']."),
   concept: z
     .string()
+    .min(3)
+    .max(80)
     .describe(
-      "Short (1-2 sentence) concept for the post — what it's about, what angle. The admin sees this as the post's headline.",
+      "Very short HEADLINE for this post — TARGET 5-10 words, single phrase, NOT a full sentence. Just the PURPOSE of the post in a few words. The admin sees this as the post's headline on the calendar chip and at the top of the detail view, so it has to fit. GOOD examples: 'Spring drop teaser', 'Customer story: Maya', 'Holi limited-edition launch', 'Behind the scenes — studio shoot', 'Founder Q&A: why we ditched plastic'. BAD example (too long, full sentence): 'A post teasing our upcoming spring drop with a sneak peek and CTA for newsletter signups'. Hard cap: 80 characters. Treat the concept as a label, not a description — the actual caption body lives in copy_variants.",
     ),
   copy_variants: z
     .object({

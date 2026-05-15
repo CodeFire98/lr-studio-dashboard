@@ -87,7 +87,10 @@ function linkifySegments(text) {
 // Pure string transform; no external deps. Kept here (module-local) so
 // the rule is obvious from a single read.
 // =====================================================================
-const AUTO_TITLE_MAX_LEN = 60;
+// Target: ~5-10 words. 50 chars covers that comfortably (English averages
+// ~5 chars/word + spaces). Long opening lines truncate at the last word
+// boundary with an ellipsis; short complete sentences are kept as-is.
+const AUTO_TITLE_MAX_LEN = 50;
 function deriveTitleFromCopy(text, maxLen = AUTO_TITLE_MAX_LEN) {
   if (!text) return '';
   // First non-empty line — captions almost always lead with a hook on
