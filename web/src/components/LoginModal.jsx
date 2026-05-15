@@ -182,8 +182,8 @@ const LoginModal = ({ open, onClose, onSignedIn, initialMode = "signin", reason 
         <div className="login-modal-head">
           <div className="login-modal-brand">
             <span className="dot" />
-            <span>L+R</span>
-            <span className="wordmark-tail">Agency</span>
+            <span>Linkrunner</span>
+            <span className="wordmark-tail">Media</span>
           </div>
           {reason && (
             <div className="login-modal-reason">
