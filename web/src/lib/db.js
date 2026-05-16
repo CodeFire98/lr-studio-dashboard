@@ -2179,6 +2179,7 @@ export function mapPostPlanAttachmentRow(row) {
     version: row.version,
     storagePath: row.storage_path,
     filename: row.filename,
+    caption: row.caption || '',
     mimeType: row.mime_type,
     sizeBytes: row.size_bytes,
     uploadedBy: row.uploaded_by,
@@ -2258,6 +2259,41 @@ export async function addPostPlanAttachment({
     await supabase.storage.from(POST_PLAN_ATTACHMENT_BUCKET).remove([path, `${path}${VIDEO_THUMBNAIL_SUFFIX}`]).catch(() => {});
     throw error;
   }
+  return mapPostPlanAttachmentRow(data);
+}
+
+/**
+ * Patch the editable metadata on a post-plan attachment row. Currently
+ * limited to `caption` — the human-readable label users can edit
+ * post-upload (the filename + storage path are immutable; renaming
+ * those would invalidate the underlying file). Returns the refreshed
+ * mapped row so the caller can swap it into local state.
+ *
+ * RLS on `post_plan_attachments` already gates writes to agency staff
+ * + post-plan owners, so no extra auth here.
+ */
+export async function updatePostPlanAttachment(attachmentId, patch) {
+  if (!attachmentId) throw new Error('updatePostPlanAttachment: attachmentId is required');
+  if (!patch || typeof patch !== 'object') {
+    throw new Error('updatePostPlanAttachment: patch is required');
+  }
+  const dbPatch = {};
+  if ('caption' in patch) {
+    // Normalize: empty string -> null so list views can fall back to
+    // filename uniformly without a defined-vs-empty edge case.
+    const c = typeof patch.caption === 'string' ? patch.caption.trim() : '';
+    dbPatch.caption = c ? c.slice(0, 280) : null;
+  }
+  if (Object.keys(dbPatch).length === 0) {
+    throw new Error('updatePostPlanAttachment: no editable fields in patch');
+  }
+  const { data, error } = await supabase
+    .from('post_plan_attachments')
+    .update(dbPatch)
+    .eq('id', attachmentId)
+    .select(POST_PLAN_ATTACHMENT_SELECT)
+    .single();
+  if (error) throw error;
   return mapPostPlanAttachmentRow(data);
 }
 

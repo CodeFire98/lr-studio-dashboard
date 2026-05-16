@@ -30,6 +30,7 @@ import {
   loadPostPlanAttachments,
   addPostPlanAttachment,
   deletePostPlanAttachment,
+  updatePostPlanAttachment,
   markPostPlanSeen,
   loadPostPlanStatusLog,
   duplicatePostPlan,
@@ -161,20 +162,64 @@ const formatBytes = (n) => {
 const isImageMime = (m) => typeof m === 'string' && m.startsWith('image/');
 const isVideoMime = (m) => typeof m === 'string' && m.startsWith('video/');
 
-const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
+const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCaption = false, onCaptionSave }) => {
   const showImage = isImageMime(att.mimeType) && att.url;
   // Video tiles use <VideoThumb>, which renders the sidecar JPEG when
   // present and gracefully falls back to a clean play-icon tile for
   // pre-2026-05-11 uploads (no sidecar yet) or extraction failures.
   const isVideo = isVideoMime(att.mimeType);
   const lightbox = useLightbox();
+
+  // Caption editor state. Hover reveals a pencil affordance (agency
+  // only); click flips to an inline input. Enter saves, Escape cancels.
+  // The displayed primary label is the caption when present, falling
+  // back to the filename — filename remains the source of truth for
+  // downloads regardless of whether a caption exists.
+  const caption = att.caption || '';
+  const [editingCaption, setEditingCaption] = useState(false);
+  const [captionDraft, setCaptionDraft] = useState(caption);
+  const [hovering, setHovering] = useState(false);
+  // Keep the draft in sync if the parent updates the underlying att
+  // (e.g. after a successful optimistic save → server-canonical row
+  // swap, or after a remote realtime change).
+  useEffect(() => {
+    if (!editingCaption) setCaptionDraft(caption);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caption]);
+  const startEditingCaption = (e) => {
+    if (!canEditCaption) return;
+    if (e) { e.stopPropagation(); e.preventDefault(); }
+    // Pre-fill the input with the CURRENT displayed label (caption when
+    // set, filename otherwise) so the user can either tweak the existing
+    // value or wipe and start fresh. Matches what they see on screen.
+    setCaptionDraft(caption || att.filename || '');
+    setEditingCaption(true);
+  };
+  const commitCaption = () => {
+    setEditingCaption(false);
+    const next = captionDraft.trim();
+    // If the user kept the input identical to the filename (i.e. didn't
+    // actually customize it), don't persist a redundant copy of the
+    // filename as the caption. Store null instead so the UI's
+    // caption-or-filename fallback keeps working uniformly.
+    const normalized = next === (att.filename || '').trim() ? '' : next;
+    onCaptionSave?.(att, normalized);
+  };
+  const cancelCaption = () => {
+    setEditingCaption(false);
+    setCaptionDraft(caption || att.filename || '');
+  };
+  const primaryLabel = caption || att.filename;
   const openInLightbox = () => {
     if (!att.url) return;
     lightbox.open({
       src: att.url,
       mimeType: att.mimeType,
-      name: att.filename,
-      alt: att.filename,
+      // Lightbox header prefers the human caption when present, falls
+      // back to filename. The download button always uses filename
+      // (filenames carry extensions; captions don't).
+      name: caption || att.filename,
+      alt: caption || att.filename,
       downloadUrl: att.url,
       // Agency-only delete from the preview. The Lightbox shows its own
       // confirm modal; the callback should do the bare delete + parent
@@ -200,6 +245,8 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
   };
   return (
     <div
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
       style={{
         position: 'relative',
         border: '1px solid var(--line)',
@@ -213,7 +260,7 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
       <button
         type="button"
         onClick={openInLightbox}
-        title={`Preview ${att.filename}`}
+        title={`Preview ${primaryLabel}`}
         style={{
           display: 'block',
           height: 110,
@@ -252,28 +299,81 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete }) => {
         )}
       </button>
       <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <button
-          type="button"
-          onClick={openInLightbox}
-          title={`Preview ${att.filename}`}
-          style={{
-            fontSize: 12,
-            color: 'var(--ink-1)',
-            background: 'transparent',
-            border: 0,
-            padding: 0,
-            cursor: 'pointer',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            textAlign: 'left',
-            font: 'inherit',
-          }}
-        >
-          {att.filename}
-        </button>
-        <div style={{ fontSize: 11, color: 'var(--ink-4)' }}>
-          {att.uploader?.name || 'Someone'} · {formatBytes(att.sizeBytes)}
+        {editingCaption ? (
+          <input
+            autoFocus
+            type="text"
+            value={captionDraft}
+            onChange={(e) => setCaptionDraft(e.target.value)}
+            onBlur={commitCaption}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+              if (e.key === 'Escape') { e.preventDefault(); cancelCaption(); }
+            }}
+            placeholder={att.filename || 'Add a caption…'}
+            maxLength={280}
+            style={{
+              fontSize: 12,
+              color: 'var(--ink-1)',
+              background: 'var(--surface-2)',
+              border: '1px solid var(--accent)',
+              borderRadius: 4,
+              padding: '3px 6px',
+              outline: 'none',
+              width: '100%',
+              fontFamily: 'inherit',
+            }}
+          />
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+            <button
+              type="button"
+              onClick={canEditCaption ? startEditingCaption : openInLightbox}
+              title={canEditCaption
+                ? (caption ? 'Click to edit caption' : 'Click to edit — defaults to filename')
+                : `Preview ${primaryLabel}`}
+              style={{
+                fontSize: 12,
+                color: 'var(--ink-1)',
+                background: 'transparent',
+                border: 0,
+                padding: 0,
+                cursor: canEditCaption ? 'text' : 'pointer',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                textAlign: 'left',
+                font: 'inherit',
+                flex: 1,
+                minWidth: 0,
+              }}
+            >
+              {primaryLabel}
+            </button>
+            {canEditCaption && hovering && (
+              <button
+                type="button"
+                onClick={startEditingCaption}
+                aria-label={caption ? 'Edit caption' : 'Edit caption (defaults to filename)'}
+                title={caption ? 'Edit caption' : 'Edit caption (defaults to filename)'}
+                style={{
+                  border: 0,
+                  background: 'transparent',
+                  color: 'var(--ink-4)',
+                  cursor: 'pointer',
+                  padding: 0,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                <Icon name="edit" size={11}/>
+              </button>
+            )}
+          </div>
+        )}
+        <div style={{ fontSize: 11, color: 'var(--ink-4)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {caption ? att.filename : `${att.uploader?.name || 'Someone'} · ${formatBytes(att.sizeBytes)}`}
         </div>
       </div>
       {canDelete && (
@@ -313,6 +413,7 @@ const AttachmentsCard = ({
   canUpload,
   uploading,
   onUpload,
+  onCaptionEdit,  // (attachment, newCaption) => void — agency-only edit; brand sees read-only
   currentUserId,
   // Agency-only: enables a Delete button in the preview lightbox for
   // every attachment in this card, regardless of who uploaded it.
@@ -373,6 +474,8 @@ const AttachmentsCard = ({
                 canDelete={canUpload && a.uploadedBy === currentUserId}
                 onDelete={(att) => onUpload([], att)}
                 onLightboxDelete={isAgency ? (att) => onUpload([], att) : undefined}
+                canEditCaption={isAgency && !!onCaptionEdit}
+                onCaptionSave={onCaptionEdit}
               />
             ))}
           </div>
@@ -625,6 +728,32 @@ const PostPlanDetailView = ({
     () => attachments.filter((a) => a.kind === 'final'),
     [attachments]
   );
+
+  // Inline caption edit on an attachment tile. Optimistic: swap the row
+  // in local state immediately, then persist. On failure, revert + alert.
+  // Caption-only — other attachment fields are immutable.
+  const handleAttachmentCaptionEdit = async (attachment, nextCaption) => {
+    if (!attachment?.id) return;
+    const prev = attachment.caption || '';
+    if (prev.trim() === (nextCaption || '').trim()) return; // no-op
+    // Optimistic
+    setAttachments((list) =>
+      list.map((a) => (a.id === attachment.id ? { ...a, caption: nextCaption } : a))
+    );
+    try {
+      const updated = await updatePostPlanAttachment(attachment.id, { caption: nextCaption });
+      setAttachments((list) =>
+        list.map((a) => (a.id === updated.id ? updated : a))
+      );
+    } catch (e) {
+      console.error('update attachment caption failed', e);
+      // Revert
+      setAttachments((list) =>
+        list.map((a) => (a.id === attachment.id ? { ...a, caption: prev } : a))
+      );
+      alert(`Could not save caption: ${e?.message || e}`);
+    }
+  };
 
   // Single-channel handler for both upload and delete from AttachmentsCard.
   // `files` is the new file list (empty when only deleting), `toDelete` is
@@ -1730,6 +1859,7 @@ const PostPlanDetailView = ({
                 uploading={uploadingKind === 'reference'}
                 currentUserId={userId}
                 onUpload={(files, toDelete) => handleAttachmentChange('reference', files, toDelete)}
+                onCaptionEdit={isAdmin ? handleAttachmentCaptionEdit : undefined}
                 isAgency={isAdmin}
               />
 
@@ -1759,6 +1889,7 @@ const PostPlanDetailView = ({
                 uploading={uploadingKind === 'final'}
                 currentUserId={userId}
                 onUpload={(files, toDelete) => handleAttachmentChange('final', files, toDelete)}
+                onCaptionEdit={isAdmin ? handleAttachmentCaptionEdit : undefined}
                 isAgency={isAdmin}
               />
 
