@@ -6061,37 +6061,107 @@ input, textarea { font: inherit; color: inherit; }
   max-height: 280px;
   border-radius: 8px;
   display: block;
-  cursor: pointer;
   border: 1px solid var(--line);
   object-fit: contain;
   background: color-mix(in oklab, var(--ink-1) 4%, var(--surface));
 }
+/* Image is wrapped in a button so it's keyboard-focusable + the click
+   target's role is unambiguous. The button itself contributes no chrome. */
+.conv-attachment-image-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: zoom-in;
+  display: block;
+  border-radius: 8px;
+  outline-offset: 2px;
+}
+.conv-attachment-image-btn:focus-visible {
+  outline: 2px solid var(--accent);
+}
+.conv-attachment-image-btn:hover .conv-attachment-image {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+}
+
+/* File-chip wrapper now contains two buttons: the filename-open on the
+   left, the download icon on the right. Border lives on the wrapper so
+   the two buttons share a single visual frame. */
 .conv-attachment-file {
   display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  align-items: stretch;
   border: 1px solid var(--line);
   background: var(--surface);
   border-radius: 6px;
-  padding: 8px 10px;
   font-size: 12.5px;
   color: var(--ink-1);
-  text-decoration: none;
   max-width: 320px;
+  overflow: hidden;
+  transition: border-color 0.12s ease;
 }
 .conv-attachment-file:hover {
   border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+}
+.conv-attachment-file-open {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 8px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.conv-attachment-file-open:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.conv-attachment-file-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .conv-attachment-file-name {
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .conv-attachment-file-meta {
   color: var(--ink-4);
   font-size: 11px;
   margin-left: auto;
+  flex-shrink: 0;
+}
+.conv-attachment-file-download {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--line);
+  padding: 0 12px;
+  cursor: pointer;
+  color: var(--ink-3);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.conv-attachment-file-download:hover {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  color: var(--accent);
+}
+.conv-attachment-file-download:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.conv-attachment-file-download:disabled {
+  cursor: default;
+  opacity: 0.4;
 }
 
 /* Thread drawer — right-side panel with scrim. Overlays the main pane
