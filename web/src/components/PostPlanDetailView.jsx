@@ -622,6 +622,13 @@ const PostPlanDetailView = ({
   const [aiPreviewPlatform, setAiPreviewPlatform] = useState(null);
   const [status, setStatus] = useState(plan?.status || 'drafting');
   const [saving, setSaving] = useState(false);
+
+  // Editor permission — who can modify plan fields (concept, copy, date,
+  // platforms). Agency users always can. Brand users can edit ONLY their
+  // own proposed plans, while the proposal is still pending agency review.
+  // Once accepted (moves to drafting) editing reverts to agency-only.
+  const isEditor = isAdmin
+    || (status === 'proposed' && !!plan?.createdBy && plan.createdBy === userId);
   // Title editing — read mode by default with a pencil affordance; flips
   // to an autofocused input when the user clicks the pencil. Enter saves
   // and exits, Escape cancels and reverts.
@@ -821,7 +828,7 @@ const PostPlanDetailView = ({
   };
 
   const togglePlatform = (key) => {
-    if (!isAdmin) return;
+    if (!isEditor) return;
     const next = platforms.includes(key) ? platforms.filter((p) => p !== key) : [...platforms, key];
     setPlatforms(next);
     if (!next.includes(activeCopyTab)) setActiveCopyTab(next[0] || null);
@@ -888,14 +895,14 @@ const PostPlanDetailView = ({
   // the current viewer. Brand is always 'read'. Agency defaults to 'edit'
   // when there's no saved copy yet, otherwise 'read' (so links render).
   const isCopyEditing = (key) => {
-    if (!isAdmin || !key) return false;
+    if (!isEditor || !key) return false;
     if (copyMode[key]) return copyMode[key] === 'edit';
     const saved = (plan?.copyVariants || {})[key] ?? '';
     return !saved.trim(); // empty → start in edit mode
   };
 
   const enterEditMode = (key) => {
-    if (!isAdmin) return;
+    if (!isEditor) return;
     setCopyMode((p) => ({ ...p, [key]: 'edit' }));
   };
 
@@ -1212,10 +1219,18 @@ const PostPlanDetailView = ({
   // explicit, named buttons; the underlying trigger (migration 0048)
   // hard-enforces the same rules at the DB level so the UI is not the
   // only line of defence.
+  //
+  // On `proposed` status (brand-originated): agency sees Accept + Reject.
+  // Accept transitions to drafting (existing trigger emits the system
+  // message); Reject deletes the plan (`action: 'delete'` branch in the
+  // button click handler).
   const statusActions = (() => {
     const out = [];
     if (isAdmin) {
-      if (statusBucket === 'drafting') {
+      if (statusBucket === 'proposed') {
+        out.push({ label: 'Accept', tone: 'good', next: 'drafting' });
+        out.push({ label: 'Reject', tone: 'ghost', action: 'delete' });
+      } else if (statusBucket === 'drafting') {
         out.push({ label: 'Submit for review', tone: 'primary', next: 'needs_review' });
       } else if (statusBucket === 'needs_review') {
         out.push({ label: 'Recall to drafting', tone: 'ghost', next: 'drafting' });
@@ -1239,7 +1254,7 @@ const PostPlanDetailView = ({
             <a onClick={() => setRoute({ view: 'calendar' })} style={{ cursor: 'pointer' }}>← Social Calendar</a>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 48 }}>
-            {titleEditing && isAdmin ? (
+            {titleEditing && isEditor ? (
               <input
                 autoFocus
                 type="text"
@@ -1272,7 +1287,7 @@ const PostPlanDetailView = ({
             ) : (
               <>
                 <h1
-                  onClick={() => isAdmin && setTitleEditing(true)}
+                  onClick={() => isEditor && setTitleEditing(true)}
                   style={{
                     margin: 0,
                     fontFamily: 'var(--font-serif)',
@@ -1281,7 +1296,7 @@ const PostPlanDetailView = ({
                     letterSpacing: '-0.01em',
                     color: concept ? 'var(--ink-1)' : 'var(--ink-4)',
                     lineHeight: 1.1,
-                    cursor: isAdmin ? 'text' : 'default',
+                    cursor: isEditor ? 'text' : 'default',
                     flex: 1,
                     minWidth: 0,
                     overflow: 'hidden',
@@ -1290,7 +1305,7 @@ const PostPlanDetailView = ({
                 >
                   {concept || 'Untitled post'}
                 </h1>
-                {isAdmin && (
+                {isEditor && (
                   <button
                     type="button"
                     onClick={() => setTitleEditing(true)}
@@ -1409,7 +1424,7 @@ const PostPlanDetailView = ({
               value={scheduledDraft}
               onChange={(e) => setScheduledDraft(e.target.value)}
               onBlur={handleScheduledBlur}
-              disabled={!isAdmin || saving}
+              disabled={!isEditor || saving}
               style={{
                 padding: '4px 8px',
                 border: '1px solid var(--line)',
@@ -1436,7 +1451,13 @@ const PostPlanDetailView = ({
               key={a.label}
               type="button"
               className={`btn btn-sm ${a.tone === 'ghost' ? 'btn-ghost' : 'btn-primary'}`}
-              onClick={() => transitionStatus(a.next, { requireComment: a.requireComment })}
+              onClick={() => {
+                if (a.action === 'delete') {
+                  handleDelete();
+                } else {
+                  transitionStatus(a.next, { requireComment: a.requireComment });
+                }
+              }}
               disabled={saving}
               style={
                 a.tone === 'good'
@@ -1619,7 +1640,7 @@ const PostPlanDetailView = ({
                         key={p.key}
                         type="button"
                         onClick={() => togglePlatform(p.key)}
-                        disabled={!isAdmin || saving}
+                        disabled={!isEditor || saving}
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
@@ -1630,8 +1651,8 @@ const PostPlanDetailView = ({
                           background: on ? 'var(--surface-2)' : 'transparent',
                           color: 'var(--ink-1)',
                           fontSize: 13,
-                          cursor: isAdmin && !saving ? 'pointer' : 'default',
-                          opacity: !isAdmin && !on ? 0.6 : 1,
+                          cursor: isEditor && !saving ? 'pointer' : 'default',
+                          opacity: !isEditor && !on ? 0.6 : 1,
                         }}
                       >
                         <PlatformChip platform={p.key} size="sm"/>
@@ -1705,7 +1726,7 @@ const PostPlanDetailView = ({
                               onChange={(e) => handleCopyChange(activeCopyTab, e.target.value)}
                               onBlur={() => handleCopyBlur(activeCopyTab)}
                               placeholder={`Write the ${platLabel} version of this post…`}
-                              disabled={!isAdmin || saving}
+                              disabled={!isEditor || saving}
                               autoFocus={!!saved}
                               style={{
                                 width: '100%',
@@ -1722,7 +1743,7 @@ const PostPlanDetailView = ({
                                 lineHeight: 1.5,
                               }}
                             />
-                            {isAdmin && (
+                            {isEditor && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
                                 <span style={{ fontSize: 11.5, color: isDirty ? 'var(--accent-ink)' : 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                   {saving && isDirty
@@ -1788,10 +1809,10 @@ const PostPlanDetailView = ({
                       // re-enter edit mode (agency only).
                       return (
                         <div
-                          role={isAdmin ? 'button' : undefined}
-                          tabIndex={isAdmin ? 0 : undefined}
+                          role={isEditor ? 'button' : undefined}
+                          tabIndex={isEditor ? 0 : undefined}
                           onClick={
-                            isAdmin
+                            isEditor
                               ? (e) => {
                                   // Don't intercept clicks on links — let the
                                   // browser open them in a new tab as the
@@ -1802,7 +1823,7 @@ const PostPlanDetailView = ({
                               : undefined
                           }
                           onKeyDown={
-                            isAdmin
+                            isEditor
                               ? (e) => {
                                   if (e.key === 'Enter' || e.key === ' ') {
                                     e.preventDefault();
@@ -1823,21 +1844,21 @@ const PostPlanDetailView = ({
                             whiteSpace: 'pre-wrap',
                             wordBreak: 'break-word',
                             lineHeight: 1.5,
-                            cursor: isAdmin ? 'text' : 'default',
+                            cursor: isEditor ? 'text' : 'default',
                             position: 'relative',
                           }}
-                          title={isAdmin ? 'Click to edit' : undefined}
+                          title={isEditor ? 'Click to edit' : undefined}
                         >
                           {saved
                             ? linkifySegments(saved)
                             : (
                               <span style={{ color: 'var(--ink-4)' }}>
-                                {isAdmin
+                                {isEditor
                                   ? `Click to write the ${platLabel} copy…`
                                   : `No ${platLabel} copy yet.`}
                               </span>
                             )}
-                          {isAdmin && saved && (
+                          {isEditor && saved && (
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); enterEditMode(activeCopyTab); }}
@@ -2005,7 +2026,7 @@ const PostPlanDetailView = ({
                 </div>
               )}
 
-              {isAdmin && (
+              {isEditor && (
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
                   <button type="button" className="btn btn-ghost btn-sm" onClick={handleDelete} style={{ color: 'var(--accent)' }}>
                     Delete post plan
