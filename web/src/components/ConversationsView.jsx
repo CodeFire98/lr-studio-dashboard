@@ -16,6 +16,7 @@ import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import { StatusPill } from './postPlanShared.jsx';
 import { linkifyText } from './IdeateView.jsx';
+import { useLightbox } from './Lightbox.jsx';
 import {
   loadConversationForAccount,
   loadConversationMessages,
@@ -189,26 +190,113 @@ function PlanTagDropdown({ plans, onPick, onClose }) {
 }
 
 // ----- Attachment renderer (inside a message bubble) ----------------
+//
+// Three kinds, three treatments:
+//   image  → thumbnail; click opens the shared <Lightbox/> (zoom + keyboard
+//            nav + download + escape-to-close — same UX as plan attachments)
+//   video  → inline <video controls>; playsInline keeps iOS Safari from
+//            full-screening on tap, so it stays in the bubble
+//   file   → filename chip with an explicit download icon button alongside
+//            (previous behavior opened in a new tab with no download
+//            affordance — confusing for non-tech users on Safari/iOS where
+//            tab-open often just renders an inline preview).
 function AttachmentBlock({ attachment }) {
+  const lightbox = useLightbox();
   if (!attachment) return null;
   const { kind, url, filename, sizeBytes, mimeType } = attachment;
+
   if (kind === 'image' && url) {
     return (
-      <a href={url} target="_blank" rel="noreferrer">
-        <img src={url} alt={filename || 'image'} className="conv-attachment-image" />
-      </a>
+      <button
+        type="button"
+        className="conv-attachment-image-btn"
+        onClick={() =>
+          lightbox.open({
+            src: url,
+            mimeType,
+            name: filename || 'image',
+            alt: filename || 'image',
+            downloadUrl: url,
+          })
+        }
+        aria-label={`Open ${filename || 'image'}`}
+      >
+        <img
+          src={url}
+          alt={filename || 'image'}
+          className="conv-attachment-image"
+          loading="lazy"
+        />
+      </button>
     );
   }
+
   if (kind === 'video' && url) {
-    return <video src={url} controls preload="metadata" className="conv-attachment-video" />;
+    return (
+      <video
+        src={url}
+        controls
+        playsInline
+        preload="metadata"
+        className="conv-attachment-video"
+      />
+    );
   }
-  // File chip — opens in a new tab on click.
+
+  // File chip — filename click opens in lightbox when previewable (PDFs +
+  // anything the lightbox classifyMime path knows about); otherwise opens
+  // in a new tab. The download icon on the right always triggers an actual
+  // download via the lightbox's downloadFileFromUrl path.
+  const handleFilenameClick = () => {
+    if (!url) return;
+    // Try lightbox; if the mime isn't previewable it'll fall back to
+    // window.open internally, so we don't need to discriminate here.
+    lightbox.open({
+      src: url,
+      mimeType,
+      name: filename || 'attachment',
+      downloadUrl: url,
+    });
+  };
+  const handleDownloadClick = (e) => {
+    e.stopPropagation();
+    if (!url) return;
+    // Force a download by creating an <a download>. Same primitive the
+    // Lightbox uses, inlined here so we don't need to open it just to
+    // trigger a save.
+    const a = document.createElement('a');
+    a.href = url;
+    if (filename) a.download = filename;
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
   return (
-    <a className="conv-attachment-file" href={url || '#'} target="_blank" rel="noreferrer">
-      <Icon name="paperclip" size={14} />
-      <span className="conv-attachment-file-name">{filename || 'attachment'}</span>
-      {sizeBytes != null && <span className="conv-attachment-file-meta">{formatBytes(sizeBytes)}</span>}
-    </a>
+    <div className="conv-attachment-file">
+      <button
+        type="button"
+        className="conv-attachment-file-open"
+        onClick={handleFilenameClick}
+        disabled={!url}
+      >
+        <Icon name="paperclip" size={14} />
+        <span className="conv-attachment-file-name">{filename || 'attachment'}</span>
+        {sizeBytes != null && (
+          <span className="conv-attachment-file-meta">{formatBytes(sizeBytes)}</span>
+        )}
+      </button>
+      <button
+        type="button"
+        className="conv-attachment-file-download"
+        onClick={handleDownloadClick}
+        disabled={!url}
+        title="Download"
+        aria-label={`Download ${filename || 'attachment'}`}
+      >
+        <Icon name="download" size={14} />
+      </button>
+    </div>
   );
 }
 
