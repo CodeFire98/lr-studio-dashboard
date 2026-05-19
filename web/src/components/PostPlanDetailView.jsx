@@ -934,7 +934,8 @@ const PostPlanDetailView = ({
   onPlanChanged,  // (plan) => void — optimistic upsert into App's postPlans
   onPlanDeleted,  // (planId) => void
   onPlanSeen,     // (planId) => void — clear unread badge in App-level map
-  copilotEligible = false,  // AI Co-pilot available for this plan's brand
+  copilotEligible = false,    // ✨ Co-pilot button in topbar (Phase 1: still agency-only)
+  aiInlineEligible = false,   // ✨ AI draft / AI image prompt — open to brand on own brand_draft in Phase 1
 }) => {
   const isAdmin = role === 'admin';
 
@@ -2371,7 +2372,7 @@ const PostPlanDetailView = ({
                                       : (<><Icon name="check" size={11}/>Saved</>)}
                                 </span>
                                 <span style={{ flex: 1 }}/>
-                                {copilotEligible && aiPreviewPlatform !== activeCopyTab && (
+                                {aiInlineEligible && aiPreviewPlatform !== activeCopyTab && (
                                   <button
                                     type="button"
                                     className="btn btn-sm ai-draft-btn"
@@ -2403,7 +2404,7 @@ const PostPlanDetailView = ({
                                 </button>
                               </div>
                             )}
-                            {copilotEligible && aiPreviewPlatform === activeCopyTab && plan?.id && (
+                            {aiInlineEligible && aiPreviewPlatform === activeCopyTab && plan?.id && (
                               <AICopyPreview
                                 accountId={plan.accountId}
                                 planId={plan.id}
@@ -2531,7 +2532,7 @@ const PostPlanDetailView = ({
                   get a paste-ready prompt for image-gen tools. Agency-only,
                   whitelisted brands only. Sits above Deliverables since it's
                   the "plan the image" step that happens before the upload. */}
-              {copilotEligible && isAdmin && plan?.id && (
+              {aiInlineEligible && isEditor && plan?.id && (
                 <AIImagePromptPanel
                   accountId={plan.accountId}
                   planId={plan.id}

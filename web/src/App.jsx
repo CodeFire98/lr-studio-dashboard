@@ -1010,6 +1010,7 @@ const App = () => {
         onPlanDeleted={removePostPlanLocal}
         onPlanSeen={clearUnreadForPlan}
         copilotEligible={copilotEligible}
+        aiInlineEligible={aiInlineEligible}
       />
     );
 
@@ -1106,9 +1107,22 @@ const App = () => {
   const showGotIdeasCta = !!auth && !auth.isAgency && route.view !== "ideate";
 
   // AI Co-pilot eligibility — agency-only, per-brand, gated by the
-  // VITE_AI_COPILOT_BRAND_IDS allowlist during rollout.
+  // VITE_AI_COPILOT_BRAND_IDS allowlist during rollout. Drives the
+  // ✨ Co-pilot button in the topbar (Phase 1: still agency-only;
+  // Phase 2 will broaden to brand callers too).
   const copilotEligible =
     !!auth?.isAgency &&
+    !isAllClientsMode &&
+    !!scopeAccountId &&
+    COPILOT_ALLOWED_BRAND_IDS.has(scopeAccountId);
+
+  // Inline AI eligibility — drives the "✨ AI draft" button on the copy
+  // editor and the AI image-prompt panel. Phase 1 opens these to brand
+  // users on allowlisted brands too (the routes themselves auth-check
+  // brand membership + enforce the 50/day brand quota). Brand users
+  // see these affordances on plans they can edit (own brand_draft).
+  const aiInlineEligible =
+    !!auth?.id &&
     !isAllClientsMode &&
     !!scopeAccountId &&
     COPILOT_ALLOWED_BRAND_IDS.has(scopeAccountId);
