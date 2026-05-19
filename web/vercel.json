@@ -34,16 +34,8 @@
   },
   "crons": [
     {
-      "path": "/api/daily-digest",
-      "schedule": "30 12 * * *"
-    },
-    {
       "path": "/api/trends/refresh-cron",
       "schedule": "30 0 * * *"
-    },
-    {
-      "path": "/api/usage-digest",
-      "schedule": "0 2 * * *"
     }
   ],
   "rewrites": [

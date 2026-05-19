@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-19 (**AI-route telemetry wiring + daily digest header fix.** Follow-up to #108 that completes the telemetry coverage for the AI routes (chat / copy / image / suggestions). Each route's `onFinish` (or, for chat, a newly-added `onFinish`) now fires a parallel `logServiceUsage()` alongside its existing console-log line. `service='anthropic'`, `route` set to the API path, `accountId` + `userId` from the existing auth flow, `tokensIn`/`tokensOut`/`cost_usd` computed via `estimateAnthropicCostUsd()` with the SDK's normalized `inputTokens` (fresh input) + cache-token breakdown, `latencyMs` measured from a `startedAt = Date.now()` captured right before the streamText/streamObject call. Meta carries `{model, finish_reason, cache_read_tokens, cache_write_tokens}` plus route-specific extras (`plan_id`/`platform`/`mode` for copy + image, `caller_is_agency` for chat). chat.ts's `totalUsage` aggregates tokens across multi-step tool-call runs; small repair-model fallbacks (Haiku) bill at Sonnet rates in our estimator — tolerable since repair calls are a single-digit % of token volume. suggestions.ts uses streamObject's `usage` (no finishReason). image.ts has a shared `logUsage` helper used by both ideas-mode (streamObject) and prompt-mode (streamText); the `logServiceUsage` call lives inside that helper so both modes get logged. None of the four routes wraps the call in try/catch — `logServiceUsage` never throws by design. **Cosmetic also fixed:** the daily usage-digest email header was rendering "Daily service usage · Monday Mon May 18, 2026" (long weekday + short weekday). Dropped the `istWeekdayLabel` render from the header in `send-email/index.ts`; istDateLabel already embeds the short weekday. Header now reads "Daily service usage · Mon May 18, 2026" matching the subject line.)
+**Last updated:** 2026-05-19 (**Digest crons moved to Supabase pg_cron.** Both digest crons — the 18:00 IST brand daily-digest and the 07:30 IST agency usage-digest — move off Vercel Hobby cron onto Supabase pg_cron, calling the same Vercel API routes via `pg_net.http_post()`. Same shape as migration `0045` for engagement-refresh. Triggered by two confirmed Vercel-cron deploy-churn misses (2026-05-11 and 2026-05-19) — both days had heavy PR-merge activity, and Vercel's scheduler skips fires that overlap with active deploy windows. pg_cron is decoupled from Vercel deploys entirely. The Vercel routes themselves (`/api/daily-digest`, `/api/usage-digest`) are untouched — same CRON_SECRET bearer auth, same idempotency, same `daily_digest_log` write path. Only the caller changed. New migration `0054_digests_to_pg_cron.sql` adds a `vercel_app_url` Vault secret (operator sets to `https://agency.linkrunner.io` after applying), re-uses the existing `engagement_cron_secret` Vault entry from `0045`, and schedules two `pg_cron` jobs (`daily-digest-brand` at `30 12 * * *` UTC, `usage-digest-agency` at `0 2 * * *` UTC). Both wrap the HTTP POST in `pg_net.http_post` with a 90s timeout (Vercel function cap is 60s; 90s gives headroom for network egress). `vercel.json` drops both entries from its `crons` array. Trends Radar cron stays on Vercel for now (Trends paused, will revisit when work resumes).)
+
+**Previous (2026-05-19):** (**AI-route telemetry wiring + daily digest header fix.** Follow-up to #108 that completes the telemetry coverage for the AI routes (chat / copy / image / suggestions). Each route's `onFinish` (or, for chat, a newly-added `onFinish`) now fires a parallel `logServiceUsage()` alongside its existing console-log line. `service='anthropic'`, `route` set to the API path, `accountId` + `userId` from the existing auth flow, `tokensIn`/`tokensOut`/`cost_usd` computed via `estimateAnthropicCostUsd()` with the SDK's normalized `inputTokens` (fresh input) + cache-token breakdown, `latencyMs` measured from a `startedAt = Date.now()` captured right before the streamText/streamObject call. Meta carries `{model, finish_reason, cache_read_tokens, cache_write_tokens}` plus route-specific extras (`plan_id`/`platform`/`mode` for copy + image, `caller_is_agency` for chat). chat.ts's `totalUsage` aggregates tokens across multi-step tool-call runs; small repair-model fallbacks (Haiku) bill at Sonnet rates in our estimator — tolerable since repair calls are a single-digit % of token volume. suggestions.ts uses streamObject's `usage` (no finishReason). image.ts has a shared `logUsage` helper used by both ideas-mode (streamObject) and prompt-mode (streamText); the `logServiceUsage` call lives inside that helper so both modes get logged. None of the four routes wraps the call in try/catch — `logServiceUsage` never throws by design. **Cosmetic also fixed:** the daily usage-digest email header was rendering "Daily service usage · Monday Mon May 18, 2026" (long weekday + short weekday). Dropped the `istWeekdayLabel` render from the header in `send-email/index.ts`; istDateLabel already embeds the short weekday. Header now reads "Daily service usage · Mon May 18, 2026" matching the subject line.)
 
 **Previous (2026-05-19):** **Service usage telemetry + daily digest email.** New append-only `service_usage_log` table (migration `0053`) captures every external call to Anthropic / Firecrawl / Apify — `(service, route, account_id, user_id, tokens_in, tokens_out, cost_usd, latency_ms, status, error, meta)`. Sits alongside Phase 1's `ai_usage` table from migration `0051` — `ai_usage` is the lean quota counter (account_id, user_id, caller_is_agency, kind, created_at) read by the per-brand 50/day cap in `web/api/ai/auth-lib.ts`; `service_usage_log` is the wider telemetry surface that carries cost/tokens/latency/status for cost reporting and the daily digest. Agency-only RLS read, service-role writes, three b-trees + a partial Anthropic-quota index. Shared helper at `web/api/_shared/usage.ts` exports `logServiceUsage()` (fire-and-forget, never throws on failure) plus `estimateAnthropicCostUsd()` / `estimateFirecrawlCostUsd()` / `estimateApifyCostUsd()` rate-card calculators. Wired into `web/api/engagement/refresh.ts` (on-demand IG/LinkedIn/X scrape) and `supabase/functions/engagement-refresh/index.ts` (daily Supabase pg_cron); both log per-Apify-scrape rows with actor-specific cost, latency, status (ok/partial→ok/blocked/failed), and meta containing `{actor_id, actor_run_id, platform, scrape_status, publication_id}`. `fetch-trends.ts` wiring deferred per the Trends Radar pause. AI routes (chat/copy/image/suggestions) wiring is a small follow-up — `checkAndRecordAiUsage` already records to `ai_usage` for quota, so the follow-up just adds a parallel `logServiceUsage` call after the LLM completes (so we capture cost_usd + tokens_in/out which `ai_usage` doesn't track). New Vercel cron at `0 2 * * *` UTC (= 07:30 IST) calls `/api/usage-digest` which aggregates yesterday's IST-day window (00:00 → 00:00 IST), computes Δ vs prior 7-day daily average per service, top 5 brands by spend, quota alerts (any brand at ≥80% of the 50-call AI cap — counted from `ai_usage`, the live quota table), and last-24h error groups by (service, route). Dispatches a single email via send-email's new `service-usage-daily` template — table-based HTML matching the daily-digest aesthetic, plain-text fallback, recipients = every member of the agency-type account (queried at cron time via `auth.admin.listUsers()` + `account_members` lookup, no env-var). Idle-day variant (zero calls) renders a clean italic notice instead of empty tiles. Adaptive subject line: `Linkrunner Media · Daily usage · Tue May 19, 2026 · $1.47` (with `· N alerts` suffix when alerts exist, `· idle` when zero spend). §14 roadmap also updated with the broader launch-readiness slate (Slack mirror deferred, AI Co-pilot conversation persistence promoted from defer, AI image generation in-product, Conversations attachments polish in progress, brand-proposals PR 6 on hold; AI cost protection is now SHIPPED via Phase 1's `auth-lib.ts`). Sections touched: Recent changes log, §6 Data model (new `service_usage_log` table row alongside Phase 1's `ai_usage` row), §6 Migrations (`0053` row), §10 Edge functions & integrations (new `service-usage-daily` template + Vercel route notes), §14 Pending work.)
 
@@ -88,6 +90,60 @@
 ---
 
 ## Recent changes log
+
+### 2026-05-19 — Digest crons moved to Supabase pg_cron
+
+Both digest crons — the 18:00 IST brand daily-digest and the 07:30 IST agency usage-digest — move off Vercel Hobby cron onto Supabase pg_cron. The Vercel API routes (`/api/daily-digest`, `/api/usage-digest`) themselves are untouched; only the caller changes.
+
+**Why:** two confirmed Vercel-cron deploy-churn misses in eight days.
+- **2026-05-11 18:00 IST** — brand daily-digest missed; user reported on May 12 morning when checking yesterday-was-Sunday status.
+- **2026-05-19 18:00 IST** — brand daily-digest missed again, same day we shipped 4 PRs to main (#106, #107, #108, #109 — heavy deploy activity through the 18:00 window). User manually fired via curl at 21:56 IST.
+
+Vercel's scheduler skips cron fires that overlap with an active deploy build. On any day with 3+ PR merges, the risk is meaningful. Patterns shows up: this won't be the last time. pg_cron runs inside Postgres, completely decoupled from Vercel deploys, so the trigger is reliable even on push-heavy days.
+
+**Same pattern as `0045` (engagement-refresh-daily):**
+- New migration `0054_digests_to_pg_cron.sql` enables pg_cron + pg_net (idempotent — already on from `0045`).
+- Adds one new Vault secret `vercel_app_url` (operator sets to `https://agency.linkrunner.io` after applying). Stored in Vault to match the existing `engagement_project_url` pattern.
+- Re-uses existing `engagement_cron_secret` Vault entry for the bearer — that secret's value already matches Vercel's `CRON_SECRET`, which is what every cron in the project shares.
+- Schedules two `pg_cron` jobs:
+  - `daily-digest-brand` on `30 12 * * *` UTC = 18:00 IST
+  - `usage-digest-agency` on `0 2 * * *` UTC = 07:30 IST
+- Both call `net.http_post()` with a 90s timeout (Vercel function cap is 60s; 90s gives pg_net headroom for network egress + a brief tail).
+- `vercel.json` drops both entries from its `crons` array. Trends Radar cron stays on Vercel for now since Trends is paused.
+
+**The Vercel routes don't change.** Same `CRON_SECRET` bearer auth check, same idempotency, same `daily_digest_log` audit writes for daily-digest. pg_cron just becomes a different caller — and a more reliable one.
+
+**Failure modes worth knowing:**
+- If `vercel_app_url` is still the `REPLACE.example.com` placeholder after applying, pg_net POSTs to a non-existent host. `select * from net._http_response order by created desc` shows DNS errors. Fix: update the Vault entry.
+- If `engagement_cron_secret` doesn't match Vercel's `CRON_SECRET` env var, the Vercel route returns 401 and the email never lands. `net._http_response.status_code = 401`. Fix: rotate the Vault entry to match.
+- If Vercel's deploy is hard-down (rare), pg_cron retries on the next scheduled fire — no built-in retry. For the daily-digest specifically, the idempotency check inside the route means the operator can also manually `curl` later in the day to recover.
+
+**Touched files:**
+- New: [supabase/migrations/0054_digests_to_pg_cron.sql](supabase/migrations/0054_digests_to_pg_cron.sql) — extensions + Vault secret + two cron schedules.
+- [web/vercel.json](web/vercel.json) — both digest cron entries removed from the `crons` array.
+
+**Operator action required:**
+1. Apply migration `0054_digests_to_pg_cron.sql` via Supabase Dashboard SQL editor (or `supabase db push`).
+2. Set the new Vault secret to the prod URL:
+   ```sql
+   select vault.update_secret(
+     (select id from vault.secrets where name = 'vercel_app_url'),
+     'https://agency.linkrunner.io'
+   );
+   ```
+3. Vercel auto-deploys the updated `vercel.json` on merge — the Vercel-side cron entries vanish on the next deployment.
+4. Verify cron schedules registered:
+   ```sql
+   select jobname, schedule, command from cron.job
+   where jobname in ('daily-digest-brand', 'usage-digest-agency');
+   ```
+
+**Test plan after merge + migration:**
+- [ ] Manual fire the daily-digest via pg_net (the verify-1 query in the migration comments) → email lands in brand inbox, `daily_digest_log` shows a row with `run_at` matching now.
+- [ ] Manual fire the usage-digest the same way → email lands in agency inboxes.
+- [ ] Wait for the next natural fire (next 12:30 UTC for daily-digest, or next 02:00 UTC for usage-digest, whichever comes first). Confirm pg_cron fired on schedule.
+
+**Sections touched:** Recent changes log; `Last updated`; §6 Migrations (new `0054` row); §10 Edge functions & integrations (note that the digest crons now live in pg_cron, not Vercel).
 
 ### 2026-05-19 — AI-route telemetry wiring + daily digest header fix
 
