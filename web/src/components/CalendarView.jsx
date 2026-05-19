@@ -309,11 +309,15 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, hasPendingProp
   const displayStatus = post.displayStatus || post.status;
   const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
-  const titleSuffix = unreadCount > 0
-    ? ` · ${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`
-    : '';
-  const proposalSuffix = hasPendingProposal ? ' · brand proposal pending' : '';
-  const hoverTitle = `${post.concept || 'Untitled post'} · ${cfg.label}${time ? ' · ' + time : ''}${titleSuffix}${proposalSuffix}`;
+  // One dot for ANY new activity (unread messages OR pending brand
+  // proposal) — they collapse so a card with both pending things doesn't
+  // sprout two adjacent dots. Title combines the breakdown for hover.
+  const hasNewActivity = hasPendingProposal || unreadCount > 0;
+  const titlePieces = [];
+  if (unreadCount > 0) titlePieces.push(`${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`);
+  if (hasPendingProposal) titlePieces.push('brand proposal pending');
+  const activitySuffix = titlePieces.length > 0 ? ' · ' + titlePieces.join(' · ') : '';
+  const hoverTitle = `${post.concept || 'Untitled post'} · ${cfg.label}${time ? ' · ' + time : ''}${activitySuffix}`;
 
   return (
     <button
@@ -364,23 +368,9 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, hasPendingProp
       >
         {post.concept || 'Untitled post'}
       </span>
-      {hasPendingProposal && (
+      {hasNewActivity && (
         <span
-          aria-label="Brand proposal pending"
-          title="Brand proposal pending"
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 99,
-            background: '#C44A2C',
-            flexShrink: 0,
-            boxShadow: '0 0 0 2px var(--surface)',
-          }}
-        />
-      )}
-      {unreadCount > 0 && (
-        <span
-          aria-label={`${unreadCount} unread`}
+          aria-label={titlePieces.join(', ') || 'New activity'}
           style={{
             width: 8,
             height: 8,

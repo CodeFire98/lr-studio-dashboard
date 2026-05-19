@@ -393,15 +393,25 @@ const PendingCopyProposalCard = ({ proposal, plan, isAdmin, busy, onAccept, onRe
 // =====================================================================
 const ProposeCopyChangesModal = ({ plan, accountId, userId, onCancel, onSent }) => {
   const initial = plan?.copyVariants || {};
-  const platformKeys = (plan?.platforms && plan.platforms.length > 0)
-    ? plan.platforms
-    : Object.keys(initial);
+  // Show ALL supported platforms in tabs (not just the plan's currently
+  // targeted ones) — brand can propose adding a platform the plan didn't
+  // originally include (e.g. plan was IG-only, brand wants to add a
+  // LinkedIn variant). Tabs that aren't currently on the plan are marked
+  // visually so the brand knows they're proposing a new platform. On
+  // accept, the agency-side handler extends plan.platforms with any
+  // newly-touched platform so the editor surfaces it normally.
+  const planPlatforms = new Set(plan?.platforms || []);
+  const platformKeys = PLATFORMS.map((p) => p.key);
   const [drafts, setDrafts] = useState(() => {
     const out = {};
     for (const k of platformKeys) out[k] = initial[k] ?? '';
     return out;
   });
-  const [activeTab, setActiveTab] = useState(platformKeys[0] || null);
+  // Default tab: first currently-targeted platform, else first platform.
+  const [activeTab, setActiveTab] = useState(() => {
+    const first = platformKeys.find((k) => planPlatforms.has(k));
+    return first || platformKeys[0] || null;
+  });
   const [note, setNote] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState(null);
@@ -479,17 +489,20 @@ const ProposeCopyChangesModal = ({ plan, accountId, userId, onCancel, onSent }) 
                 const after  = drafts[k] ?? '';
                 const dirty = before !== after;
                 const active = activeTab === k;
+                const onPlan = planPlatforms.has(k);
                 return (
                   <button
                     key={k}
                     type="button"
                     onClick={() => setActiveTab(k)}
+                    title={onPlan ? undefined : 'Not on this plan yet — write copy here to propose adding it.'}
                     style={{
                       padding: '6px 12px',
                       borderRadius: 999,
                       border: '1px solid ' + (active ? 'var(--accent)' : 'var(--line)'),
                       background: active ? 'color-mix(in oklab, var(--accent) 10%, var(--surface))' : 'var(--surface)',
                       color: active ? 'var(--ink-1)' : 'var(--ink-2)',
+                      opacity: onPlan ? 1 : 0.72,
                       fontSize: 12.5,
                       fontWeight: 500,
                       display: 'inline-flex',
@@ -500,6 +513,11 @@ const ProposeCopyChangesModal = ({ plan, accountId, userId, onCancel, onSent }) 
                   >
                     <PlatformChip platform={k} size="sm" />
                     <span>{label}</span>
+                    {!onPlan && (
+                      <span style={{ fontSize: 10.5, color: 'var(--ink-4)', fontStyle: 'italic', fontWeight: 400 }}>
+                        + add
+                      </span>
+                    )}
                     {dirty && (
                       <span
                         aria-hidden
@@ -1705,13 +1723,13 @@ const PostPlanDetailView = ({
         // Brand can also request changes instead of approving. Opens the
         // copy-proposal modal; doesn't change plan status.
         if (!pendingCopyProposal) {
-          out.push({ label: 'Propose changes', tone: 'ghost', action: 'propose-copy' });
+          out.push({ label: 'Propose changes', tone: 'primary', action: 'propose-copy' });
         }
       } else if (statusBucket === 'approved') {
         // On an already-approved plan, brand can still propose copy
         // tweaks. Same modal, same proposal kind.
         if (!pendingCopyProposal) {
-          out.push({ label: 'Propose changes', tone: 'ghost', action: 'propose-copy' });
+          out.push({ label: 'Propose changes', tone: 'primary', action: 'propose-copy' });
         }
       }
     }
@@ -1934,14 +1952,25 @@ const PostPlanDetailView = ({
                 try {
                   // Merge proposed copy_variants into the plan (only the
                   // keys the brand touched; other platforms untouched).
+                  // Also extend plan.platforms with any newly-touched key
+                  // so the post-plan editor surfaces it normally instead
+                  // of orphaning the new copy.
+                  const proposedVariants = pendingCopyProposal.payload?.copy_variants || {};
                   const nextVariants = {
                     ...(plan.copyVariants || {}),
-                    ...(pendingCopyProposal.payload?.copy_variants || {}),
+                    ...proposedVariants,
                   };
-                  const updated = await updatePostPlan(plan.id, { copyVariants: nextVariants });
+                  const currentPlatforms = Array.isArray(plan.platforms) ? plan.platforms : [];
+                  const newKeys = Object.keys(proposedVariants).filter(
+                    (k) => !currentPlatforms.includes(k) && (proposedVariants[k] ?? '').trim() !== ''
+                  );
+                  const patch = { copyVariants: nextVariants };
+                  if (newKeys.length > 0) patch.platforms = [...currentPlatforms, ...newKeys];
+                  const updated = await updatePostPlan(plan.id, patch);
                   setPlan(updated);
                   setCopyVariants(updated.copyVariants || {});
                   setCopyDrafts(updated.copyVariants || {});
+                  setPlatforms(updated.platforms || []);
                   onPlanChanged?.(updated);
                   await resolveProposal({ proposalId: pendingCopyProposal.id, status: 'approved' });
                   refreshProposals();
