@@ -5713,6 +5713,19 @@ input, textarea { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 320px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.conv-plan-chip-time {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.conv-plan-chip-time::before {
+  content: '·';
+  color: var(--ink-4);
+  margin-right: 6px;
 }
 .conv-plan-chip-remove {
   appearance: none;

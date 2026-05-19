@@ -48,6 +48,21 @@ function formatPlanRowTime(iso) {
     hour: 'numeric', minute: '2-digit',
   });
 }
+// Humanized variant used on the inline plan chip. Reuses formatPlanRowTime
+// for anything outside the today/yesterday/tomorrow window so wording stays
+// consistent with the tag-picker dropdown.
+function formatPlanChipTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const startOfDay = (x) => { const c = new Date(x); c.setHours(0,0,0,0); return c; };
+  const dayDiff = Math.round((startOfDay(d) - startOfDay(new Date())) / 86_400_000);
+  const time = d.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (dayDiff === 0) return `Today, ${time}`;
+  if (dayDiff === 1) return `Tomorrow, ${time}`;
+  if (dayDiff === -1) return `Yesterday, ${time}`;
+  return formatPlanRowTime(iso);
+}
 function formatBytes(n) {
   if (n == null) return '';
   if (n < 1024) return `${n} B`;
@@ -86,6 +101,9 @@ function PlanChip({ plan, brandSlug, navigate, removable, onRemove, deletedPlace
     >
       <Icon name="calendar" size={14} />
       <span className="conv-plan-chip-concept">{plan.concept || 'Untitled plan'}</span>
+      {plan.scheduledAt && (
+        <span className="conv-plan-chip-time">{formatPlanChipTime(plan.scheduledAt)}</span>
+      )}
       <StatusPill status={plan.status} />
       {removable
         ? (
