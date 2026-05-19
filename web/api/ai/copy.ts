@@ -47,6 +47,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { compileCopyGuidance } from "../../src/lib/skillRegistry.js";
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
+import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -324,6 +325,7 @@ Output the caption text only — no preamble, no quotes. The output MUST follow 
       providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
     });
 
+    const startedAt = Date.now();
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS,
@@ -346,6 +348,33 @@ Output the caption text only — no preamble, no quotes. The output MUST follow 
           `[copy] usage account=${body.accountId} plan=${body.plan_id} platform=${body.platform} mode=${mode} ` +
             `input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason}`,
         );
+        // Telemetry → service_usage_log for the daily digest.
+        void logServiceUsage({
+          service: "anthropic",
+          route: "/api/ai/copy",
+          accountId: body.accountId,
+          userId: caller.userId,
+          tokensIn: totalUsage.inputTokens ?? 0,
+          tokensOut: out,
+          costUsd: estimateAnthropicCostUsd({
+            model: MODEL_ID,
+            inputTokens: totalUsage.inputTokens ?? 0,
+            outputTokens: out,
+            cacheReadTokens: cr,
+            cacheWriteTokens: cw,
+          }),
+          latencyMs: Date.now() - startedAt,
+          status: "ok",
+          meta: {
+            model: MODEL_ID,
+            plan_id: body.plan_id,
+            platform: body.platform,
+            mode,
+            finish_reason: finishReason,
+            cache_read_tokens: cr,
+            cache_write_tokens: cw,
+          },
+        });
       },
     });
 

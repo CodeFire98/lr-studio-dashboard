@@ -1009,7 +1009,7 @@ function renderServiceUsageDaily(body: ServiceUsageDailyRequest): {
         <!-- Header -->
         <tr><td style="background:#f5efe8;padding:20px 24px;border-bottom:1px solid #ECE5DC">
           <div style="font-family:'EB Garamond',Georgia,serif;font-size:20px;font-weight:600;letter-spacing:-0.01em;color:#1a1612">Linkrunner <span style="color:#C44A2C">Media</span></div>
-          <div style="font-size:13px;color:#6e6862;margin-top:6px">Daily service usage · ${escapeHtml(body.istWeekdayLabel)} ${escapeHtml(body.istDateLabel)}</div>
+          <div style="font-size:13px;color:#6e6862;margin-top:6px">Daily service usage · ${escapeHtml(body.istDateLabel)}</div>
         </td></tr>
 
         <!-- Snapshot tiles -->

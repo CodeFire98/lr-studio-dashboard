@@ -50,6 +50,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
+import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -199,6 +200,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // via experimental_useObject) parses partial JSON as it streams,
     // showing chips one-by-one as each idea's title resolves. Same UX
     // pattern as the image-ideas panel.
+    const startedAt = Date.now();
     const result = streamObject({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -261,6 +263,32 @@ Today is ${date}. Refresh signal: ${nonce}.${priorBlock}`;
         console.log(
           `[suggestions] usage account=${body.accountId} input=${nc} cache_read=${cr} cache_write=${cw} output=${out}`,
         );
+        // Telemetry → service_usage_log for the daily digest. Fire-and-
+        // forget; helper never throws. `inputTokens` (the AI SDK's
+        // normalized fresh-input figure) is what we pass — the cost
+        // estimator handles cache token math separately.
+        void logServiceUsage({
+          service: "anthropic",
+          route: "/api/ai/suggestions",
+          accountId: body.accountId,
+          userId: caller.userId,
+          tokensIn: usage?.inputTokens ?? 0,
+          tokensOut: out,
+          costUsd: estimateAnthropicCostUsd({
+            model: MODEL_ID,
+            inputTokens: usage?.inputTokens ?? 0,
+            outputTokens: out,
+            cacheReadTokens: cr,
+            cacheWriteTokens: cw,
+          }),
+          latencyMs: Date.now() - startedAt,
+          status: "ok",
+          meta: {
+            model: MODEL_ID,
+            cache_read_tokens: cr,
+            cache_write_tokens: cw,
+          },
+        });
       },
     });
 

@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-19 (**Service usage telemetry + daily digest email.** New append-only `service_usage_log` table (migration `0053`) captures every external call to Anthropic / Firecrawl / Apify — `(service, route, account_id, user_id, tokens_in, tokens_out, cost_usd, latency_ms, status, error, meta)`. Sits alongside Phase 1's `ai_usage` table from migration `0051` — `ai_usage` is the lean quota counter (account_id, user_id, caller_is_agency, kind, created_at) read by the per-brand 50/day cap in `web/api/ai/auth-lib.ts`; `service_usage_log` is the wider telemetry surface that carries cost/tokens/latency/status for cost reporting and the daily digest. Agency-only RLS read, service-role writes, three b-trees + a partial Anthropic-quota index. Shared helper at `web/api/_shared/usage.ts` exports `logServiceUsage()` (fire-and-forget, never throws on failure) plus `estimateAnthropicCostUsd()` / `estimateFirecrawlCostUsd()` / `estimateApifyCostUsd()` rate-card calculators. Wired into `web/api/engagement/refresh.ts` (on-demand IG/LinkedIn/X scrape) and `supabase/functions/engagement-refresh/index.ts` (daily Supabase pg_cron); both log per-Apify-scrape rows with actor-specific cost, latency, status (ok/partial→ok/blocked/failed), and meta containing `{actor_id, actor_run_id, platform, scrape_status, publication_id}`. `fetch-trends.ts` wiring deferred per the Trends Radar pause. AI routes (chat/copy/image/suggestions) wiring is a small follow-up — `checkAndRecordAiUsage` already records to `ai_usage` for quota, so the follow-up just adds a parallel `logServiceUsage` call after the LLM completes (so we capture cost_usd + tokens_in/out which `ai_usage` doesn't track). New Vercel cron at `0 2 * * *` UTC (= 07:30 IST) calls `/api/usage-digest` which aggregates yesterday's IST-day window (00:00 → 00:00 IST), computes Δ vs prior 7-day daily average per service, top 5 brands by spend, quota alerts (any brand at ≥80% of the 50-call AI cap — counted from `ai_usage`, the live quota table), and last-24h error groups by (service, route). Dispatches a single email via send-email's new `service-usage-daily` template — table-based HTML matching the daily-digest aesthetic, plain-text fallback, recipients = every member of the agency-type account (queried at cron time via `auth.admin.listUsers()` + `account_members` lookup, no env-var). Idle-day variant (zero calls) renders a clean italic notice instead of empty tiles. Adaptive subject line: `Linkrunner Media · Daily usage · Tue May 19, 2026 · $1.47` (with `· N alerts` suffix when alerts exist, `· idle` when zero spend). §14 roadmap also updated with the broader launch-readiness slate (Slack mirror deferred, AI Co-pilot conversation persistence promoted from defer, AI image generation in-product, Conversations attachments polish in progress, brand-proposals PR 6 on hold; AI cost protection is now SHIPPED via Phase 1's `auth-lib.ts`). Sections touched: Recent changes log, §6 Data model (new `service_usage_log` table row alongside Phase 1's `ai_usage` row), §6 Migrations (`0053` row), §10 Edge functions & integrations (new `service-usage-daily` template + Vercel route notes), §14 Pending work.)
+**Last updated:** 2026-05-19 (**AI-route telemetry wiring + daily digest header fix.** Follow-up to #108 that completes the telemetry coverage for the AI routes (chat / copy / image / suggestions). Each route's `onFinish` (or, for chat, a newly-added `onFinish`) now fires a parallel `logServiceUsage()` alongside its existing console-log line. `service='anthropic'`, `route` set to the API path, `accountId` + `userId` from the existing auth flow, `tokensIn`/`tokensOut`/`cost_usd` computed via `estimateAnthropicCostUsd()` with the SDK's normalized `inputTokens` (fresh input) + cache-token breakdown, `latencyMs` measured from a `startedAt = Date.now()` captured right before the streamText/streamObject call. Meta carries `{model, finish_reason, cache_read_tokens, cache_write_tokens}` plus route-specific extras (`plan_id`/`platform`/`mode` for copy + image, `caller_is_agency` for chat). chat.ts's `totalUsage` aggregates tokens across multi-step tool-call runs; small repair-model fallbacks (Haiku) bill at Sonnet rates in our estimator — tolerable since repair calls are a single-digit % of token volume. suggestions.ts uses streamObject's `usage` (no finishReason). image.ts has a shared `logUsage` helper used by both ideas-mode (streamObject) and prompt-mode (streamText); the `logServiceUsage` call lives inside that helper so both modes get logged. None of the four routes wraps the call in try/catch — `logServiceUsage` never throws by design. **Cosmetic also fixed:** the daily usage-digest email header was rendering "Daily service usage · Monday Mon May 18, 2026" (long weekday + short weekday). Dropped the `istWeekdayLabel` render from the header in `send-email/index.ts`; istDateLabel already embeds the short weekday. Header now reads "Daily service usage · Mon May 18, 2026" matching the subject line.)
+
+**Previous (2026-05-19):** **Service usage telemetry + daily digest email.** New append-only `service_usage_log` table (migration `0053`) captures every external call to Anthropic / Firecrawl / Apify — `(service, route, account_id, user_id, tokens_in, tokens_out, cost_usd, latency_ms, status, error, meta)`. Sits alongside Phase 1's `ai_usage` table from migration `0051` — `ai_usage` is the lean quota counter (account_id, user_id, caller_is_agency, kind, created_at) read by the per-brand 50/day cap in `web/api/ai/auth-lib.ts`; `service_usage_log` is the wider telemetry surface that carries cost/tokens/latency/status for cost reporting and the daily digest. Agency-only RLS read, service-role writes, three b-trees + a partial Anthropic-quota index. Shared helper at `web/api/_shared/usage.ts` exports `logServiceUsage()` (fire-and-forget, never throws on failure) plus `estimateAnthropicCostUsd()` / `estimateFirecrawlCostUsd()` / `estimateApifyCostUsd()` rate-card calculators. Wired into `web/api/engagement/refresh.ts` (on-demand IG/LinkedIn/X scrape) and `supabase/functions/engagement-refresh/index.ts` (daily Supabase pg_cron); both log per-Apify-scrape rows with actor-specific cost, latency, status (ok/partial→ok/blocked/failed), and meta containing `{actor_id, actor_run_id, platform, scrape_status, publication_id}`. `fetch-trends.ts` wiring deferred per the Trends Radar pause. AI routes (chat/copy/image/suggestions) wiring is a small follow-up — `checkAndRecordAiUsage` already records to `ai_usage` for quota, so the follow-up just adds a parallel `logServiceUsage` call after the LLM completes (so we capture cost_usd + tokens_in/out which `ai_usage` doesn't track). New Vercel cron at `0 2 * * *` UTC (= 07:30 IST) calls `/api/usage-digest` which aggregates yesterday's IST-day window (00:00 → 00:00 IST), computes Δ vs prior 7-day daily average per service, top 5 brands by spend, quota alerts (any brand at ≥80% of the 50-call AI cap — counted from `ai_usage`, the live quota table), and last-24h error groups by (service, route). Dispatches a single email via send-email's new `service-usage-daily` template — table-based HTML matching the daily-digest aesthetic, plain-text fallback, recipients = every member of the agency-type account (queried at cron time via `auth.admin.listUsers()` + `account_members` lookup, no env-var). Idle-day variant (zero calls) renders a clean italic notice instead of empty tiles. Adaptive subject line: `Linkrunner Media · Daily usage · Tue May 19, 2026 · $1.47` (with `· N alerts` suffix when alerts exist, `· idle` when zero spend). §14 roadmap also updated with the broader launch-readiness slate (Slack mirror deferred, AI Co-pilot conversation persistence promoted from defer, AI image generation in-product, Conversations attachments polish in progress, brand-proposals PR 6 on hold; AI cost protection is now SHIPPED via Phase 1's `auth-lib.ts`). Sections touched: Recent changes log, §6 Data model (new `service_usage_log` table row alongside Phase 1's `ai_usage` row), §6 Migrations (`0053` row), §10 Edge functions & integrations (new `service-usage-daily` template + Vercel route notes), §14 Pending work.)
 
 **Previous (2026-05-19):** **Live Posts: daily-refresh cadence callout.** Added a small "Engagement stats refresh daily at 6:00 AM IST." line with a clock icon directly under the page heading in `LivePostsView.jsx`. Brand users see only this label and rely on the cadence; agency keeps the per-tile "Refresh now" button. Clarifies expectations for non-agency users without needing the manual-refresh affordance. Self-contained one-file change; no migrations or env-var work.
 
@@ -86,6 +88,54 @@
 ---
 
 ## Recent changes log
+
+### 2026-05-19 — AI-route telemetry wiring + daily digest header fix
+
+Small follow-up to #108. Completes the telemetry coverage for the four AI routes (chat / copy / image / suggestions) so the daily usage digest starts showing Claude cost + token counts alongside the Apify scrape data. Also fixes one cosmetic bug in the digest email header noticed on yesterday's first natural send.
+
+**AI route wiring:** each of the four routes already had an `onFinish` callback (or, for chat, didn't have one and got one added in this PR) doing per-call `console.log` for Vercel Function Log observability. The wiring just adds a parallel `logServiceUsage()` call inside the same callback. Pattern is the same in every route:
+
+```ts
+const startedAt = Date.now();
+const result = streamText({  // or streamObject for suggestions / image-ideas
+  ...,
+  onFinish: ({ totalUsage, finishReason }) => {  // ({ usage }) for streamObject
+    // existing console.log stays
+    void logServiceUsage({
+      service: "anthropic",
+      route: "/api/ai/<name>",
+      accountId: body.accountId,
+      userId: caller.userId,
+      tokensIn: totalUsage.inputTokens ?? 0,
+      tokensOut: totalUsage.outputTokens ?? 0,
+      costUsd: estimateAnthropicCostUsd({ model: MODEL_ID, ... }),
+      latencyMs: Date.now() - startedAt,
+      status: "ok",
+      meta: { model, finish_reason, cache_read_tokens, cache_write_tokens, ...routeExtras },
+    });
+  },
+});
+```
+
+**Per-route extras in `meta`:**
+- chat: `caller_is_agency` (so the digest's per-brand bucketing can tell agency vs brand spend).
+- copy + image: `plan_id`, `platform`, `mode` (so a future per-plan cost view is one query away).
+- suggestions: nothing extra — these are always agency-initiated, brand-scoped via accountId.
+
+**Multi-step / repair-model handling (chat-specific):** chat.ts can run multiple LLM calls in a single request (tool-call steps + the SDK's silent `experimental_repairToolCall` Haiku fallback for malformed tool inputs). `totalUsage` aggregates token counts across all of them. Repair calls bill at Haiku rates but our cost estimator uses the primary MODEL_ID (Sonnet 4.6) — slight over-estimate, tolerable since repair calls are a single-digit % of token volume.
+
+**Cosmetic fix:** yesterday's first usage-digest email landed at 21:56 IST with header "Daily service usage · Monday Mon May 18, 2026" — the long weekday from `istWeekdayLabel` and the short weekday baked into `istDateLabel` were both being rendered. Dropped the `${istWeekdayLabel}` interpolation from the header in `send-email/index.ts`'s `service-usage-daily` template. Header now reads "Daily service usage · Mon May 18, 2026" matching the subject-line format.
+
+**Touched files:**
+- [web/api/ai/chat.ts](web/api/ai/chat.ts) — new `onFinish` on the streamText call.
+- [web/api/ai/copy.ts](web/api/ai/copy.ts) — extended existing onFinish.
+- [web/api/ai/image.ts](web/api/ai/image.ts) — extended the shared `logUsage` helper.
+- [web/api/ai/suggestions.ts](web/api/ai/suggestions.ts) — extended existing onFinish.
+- [supabase/functions/send-email/index.ts](supabase/functions/send-email/index.ts) — single-line header fix in `renderServiceUsageDaily`.
+
+**Operator action required:** `supabase functions deploy send-email` (or Dashboard equivalent) to ship the header fix. The four AI route changes deploy automatically via Vercel on merge. Migration `0053` already applied per the parent PR.
+
+**Sections touched:** Recent changes log; `Last updated`. No schema, no migration, no env-var work.
 
 ### 2026-05-19 — Service usage telemetry + daily digest email
 
