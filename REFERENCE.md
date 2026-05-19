@@ -3,7 +3,7 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-19 (**Brand proposals — brand creates new plans (PR 3 of 6).** Brand users get their first-ever write action: a "+ Propose plan" CTA on every calendar surface (top-level button, per-day `+`, empty-state CTA, week-view day header). On click, `createStubAndOpen` branches on `isAdmin` so brand-side stubs land in `status='proposed'` while agency stays `'drafting'`. The stub navigates to `PostPlanDetailView`, where a new `isEditor` boolean (`isAdmin || (status === 'proposed' && plan.createdBy === userId)`) lets the brand-as-proposer edit their own draft inline (title, copy, date, platforms) until the agency accepts. Field-editing gates were flipped from `isAdmin` to `isEditor` throughout PostPlanDetailView, with role-only features (status workflow buttons, agency-only auto-title sparkle, Duplicate, AI Co-pilot, References/Deliverables text + upload gates) explicitly kept on `isAdmin`. On a `proposed` plan, agency sees two new buttons in the status row: **Accept** (transitions to `'drafting'`; existing PR 1 trigger emits "accepted the proposed plan." system message into the brand conversation) and **Reject** (calls `handleDelete` — delete with confirmation; system message "proposed a new post plan." remains in the thread as audit trail, and the plan disappears from the calendar). New migration `0049_brand_proposes_new_plan_message.sql` adds an `AFTER INSERT` trigger on `post_plans` that emits "proposed a new post plan." into the brand's conversation when `status='proposed'` on insert — without this the only system messages would be on UPDATE (PR 1's trigger), and a fresh brand-proposed plan would land silently. No new JS helpers; existing `createPostPlan` already accepts a `status` parameter — CalendarView just passes `'proposed'` when brand is the caller. Brand has no agency-only side affordances (Duplicate, AI Co-pilot, Deliverables upload, "Send update" email) on either their own proposed plans or the rest of the calendar.)
+**Last updated:** 2026-05-19 (**Brand proposals — brand creates new plans, explicit submit step, subtle system messages (PR 3 of 6).** Brand users get their first-ever write action with a two-step create → submit flow: (1) Brand clicks "+ Propose plan" on the calendar — stub row lands in a private `'brand_draft'` state, no system message fires yet. (2) Brand fills in concept/copy/date/platforms inline (new `isEditor` boolean lets the creator edit while in brand_draft). (3) Brand clicks "Propose plan" on the detail view — status flips brand_draft → proposed, the status-change trigger emits "proposed a new post plan." into the brand's conversation thread. (4) Agency sees the proposed plan with **Accept** / **Reject** buttons (Accept → drafting via existing PR 1 trigger emitting "accepted the proposed plan."; Reject → `handleDelete()` with confirmation). System messages in the conversation thread now render compact, italic, no-avatar, low-contrast so the lifecycle log doesn't compete with real DMs — new `.conv-msg-system` CSS class, `MessageBubble` branches on `message.kind === 'system'`. New CSS treatment: single-line text "<strong>Name</strong> <italic>verb-phrase</italic> · <muted>time</muted>" plus the auto-tagged plan chip if any. Migration `0049_brand_proposes_new_plan_message.sql`: AFTER INSERT trigger on post_plans emitting "proposed a new post plan." when status='proposed' on insert (safety net for direct inserts that bypass the brand_draft path). Migration `0050_brand_draft_status.sql`: extends `post_plans.status` check to a 5th value `'brand_draft'`; adds a `brand_draft → proposed` case to `emit_post_plan_status_message`; tightens `guard_post_plan_status_transitions` to allow brand `brand_draft → proposed` and forbid agency from setting `status='brand_draft'`. `STATUS_CONFIG` adds `brand_draft` with label "Draft (not yet proposed)" (muted). `CalendarView.createStubAndOpen` passes `status: isAdmin ? 'drafting' : 'brand_draft'`; `STATUS_GROUPS` gets a new `brand_draft` filter group; `STATUS_ORDER` adds the new value alongside drafting. `PostPlanDetailView.statusBucket` learns the 5th value. `statusActions`: brand-only "Propose plan" button on `brand_draft` (gated to the creator), agency Accept/Reject on `proposed`. `isEditor` = `isAdmin || (status === 'brand_draft' && createdBy === userId)` — once brand submits, plan becomes read-only for them until agency resolves. Field-edit gates throughout PostPlanDetailView (title, copy, date, platforms, delete) gate on `isEditor`; role-only features (status workflow buttons, auto-title sparkle, Duplicate, AI Co-pilot, References/Deliverables uploads) stay on `isAdmin`. `mapConversationMessageRow` in db.js exposes the `kind` column. No new JS helpers; existing `createPostPlan` already accepts a `status` parameter.)
 
 **Previous (2026-05-19):** **Brand proposals — agency buttons + brand approval (PR 2 of 6).** Removes the agency status dropdown (which let admins accidentally set `'approved'` themselves) and replaces it with explicit workflow buttons that match the new policy: only the brand can ever approve a plan. Agency's terminal forward action is now "Submit for review" (`drafting → needs_review`); we also add a "Recall to drafting" button on `needs_review` so agency can pull a plan back without a dropdown. Brand still sees "Approve" on `needs_review` (unchanged). Hard floor at the DB: new migration `0048_brand_proposals_status_guard.sql` installs a `BEFORE UPDATE of status` trigger that (a) refuses any agency UPDATE that sets `status='approved'` and (b) refuses any brand UPDATE except `needs_review → approved`. Service-role / SECURITY DEFINER contexts (cron, edge functions, migrations) bypass the guard via `if auth.uid() is null then return new;`. UI status-pill labels updated to communicate ownership: `proposed` → "Awaiting agency review" (coral tint #C44A2C), `needs_review` → "Awaiting brand approval" (mustard #A16207, was "Needs review"). Legacy aliases `needs_brand_feedback` / `needs_admin_revision` follow the new label too. `STATUS_GROUPS` on the calendar gets a new `proposed` filter group (label "Proposed") so brand-originated plans (shipping in PR 3) can be filtered. `transitionStatus` + `confirmPendingTransition` in `PostPlanDetailView.jsx` rewritten to await `updatePostPlan` and revert local state on failure, so the new guard's `raise exception` doesn't leave the UI in a phantom-approved state. `statusBucket` learns a 4th value `'proposed'` so a brand-originated plan renders distinctly from drafting.)
 
@@ -73,38 +73,46 @@
 
 ## Recent changes log
 
-### 2026-05-19 — Brand proposals: brand creates new plans (PR 3 of 6)
+### 2026-05-19 — Brand proposals: brand creates new plans, explicit submit, subtle system messages (PR 3 of 6)
 
-Brand users get their first-ever write action — a "+ Propose plan" CTA — and the agency-side accept/reject surface for those proposals lands on the existing `PostPlanDetailView`.
+Brand users get their first-ever write action: a two-step **create → submit** flow on the calendar, with agency Accept/Reject on the resulting proposed plan. System messages in the brand conversation thread render in a compact, italic, low-contrast style so the lifecycle log doesn't visually compete with real DMs.
 
 **Calendar (`CalendarView.jsx`):**
 - `+ Propose plan` button replaces the agency-only `+ New post plan` button when `mode === 'customer'`.
-- Per-day `+` button is now visible to brand too (was `canCreate = isAdmin && c.inMonth` → `canCreate = c.inMonth`). Title attr varies by role: "Plan a new post on this day" (agency) vs "Propose a new post on this day" (brand).
-- Week-view day header is now clickable for brand too (`cellClickable = true`). Title attr varies.
+- Per-day `+` button is now visible to brand too. Title attr varies by role: "Plan a new post on this day" (agency) vs "Propose a new post on this day" (brand).
+- Week-view day header is now clickable for brand too. Title attr varies.
 - Empty-list state CTA: "+ Propose a post now" for brand, "+ Plan a post now" for agency.
-- `createStubAndOpen` now passes `status: isAdmin ? 'drafting' : 'proposed'` to `createPostPlan`. Everything else stays — the stub navigates to the detail view as before.
+- `createStubAndOpen` passes `status: isAdmin ? 'drafting' : 'brand_draft'` to `createPostPlan`. Brand-side stubs land in a private editing state — no system message fires at stub create.
+- `STATUS_GROUPS` gets a new `brand_draft` filter group (label "Draft"). `STATUS_ORDER` slots brand_draft alongside drafting.
 - Sub-copy under "Social Calendar" updated for brand: "Click the + on any day to propose a new post — your agency will review."
 
 **Plan detail (`PostPlanDetailView.jsx`):**
-- New `isEditor = isAdmin || (status === 'proposed' && plan.createdBy === userId)` boolean. Field-edit gates (title editing, date input, platforms toggle, copy textareas, click-to-edit copy preview, Delete plan button) flipped from `isAdmin` to `isEditor`. Brand-as-proposer can now edit their own proposed plan inline.
-- Role-only features explicitly kept on `isAdmin`: status workflow buttons (Accept/Reject/Submit/Recall/Back), auto-title sparkle banner, Duplicate plan, AI Co-pilot AICopyPreview + AIImagePromptPanel, References/Deliverables subtitle/emptyText/upload/caption-edit gates.
-- New status-action entries when `statusBucket === 'proposed'` (agency only):
-  - **Accept** → `transitionStatus('drafting')` — existing PR 1 trigger emits "accepted the proposed plan." system message.
-  - **Reject** → `handleDelete()` — delete with confirmation; "proposed a new post plan." system message stays in the thread as audit trail.
-- Button click handler now dispatches on `a.action === 'delete'` (Reject) vs falling through to `transitionStatus(a.next)` (everything else).
+- New `isEditor = isAdmin || (status === 'brand_draft' && plan.createdBy === userId)` boolean. While in brand_draft (private state), the brand creator can edit title / copy / date / platforms / delete inline. Once they click "Propose plan" and status flips to 'proposed', the plan becomes read-only for them until the agency resolves.
+- Field-edit gates throughout (title editing, date input, platforms toggle, copy textareas, click-to-edit preview, Delete plan button) gate on `isEditor`.
+- Role-only features explicitly kept on `isAdmin`: status workflow buttons matrix, auto-title sparkle banner, Duplicate plan, AI Co-pilot AICopyPreview + AIImagePromptPanel, References / Deliverables subtitle / emptyText / upload / caption-edit gates.
+- `statusBucket` learns a 5th value `'brand_draft'`.
+- New status-action entries:
+  - Brand on `brand_draft` (creator only) → **"Propose plan"** → `transitionStatus('proposed')`. This click flips status to 'proposed' and emits "proposed a new post plan." into the conversation (via migration 0050's status-change trigger).
+  - Agency on `proposed` → **Accept** (→ drafting; existing trigger emits "accepted the proposed plan.") and **Reject** (`handleDelete()` with confirmation).
+- Button click handler dispatches on `a.action === 'delete'` (Reject) vs `transitionStatus(a.next)` (everything else).
 
-**Migration `0049_brand_proposes_new_plan_message.sql`:**
-- `AFTER INSERT` trigger on `post_plans` that calls `emit_plan_system_message(new.account_id, new.id, new.created_by, 'proposed a new post plan.')` when `new.status = 'proposed'`. Without this the agency would see a `proposed` plan appear silently — PR 1's triggers only fire on UPDATE / plan_proposals changes, not on direct INSERT.
+**Conversation thread system messages (`ConversationsView.jsx` + db.js + app.css):**
+- `mapConversationMessageRow` exposes the `kind` column (was unmapped — `'user'` default or `'system'` for lifecycle events).
+- `MessageBubble` branches on `message.kind === 'system'` to render the new compact variant: single line, italic, no avatar, no bubble chrome. Format: `<strong>Name</strong> verb-phrase. · time` plus the optional plan chip inline.
+- New CSS class `.conv-msg-system` — `display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 4px 0; color: var(--ink-3); font-size: 12px; font-style: italic;`.
+
+**Migrations:**
+- `0049_brand_proposes_new_plan_message.sql`: AFTER INSERT trigger on `post_plans` that emits "proposed a new post plan." when `status='proposed'` on direct insert. Stays in place as a safety net for any code path that bypasses brand_draft.
+- `0050_brand_draft_status.sql`: extends `post_plans.status` CHECK with `'brand_draft'`; adds `brand_draft → proposed` case to `emit_post_plan_status_message`; tightens `guard_post_plan_status_transitions` to allow brand `brand_draft → proposed` and refuse agency from setting `status='brand_draft'` (brand-only state).
 
 **Test plan:**
 - Brand opens calendar → sees `+ Propose plan` button, per-day `+`, empty-state CTA.
-- Brand clicks any of them → stub plan created in `status='proposed'`, navigated to detail view.
-- Brand edits title, copy, date, platforms inline → all saves succeed via existing `updatePostPlan` (RLS already allows it on own-account plans).
-- Brand's edits show "Awaiting agency review" pill throughout.
-- "proposed a new post plan." system message appears in the brand's conversation thread immediately after stub create.
-- Agency opens the same plan → sees the same content + Accept and Reject buttons in the status row.
-- Agency clicks Accept → plan moves to drafting, system message lands; brand loses inline edit affordance.
-- Agency clicks Reject → confirmation dialog → plan deletes; the original "proposed" system message stays in the conversation thread.
+- Brand clicks any of them → stub created with `status='brand_draft'`, navigated to detail view. **No system message yet.** Status pill reads "Draft (not yet proposed)".
+- Brand edits title, copy, date, platforms inline → all saves succeed.
+- Brand clicks **"Propose plan"** → status flips to 'proposed', pill changes to "Awaiting agency review", system message "<brand> proposed a new post plan." appears in the conversation thread as a subtle italic event.
+- Agency opens the proposed plan → sees Accept + Reject buttons.
+- Agency clicks Accept → plan moves to drafting; subtle system message "<agency> accepted the proposed plan." appears.
+- Agency clicks Reject → confirmation dialog → plan deletes; the original "proposed" system message stays as audit trail.
 
 **Next:** PR 4 — drag-to-propose date changes on the calendar (brand drags an existing approved/needs-review plan → "Propose new date" popover → `plan_proposals` row with `kind='date_change'`).
 

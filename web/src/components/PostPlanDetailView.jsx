@@ -625,10 +625,11 @@ const PostPlanDetailView = ({
 
   // Editor permission — who can modify plan fields (concept, copy, date,
   // platforms). Agency users always can. Brand users can edit ONLY their
-  // own proposed plans, while the proposal is still pending agency review.
-  // Once accepted (moves to drafting) editing reverts to agency-only.
+  // own brand-drafted plans (private state before they hit "Propose plan").
+  // Once a brand clicks Propose, status flips to 'proposed' and the plan
+  // becomes read-only for the brand until the agency accepts or rejects.
   const isEditor = isAdmin
-    || (status === 'proposed' && !!plan?.createdBy && plan.createdBy === userId);
+    || (status === 'brand_draft' && !!plan?.createdBy && plan.createdBy === userId);
   // Title editing — read mode by default with a pencil affordance; flips
   // to an autofocused input when the user clicks the pencil. Enter saves
   // and exits, Escape cancels and reverts.
@@ -1210,6 +1211,7 @@ const PostPlanDetailView = ({
     if (status === 'approved' || status === 'scheduled' || status === 'posted') return 'approved';
     if (status === 'needs_review' || status === 'needs_brand_feedback' || status === 'needs_admin_revision') return 'needs_review';
     if (status === 'proposed') return 'proposed';
+    if (status === 'brand_draft') return 'brand_draft';
     return 'drafting';
   })();
 
@@ -1237,8 +1239,18 @@ const PostPlanDetailView = ({
       } else if (statusBucket === 'approved') {
         out.push({ label: 'Back to draft', tone: 'ghost', next: 'drafting' });
       }
-    } else if (statusBucket === 'needs_review') {
-      out.push({ label: 'Approve', tone: 'good', next: 'approved' });
+    } else {
+      // Brand-side workflow buttons.
+      if (statusBucket === 'brand_draft' && !!plan?.createdBy && plan.createdBy === userId) {
+        // The brand explicitly submits a brand_draft → proposed. This is
+        // the click that emits the "proposed a new post plan." message
+        // (via migration 0050's UPDATE trigger). Before this click the
+        // plan is invisible to agency as actionable; only their own brand
+        // teammates and the creator know it exists.
+        out.push({ label: 'Propose plan', tone: 'primary', next: 'proposed' });
+      } else if (statusBucket === 'needs_review') {
+        out.push({ label: 'Approve', tone: 'good', next: 'approved' });
+      }
     }
     return out;
   })();

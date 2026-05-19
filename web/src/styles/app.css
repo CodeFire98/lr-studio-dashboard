@@ -5655,6 +5655,32 @@ input, textarea { font: inherit; color: inherit; }
   text-underline-offset: 2px;
   word-break: break-all;
 }
+/* System messages — lifecycle events ("sent for review", "proposed a
+   new post plan", etc.) emitted by DB triggers. Rendered compact + low
+   contrast so they don't compete with real DMs. No avatar, no bubble
+   styling; a single line of text plus the optional plan chip.
+   The .conv-msg base selector adds margin between consecutive bubbles
+   so we don't need to add another vertical-rhythm rule here. */
+.conv-msg-system {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 4px 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.45;
+}
+.conv-msg-system-text strong {
+  font-weight: 500;
+  color: var(--ink-2);
+  font-style: normal;
+}
+.conv-msg-system-time {
+  color: var(--ink-4);
+  font-style: normal;
+}
 .conv-msg-text a:hover {
   text-decoration-thickness: 2px;
 }

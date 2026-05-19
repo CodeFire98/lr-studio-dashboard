@@ -79,9 +79,11 @@ function greetingTail(now = new Date()) {
 // Posted (derived) sinks below Approved since it's "done, doesn't need
 // my eyes". Legacy enum values are mapped to their new-enum equivalent.
 const STATUS_ORDER = {
+  proposed:             0,
   needs_review:         0,
   needs_brand_feedback: 0,
   needs_admin_revision: 0,
+  brand_draft:          1,
   drafting:             1,
   not_started:          1,
   wip:                  1,
@@ -100,6 +102,7 @@ const STATUS_ORDER = {
 // can chase.
 const STATUS_GROUPS = {
   all:          { label: 'All',          displayStatuses: null },
+  brand_draft:  { label: 'Draft',        displayStatuses: ['brand_draft'] },
   proposed:     { label: 'Proposed',     displayStatuses: ['proposed'] },
   drafting:     { label: 'Drafting',     displayStatuses: ['drafting', 'not_started', 'wip', 'delayed'] },
   needs_review: { label: 'Needs review', displayStatuses: ['needs_review', 'needs_brand_feedback', 'needs_admin_revision'] },
@@ -1042,11 +1045,12 @@ const CalendarView = ({
   // rows — if the user walks away, an empty card sits on the calendar
   // until they delete it. Cleanest UX vs. keeping a parallel "draft" path.
   //
-  // Brand-side calls land in status='proposed' (gated via the agency-
-  // approval flow that PRs 1-2 set up). Agency-side stays 'drafting' as
-  // before. The DB trigger from migration 0049 emits a "proposed a new
-  // post plan." system message into the brand conversation when the
-  // proposed row is inserted, so the agency sees it without polling.
+  // Brand-side stubs land in status='brand_draft' — a private editing
+  // state the brand can fill in without notifying agency. A separate
+  // "Propose plan" button on PostPlanDetailView flips brand_draft →
+  // 'proposed'; the status-change trigger from migration 0050 emits the
+  // "proposed a new post plan." message at submission time, not now.
+  // Agency-side still lands in 'drafting' as before.
   const createStubAndOpen = async (jsDate) => {
     if (!accountId) { console.warn('[Calendar] create blocked: no active brand selected'); return; }
     if (creating) return;
@@ -1063,7 +1067,7 @@ const CalendarView = ({
         platforms: [],
         concept: '',
         copyVariants: {},
-        status: isAdmin ? 'drafting' : 'proposed',
+        status: isAdmin ? 'drafting' : 'brand_draft',
       });
       // Push into App-level state immediately so the chip appears on the
       // calendar without waiting for the realtime round-trip.

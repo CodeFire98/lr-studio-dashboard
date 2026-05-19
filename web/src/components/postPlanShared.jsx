@@ -67,6 +67,7 @@ const POSTED_TINT       = '#7C5CFF';
 const NEEDS_REVIEW_TINT = '#A16207';
 const PROPOSED_TINT     = '#C44A2C';  // coral — distinguishes a brand-originated proposal from agency review
 export const STATUS_CONFIG = {
+  brand_draft:  { label: 'Draft (not yet proposed)', color: 'var(--ink-4)',    background: 'var(--surface-2)' },
   drafting:     { label: 'Drafting',                color: 'var(--ink-4)',    background: 'var(--surface-2)' },
   proposed:     { label: 'Awaiting agency review',  color: PROPOSED_TINT,     background: `color-mix(in oklab, ${PROPOSED_TINT} 14%, var(--surface))` },
   needs_review: { label: 'Awaiting brand approval', color: NEEDS_REVIEW_TINT, background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },
