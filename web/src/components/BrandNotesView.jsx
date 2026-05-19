@@ -32,6 +32,10 @@ import { readAuth } from '../lib/auth.js';
 
 const BrandNotesView = ({ accountId, brandName }) => {
   const auth = readAuth() || {};
+  // Both agency AND brand teammates can view/write notes for their
+  // own brand as of migration 0052. We still surface the boolean for
+  // any per-role nuance BrandNotesSection wants downstream, but the
+  // view-level "not available" gate is gone.
   const isAgency = !!auth.isAgency;
 
   if (!accountId) {
@@ -40,22 +44,6 @@ const BrandNotesView = ({ accountId, brandName }) => {
         <div className="page-head"><div className="titles"><h1>Brand notes</h1>
           <div className="sub">
             Pick a brand from the sidebar to see its memory notes.
-          </div>
-        </div></div>
-      </div></div>
-    );
-  }
-
-  if (!isAgency) {
-    // Defense-in-depth — sidebar already hides this entry for non-agency
-    // users, but a direct URL bounce should land somewhere coherent.
-    // RLS (migration 0040) will already return 0 rows from any Supabase
-    // call, so even if the section rendered, it'd just be empty.
-    return (
-      <div className="view"><div className="view-inner">
-        <div className="page-head"><div className="titles"><h1>Brand notes</h1>
-          <div className="sub">
-            This surface is internal to the Linkrunner Media team.
           </div>
         </div></div>
       </div></div>

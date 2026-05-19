@@ -1697,13 +1697,19 @@ export async function commitAiDraftPlan({ accountId, userId, draft }) {
   if (!draft.scheduled_at) {
     throw new Error('commitAiDraftPlan: draft.scheduled_at is required');
   }
+  // Respect the status the server-side tool put on the draft. Agency
+  // callers get 'drafting'; brand callers get 'brand_draft' (so the
+  // resulting plan lands in the private brand-edit state, matching
+  // the calendar "+ Propose plan" flow). Default to 'drafting' if the
+  // draft didn't include a status, for safety with legacy tool history.
+  const status = draft.status === 'brand_draft' ? 'brand_draft' : 'drafting';
   const payload = {
     account_id: accountId,
     scheduled_at: draft.scheduled_at,
     platforms: Array.isArray(draft.platforms) ? draft.platforms : [],
     concept: draft.concept || '',
     copy_variants: draft.copy_variants && typeof draft.copy_variants === 'object' ? draft.copy_variants : {},
-    status: 'drafting',
+    status,
     created_by: userId ?? null,
     ai_generated: true,
     ai_draft_payload: draft,

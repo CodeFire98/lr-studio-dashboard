@@ -54,7 +54,8 @@
 console.log("[chat] module-load-ok");
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+// supabase-js client now created inside auth-lib.
+import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
 import {
   convertToModelMessages,
   generateObject,
@@ -84,10 +85,12 @@ const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "";
 const WEB_SEARCH_RESULT_LIMIT = 5;
 const WEB_SEARCH_SUMMARY_CHARS = 280;
 
-const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const WHITELIST = new Set(
+  (process.env.AI_COPILOT_BRAND_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 
 const MODEL_ID = "claude-sonnet-4-6";
 const REPAIR_MODEL_ID = "claude-haiku-4-5-20251001";
@@ -515,36 +518,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     (req.headers["authorization"] as string | undefined) ??
     (req.headers["Authorization"] as string | undefined) ??
     "";
-  if (!authHeader) return res.status(401).json({ error: "Missing Authorization header" });
 
-  const userClient: SupabaseClient = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false, autoRefreshToken: false },
+  const auth = await authorizeAiCall({
+    authHeader,
+    accountId: body.accountId,
+    allowlist: WHITELIST,
   });
-  const {
-    data: { user },
-    error: userErr,
-  } = await userClient.auth.getUser();
-  if (userErr || !user) return res.status(401).json({ error: "Unauthorized" });
-
-  const serviceClient = createClient(SUPABASE_URL, SERVICE_ROLE, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const { data: profile, error: profileErr } = await serviceClient
-    .from("profiles")
-    .select("is_agency")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (profileErr) return res.status(500).json({ error: `profile lookup: ${profileErr.message}` });
-  if (!profile?.is_agency) {
-    return res.status(403).json({ error: "Co-pilot is agency-only for now" });
+  if (!auth.ok) {
+    return res.status(auth.status).json({ error: auth.error });
   }
+  const { caller } = auth;
+  const serviceClient = caller.serviceClient;
+  const callerIsAgency = caller.isAgency;
 
-  if (!WHITELIST.includes(body.accountId)) {
-    return res.status(403).json({
-      error: "This brand isn't on the Co-pilot allowlist yet. Add its UUID to AI_COPILOT_BRAND_IDS in Vercel env vars.",
-    });
+  // Per-brand daily quota — 50 AI calls / day / brand across all four
+  // AI surfaces. Agency callers are recorded for telemetry but uncapped.
+  const quota = await checkAndRecordAiUsage({ caller, accountId: body.accountId, kind: "chat" });
+  if (!quota.allowed) {
+    const r = quotaExceededResponse(quota);
+    return res.status(r.status).json(r.body);
   }
 
   let brandContext = "";
@@ -595,6 +587,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // `proposed: true` + missing `id` are the signals the client
         // ToolCard uses to render the "Open plan" CTA in "commit-on-click"
         // mode instead of "navigate-to-existing-row" mode.
+        // Brand callers get status='brand_draft' so the resulting plan
+        // sits in the private brand-edit state (matches the calendar
+        // "+ Propose plan" flow). The brand then explicitly clicks the
+        // "Propose plan" button on the detail view to submit for agency
+        // review. Agency callers keep 'drafting' as before — they own
+        // the plan from the moment they commit.
         return {
           ok: true,
           result: {
@@ -603,7 +601,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             platforms: input.platforms,
             concept: input.concept,
             copy_variants: input.copy_variants,
-            status: "drafting",
+            status: callerIsAgency ? "drafting" : "brand_draft",
           },
         };
       },
@@ -622,7 +620,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             account_id: body.accountId,
             body: noteBody,
             is_pinned: input.is_pinned === true,
-            created_by: user.id,
+            created_by: caller.userId,
           })
           .select("id, body, is_pinned, created_at")
           .single();
@@ -766,6 +764,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         {
           role: "system",
           content: SYSTEM_PROMPT,
+          providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+        },
+        // Role-specific instruction. Short, sits between the static
+        // SYSTEM_PROMPT and the per-brand context. Different content
+        // per role means agency calls and brand calls don't share this
+        // cache breakpoint, but the larger SYSTEM_PROMPT and brandContext
+        // blocks still hit per-role.
+        {
+          role: "system",
+          content: callerIsAgency
+            ? `\n\n---\n\nThe person chatting with you is on the AGENCY team. You're the agency's co-pilot — helping plan and draft content for their client brand (the "brand context" block below). Tools that create plans land in 'drafting' status, which the agency owns end-to-end before sending the plan to the brand for review.`
+            : `\n\n---\n\nThe person chatting with you is on the BRAND team — the client of the agency. You're helping them collaborate with their agency on social plans for their own brand (the "brand context" block below). Frame your replies as helping the BRAND, not the agency. When you call create_post_plan_draft, the resulting plan lands in 'brand_draft' status — a private draft state. The brand will then click "Propose plan" on the detail view to submit it to the agency for review and acceptance. Do NOT promise the post will go live immediately; the agency reviews proposals first.`,
           providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
         },
         {

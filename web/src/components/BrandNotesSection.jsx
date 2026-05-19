@@ -59,21 +59,18 @@ function formatRelative(iso) {
   return date.toISOString().slice(0, 10);
 }
 
-// Public component — gate first, then mount the (hooks-heavy) inner.
-// Doing the gate at the outer level avoids the rules-of-hooks problem
-// you'd get from `if (!isAgency) return null` in front of useState/
-// useEffect — and it also avoids firing the data-loading effects (and
-// thus the RLS-gated Supabase queries) for users who shouldn't see
-// the surface.
+// Public component — open to BOTH agency and brand teammates as of
+// migration 0052 (was agency-only via 0040 → "Phase 3 brand-notes
+// restructure"). Brand can read AND write notes for their own brand;
+// the AI Co-pilot pulls the same notes into its context regardless
+// of who wrote them. The agency/brand distinction is preserved in
+// `isAgency` for downstream UI nuance (none today, but the prop is
+// still threaded for future per-role bits).
 const BrandNotesSection = ({ accountId, isAgency, userId }) => {
-  if (!isAgency) return null;
-  return <BrandNotesSectionInner accountId={accountId} userId={userId} />;
+  return <BrandNotesSectionInner accountId={accountId} isAgency={isAgency} userId={userId} />;
 };
 
-const BrandNotesSectionInner = ({ accountId, userId }) => {
-  // isAgency is always true at this point (parent gates it). Hardcoded
-  // below where the section used it to gate action buttons / composer.
-  const isAgency = true;
+const BrandNotesSectionInner = ({ accountId, isAgency, userId }) => {
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
