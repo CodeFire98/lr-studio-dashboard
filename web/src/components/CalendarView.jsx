@@ -15,11 +15,13 @@ import {
   createPostPlan,
   createProposal,
   duplicatePostPlan,
+  loadAllPendingProposals,
   loadPostPlanListRollups,
   loadPublicationsForPlanIds,
   subscribeToAllPostPlanPublications,
   updatePostPlan,
 } from '../lib/db.js';
+import { supabase } from '../lib/supabase';
 
 // =====================================================================
 // Drag-to-reschedule helper. Given the plan's existing scheduled_at and
@@ -303,14 +305,19 @@ const ProposeNewDateModal = ({ plan, fromIso, toIso, accountId, userId, onCancel
   );
 };
 
-const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, draggable = false, isDragging = false, onDragStart, onDragEnd }) => {
+const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, hasPendingProposal = false, draggable = false, isDragging = false, onDragStart, onDragEnd }) => {
   const displayStatus = post.displayStatus || post.status;
   const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.drafting;
   const time = formatTime(post.scheduledAt);
-  const titleSuffix = unreadCount > 0
-    ? ` · ${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`
-    : '';
-  const hoverTitle = `${post.concept || 'Untitled post'} · ${cfg.label}${time ? ' · ' + time : ''}${titleSuffix}`;
+  // One dot for ANY new activity (unread messages OR pending brand
+  // proposal) — they collapse so a card with both pending things doesn't
+  // sprout two adjacent dots. Title combines the breakdown for hover.
+  const hasNewActivity = hasPendingProposal || unreadCount > 0;
+  const titlePieces = [];
+  if (unreadCount > 0) titlePieces.push(`${unreadCount} unread update${unreadCount === 1 ? '' : 's'}`);
+  if (hasPendingProposal) titlePieces.push('brand proposal pending');
+  const activitySuffix = titlePieces.length > 0 ? ' · ' + titlePieces.join(' · ') : '';
+  const hoverTitle = `${post.concept || 'Untitled post'} · ${cfg.label}${time ? ' · ' + time : ''}${activitySuffix}`;
 
   return (
     <button
@@ -361,9 +368,9 @@ const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, draggable = fa
       >
         {post.concept || 'Untitled post'}
       </span>
-      {unreadCount > 0 && (
+      {hasNewActivity && (
         <span
-          aria-label={`${unreadCount} unread`}
+          aria-label={titlePieces.join(', ') || 'New activity'}
           style={{
             width: 8,
             height: 8,
@@ -431,7 +438,7 @@ const WeekPostCard = ({ post, onOpen, onContextMenu, unreadCount = 0, draggable 
   );
 };
 
-const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu, dragState, onChipDragStart, onChipDragEnd, onCellDragOver, onCellDragLeave, onCellDrop }) => {
+const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, unackedPlanIds, onChipContextMenu, dragState, onChipDragStart, onChipDragEnd, onCellDragOver, onCellDragLeave, onCellDrop }) => {
   const cells = useMemo(
     () => buildMonthMatrix(viewDate.getFullYear(), viewDate.getMonth()),
     [viewDate]
@@ -570,6 +577,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                     onOpen={onOpenPost}
                     onContextMenu={onChipContextMenu}
                     unreadCount={unreadByPlan?.get(p.id) || 0}
+                    hasPendingProposal={unackedPlanIds?.has(p.id) || false}
                     draggable={p.canDrag}
                     isDragging={dragState?.planId === p.id}
                     onDragStart={onChipDragStart}
@@ -607,7 +615,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
   );
 };
 
-const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, onChipContextMenu, dragState, onChipDragStart, onChipDragEnd, onCellDragOver, onCellDragLeave, onCellDrop }) => {
+const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unreadByPlan, unackedPlanIds, onChipContextMenu, dragState, onChipDragStart, onChipDragEnd, onCellDragOver, onCellDragLeave, onCellDrop }) => {
   const days = useMemo(() => {
     const todayIso = isoLocalDate(new Date());
     const out = [];
@@ -814,7 +822,7 @@ const ListRow = ({ post, onOpen, onContextMenu, unreadCount, commentsCount, atta
   );
 };
 
-const ListView = ({ viewDate, postPlans, onOpenPost, onChipContextMenu, unreadByPlan, isAdmin, onOpenDay }) => {
+const ListView = ({ viewDate, postPlans, onOpenPost, onChipContextMenu, unreadByPlan, unackedPlanIds, isAdmin, onOpenDay }) => {
   // Month-scoped — anchor on viewDate's month/year. Filter posts to
   // those scheduled in that month, sort chronologically.
   const year = viewDate.getFullYear();
@@ -1045,6 +1053,10 @@ const CalendarView = ({
   // or approved plan to a new day. `null` when closed.
   // { plan, fromIso, toIso } when open.
   const [proposeDateState, setProposeDateState] = useState(null);
+  // Set of plan ids with at least one PENDING + UN-acknowledged proposal.
+  // Drives the red unread dot on calendar chips for agency reviewers.
+  // (Brand v1: no dot — they made the proposal, they know it's pending.)
+  const [unackedPlanIds, setUnackedPlanIds] = useState(() => new Set());
 
   // Publications-by-plan-id, used to derive "Posted" display status. We
   // bulk-fetch on mount and whenever the visible plan-id set changes, and
@@ -1066,6 +1078,36 @@ const CalendarView = ({
     // planIdsKey is the dependency-stable proxy for the ids array
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planIdsKey]);
+
+  // Pending-proposals "unread" tracking for the red-dot chip indicator.
+  // Loaded once on mount and refreshed whenever the plan_proposals table
+  // changes via realtime. Agency-only signal; brand v1 doesn't render
+  // the dot (they made the proposal, they know it's pending).
+  useEffect(() => {
+    if (!isAdmin) return undefined;
+    let cancelled = false;
+    const refresh = () => {
+      loadAllPendingProposals()
+        .then((rows) => {
+          if (cancelled) return;
+          const ids = new Set();
+          for (const r of rows) {
+            if (!r.acknowledgedAt) ids.add(r.postPlanId);
+          }
+          setUnackedPlanIds(ids);
+        })
+        .catch((e) => console.warn('loadAllPendingProposals failed', e));
+    };
+    refresh();
+    const channel = supabase
+      .channel('plan_proposals_calendar_dots')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'plan_proposals' }, refresh)
+      .subscribe();
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [isAdmin]);
 
   useEffect(() => {
     const idSet = new Set(postPlans.map((p) => p.id));
@@ -1497,6 +1539,7 @@ const CalendarView = ({
           onOpenDay={openCreateForDay}
           isAdmin={isAdmin}
           unreadByPlan={unreadByPlan}
+          unackedPlanIds={unackedPlanIds}
           onChipContextMenu={handleChipContextMenu}
           dragState={dragState}
           onChipDragStart={handleChipDragStart}
@@ -1513,6 +1556,7 @@ const CalendarView = ({
           onOpenPost={openExisting}
           onChipContextMenu={handleChipContextMenu}
           unreadByPlan={unreadByPlan}
+          unackedPlanIds={unackedPlanIds}
           isAdmin={isAdmin}
           onOpenDay={openCreateForDay}
         />
@@ -1525,6 +1569,7 @@ const CalendarView = ({
           onOpenDay={openCreateForDay}
           isAdmin={isAdmin}
           unreadByPlan={unreadByPlan}
+          unackedPlanIds={unackedPlanIds}
           onChipContextMenu={handleChipContextMenu}
           dragState={dragState}
           onChipDragStart={handleChipDragStart}
