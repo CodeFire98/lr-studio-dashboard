@@ -41,21 +41,24 @@
 // =====================================================================
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+// supabase-js client is now created inside auth-lib; no direct usage here.
 import { streamText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { compileCopyGuidance } from "../../src/lib/skillRegistry.js";
+import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const ANON_KEY = process.env.SUPABASE_ANON_KEY ?? "";
 
-const WHITELIST = (process.env.AI_COPILOT_BRAND_IDS ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const WHITELIST = new Set(
+  (process.env.AI_COPILOT_BRAND_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 
 const MODEL_ID = "claude-sonnet-4-6";
 const MAX_TOKENS = 700; // Captions are short; cap aggressively.
@@ -142,35 +145,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     (req.headers["authorization"] as string | undefined) ??
     (req.headers["Authorization"] as string | undefined) ??
     "";
-  if (!authHeader) return res.status(401).json({ error: "Missing Authorization header" });
 
-  const userClient: SupabaseClient = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false, autoRefreshToken: false },
+  const auth = await authorizeAiCall({
+    authHeader,
+    accountId: body.accountId,
+    allowlist: WHITELIST,
   });
-  const {
-    data: { user },
-    error: userErr,
-  } = await userClient.auth.getUser();
-  if (userErr || !user) return res.status(401).json({ error: "Unauthorized" });
-
-  const serviceClient = createClient(SUPABASE_URL, SERVICE_ROLE, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const { data: profile } = await serviceClient
-    .from("profiles")
-    .select("is_agency")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (!profile?.is_agency) {
-    return res.status(403).json({ error: "Co-pilot is agency-only for now" });
+  if (!auth.ok) {
+    return res.status(auth.status).json({ error: auth.error });
   }
+  const { caller } = auth;
+  const serviceClient = caller.serviceClient;
 
-  if (!WHITELIST.includes(body.accountId)) {
-    return res.status(403).json({
-      error: "This brand isn't on the Co-pilot allowlist yet.",
-    });
+  // Pre-check + record (50/day brand quota; agency unlimited).
+  const quota = await checkAndRecordAiUsage({ caller, accountId: body.accountId, kind: "copy" });
+  if (!quota.allowed) {
+    const r = quotaExceededResponse(quota);
+    return res.status(r.status).json(r.body);
   }
 
   // Load the target plan via service-role so we can read concept +
