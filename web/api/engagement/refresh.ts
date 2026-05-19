@@ -21,6 +21,7 @@ import {
   persistScrapeResult,
   type Platform,
 } from "./scraper-lib.js";
+import { logServiceUsage, estimateApifyCostUsd } from "../_shared/usage.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const ANON_KEY     = process.env.SUPABASE_ANON_KEY ?? "";
@@ -36,6 +37,11 @@ type PublicationRow = {
   post_plan_id: string;
   platform: Platform;
   live_url: string | null;
+  // Joined from post_plans so we can attribute the scrape's cost
+  // to the right brand in `service_usage_log`. PostgREST returns
+  // either an object or an array depending on FK generics; we handle
+  // both shapes below.
+  post_plans?: { account_id: string | null } | { account_id: string | null }[] | null;
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -100,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { data: pub, error: pubErr } = await serviceClient
     .from("post_plan_publications")
-    .select("id, post_plan_id, platform, live_url")
+    .select("id, post_plan_id, platform, live_url, post_plans(account_id)")
     .eq("id", publicationId)
     .maybeSingle<PublicationRow>();
   if (pubErr || !pub) {
@@ -121,6 +127,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // (X was re-enabled 2026-05-14 via scrape.badger; the original
   //  "X has no viable actor" 501 path is gone.)
 
+  const scrapeStartedAt = Date.now();
   const result = await dispatchScrape(pub.platform, pub.live_url);
   if (!result) {
     return res.status(501).json({
@@ -128,6 +135,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       platform: pub.platform,
     });
   }
+
+  // Log the Apify call to service_usage_log. Fire-and-forget — the
+  // helper swallows errors, the route can't be blocked by telemetry.
+  // `partial` is collapsed to `ok` for the log enum (we still got
+  // metrics, just not 100% of fields).
+  const apifyStatus =
+    result.status === "blocked" ? "blocked"
+    : result.status === "failed" ? "failed"
+    : "ok";
+  const planAccount = Array.isArray(pub.post_plans) ? pub.post_plans[0] : pub.post_plans;
+  void logServiceUsage({
+    service: "apify",
+    route: "/api/engagement/refresh",
+    accountId: planAccount?.account_id ?? null,
+    userId: user.id,
+    costUsd: estimateApifyCostUsd(result.actorId, 1),
+    latencyMs: Date.now() - scrapeStartedAt,
+    status: apifyStatus,
+    error: result.errorMessage ?? null,
+    meta: {
+      actor_id: result.actorId,
+      actor_run_id: result.actorRunId,
+      platform: pub.platform,
+      scrape_status: result.status,
+      publication_id: pub.id,
+    },
+  });
 
   // -------- WRITE the snapshot + upsert the embed cache
 

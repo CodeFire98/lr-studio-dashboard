@@ -106,7 +106,69 @@ type PubRow = {
   platform: Platform;
   live_url: string | null;
   published_at: string;
+  post_plan_id: string;
+  // PostgREST join — single object or array depending on FK generics.
+  post_plans?: { account_id: string | null } | { account_id: string | null }[] | null;
 };
+
+// Apify rate card mirror — kept in sync with web/api/_shared/usage.ts.
+// Deno edge function can't import from the Vercel API tree, so this
+// duplication is intentional. If a third caller appears later it
+// warrants extraction; two is the threshold for staying inline.
+const APIFY_USD_PER_SCRAPE: Record<string, number> = {
+  "apify/instagram-scraper": 0.0023,
+  "supreme_coder/linkedin-post": 0.001,
+  "scrape.badger/twitter-tweets-scraper": 0.0002,
+};
+
+function estimateApifyCostUsd(actorId: string): number {
+  return APIFY_USD_PER_SCRAPE[actorId] ?? 0.0023;
+}
+
+/**
+ * Append a single row to service_usage_log for this Apify call.
+ * Fire-and-forget — never throws. The cron writes its own
+ * cron_run_log row for the overall run; this is per-scrape telemetry
+ * that rolls up into the daily usage digest.
+ */
+async function logScrapeUsage(
+  client: SupabaseClient,
+  args: {
+    accountId: string | null;
+    publicationId: string;
+    platform: Platform;
+    actorId: string;
+    actorRunId: string | null;
+    scrapeStatus: ScrapeStatus;
+    errorMessage: string | null;
+    latencyMs: number;
+  },
+): Promise<void> {
+  try {
+    const status: "ok" | "failed" | "blocked" =
+      args.scrapeStatus === "blocked" ? "blocked"
+      : args.scrapeStatus === "failed" ? "failed"
+      : "ok";
+    await client.from("service_usage_log").insert({
+      service: "apify",
+      route: "engagement-refresh",
+      account_id: args.accountId,
+      cost_usd: estimateApifyCostUsd(args.actorId),
+      latency_ms: args.latencyMs,
+      status,
+      error: args.errorMessage ? args.errorMessage.slice(0, 500) : null,
+      meta: {
+        actor_id: args.actorId,
+        actor_run_id: args.actorRunId,
+        platform: args.platform,
+        scrape_status: args.scrapeStatus,
+        publication_id: args.publicationId,
+      },
+    });
+  } catch (e) {
+    console.warn("logScrapeUsage failed", e);
+  }
+}
 
 type SnapshotMini = {
   publication_id: string;
@@ -579,7 +641,7 @@ async function runCron(client: SupabaseClient): Promise<RunResult> {
   // ----- Load eligible publications -----
   const { data: pubs, error: pubErr } = await client
     .from("post_plan_publications")
-    .select("id, platform, live_url, published_at")
+    .select("id, platform, live_url, published_at, post_plan_id, post_plans(account_id)")
     .in("platform", ["instagram", "linkedin", "x"])
     .not("live_url", "is", null);
   if (pubErr) throw new Error(`Load publications failed: ${pubErr.message}`);
@@ -646,9 +708,23 @@ async function runCron(client: SupabaseClient): Promise<RunResult> {
       slice.map(async (entry) => {
         const pub = entry.pub;
         if (!pub.live_url) return null;
+        const startedAt = Date.now();
         const scraped = await dispatchScrape(pub.platform, pub.live_url);
         if (!scraped) return null;
+        const latencyMs = Date.now() - startedAt;
         await persistScrapeResult(client, pub.id, scraped);
+        // Fire-and-forget per-scrape telemetry into service_usage_log.
+        const planAccount = Array.isArray(pub.post_plans) ? pub.post_plans[0] : pub.post_plans;
+        void logScrapeUsage(client, {
+          accountId: planAccount?.account_id ?? null,
+          publicationId: pub.id,
+          platform: pub.platform,
+          actorId: scraped.actorId,
+          actorRunId: scraped.actorRunId,
+          scrapeStatus: scraped.status,
+          errorMessage: scraped.errorMessage,
+          latencyMs,
+        });
         return { pub, scraped };
       })
     );
