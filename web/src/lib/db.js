@@ -1787,6 +1787,154 @@ export async function deletePostPlan(id) {
 }
 
 // =====================================================================
+// Plan proposals — brand-side write power through an approval gate
+// =====================================================================
+// Three proposal kinds:
+//   new_plan    — brand created a whole post. The parent post_plan row
+//                 lives in status='proposed'; payload may be empty
+//                 (the plan itself holds the proposed values).
+//   date_change — { scheduled_at: <ISO> }
+//   copy_change — { copy_variants: { instagram?, linkedin?, x? } }
+//
+// Migration 0047 owns the table, RLS, and the triggers that emit
+// system messages into the brand conversation thread on
+// insert + resolution. These helpers are thin wrappers over the
+// PostgREST endpoint — no business logic.
+
+const PROPOSAL_SELECT = `
+  id,
+  post_plan_id,
+  account_id,
+  proposed_by,
+  kind,
+  payload,
+  status,
+  note,
+  agency_response,
+  created_at,
+  resolved_at,
+  resolved_by,
+  acknowledged_at
+`;
+
+function mapProposalRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    postPlanId: row.post_plan_id,
+    accountId: row.account_id,
+    proposedBy: row.proposed_by,
+    kind: row.kind,
+    payload: row.payload || {},
+    status: row.status,
+    note: row.note,
+    agencyResponse: row.agency_response,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at,
+    resolvedBy: row.resolved_by,
+    acknowledgedAt: row.acknowledged_at,
+  };
+}
+
+export async function loadProposalsForPlan(planId) {
+  if (!planId) return [];
+  const { data, error } = await supabase
+    .from('plan_proposals')
+    .select(PROPOSAL_SELECT)
+    .eq('post_plan_id', planId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapProposalRow);
+}
+
+export async function loadPendingProposalsForAccount(accountId) {
+  if (!accountId) return [];
+  const { data, error } = await supabase
+    .from('plan_proposals')
+    .select(PROPOSAL_SELECT)
+    .eq('account_id', accountId)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapProposalRow);
+}
+
+// Agency-only — RLS naturally filters to the caller's accessible
+// accounts, so a brand user gets back only their own (which is the
+// same as loadPendingProposalsForAccount for them).
+export async function loadAllPendingProposals() {
+  const { data, error } = await supabase
+    .from('plan_proposals')
+    .select(PROPOSAL_SELECT)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapProposalRow);
+}
+
+export async function createProposal({
+  planId,
+  accountId,
+  kind,
+  payload,
+  note,
+  userId,
+}) {
+  if (!planId) throw new Error('createProposal: planId is required');
+  if (!accountId) throw new Error('createProposal: accountId is required');
+  if (!kind) throw new Error('createProposal: kind is required');
+  if (!userId) throw new Error('createProposal: userId is required');
+  if (kind !== 'new_plan' && kind !== 'date_change' && kind !== 'copy_change') {
+    throw new Error(`createProposal: unknown kind '${kind}'`);
+  }
+  const insertRow = {
+    post_plan_id: planId,
+    account_id: accountId,
+    proposed_by: userId,
+    kind,
+    payload: payload && typeof payload === 'object' ? payload : {},
+    note: note || null,
+    status: 'pending',
+  };
+  const { data, error } = await supabase
+    .from('plan_proposals')
+    .insert(insertRow)
+    .select(PROPOSAL_SELECT)
+    .single();
+  if (error) throw error;
+  return mapProposalRow(data);
+}
+
+export async function resolveProposal({ proposalId, status, agencyResponse }) {
+  if (!proposalId) throw new Error('resolveProposal: proposalId is required');
+  if (status !== 'approved' && status !== 'rejected') {
+    throw new Error(`resolveProposal: status must be 'approved' or 'rejected'`);
+  }
+  const patch = { status };
+  if (agencyResponse !== undefined) patch.agency_response = agencyResponse;
+  const { data, error } = await supabase
+    .from('plan_proposals')
+    .update(patch)
+    .eq('id', proposalId)
+    .select(PROPOSAL_SELECT)
+    .single();
+  if (error) throw error;
+  return mapProposalRow(data);
+}
+
+export async function acknowledgeProposal(proposalId) {
+  if (!proposalId) throw new Error('acknowledgeProposal: proposalId is required');
+  const { data, error } = await supabase
+    .from('plan_proposals')
+    .update({ acknowledged_at: new Date().toISOString() })
+    .eq('id', proposalId)
+    .select(PROPOSAL_SELECT)
+    .single();
+  if (error) throw error;
+  return mapProposalRow(data);
+}
+
+// =====================================================================
 // AI Co-pilot — dynamic suggestion chips (templated fallback)
 // =====================================================================
 // The PRIMARY path for Co-pilot welcome-screen chips is streaming AI
