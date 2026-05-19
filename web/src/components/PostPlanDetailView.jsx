@@ -1684,6 +1684,10 @@ const PostPlanDetailView = ({
     if (status === 'brand_draft') return 'brand_draft';
     return 'drafting';
   })();
+  // Derived display status — combines raw status with publications to
+  // surface "posted" as a distinct terminal state. Use this (not bucket)
+  // for any UI gate that should exclude posted plans.
+  const displayStatus = getDisplayStatus({ status }, publications);
 
   // Workflow buttons replace the old status dropdown. The dropdown let
   // agency manually set "approved" by accident; under the brand-proposals
@@ -1725,9 +1729,10 @@ const PostPlanDetailView = ({
         if (!pendingCopyProposal) {
           out.push({ label: 'Propose changes', tone: 'primary', action: 'propose-copy' });
         }
-      } else if (statusBucket === 'approved') {
-        // On an already-approved plan, brand can still propose copy
-        // tweaks. Same modal, same proposal kind.
+      } else if (statusBucket === 'approved' && displayStatus !== 'posted') {
+        // On an already-approved (but not yet posted) plan, brand can
+        // still propose copy tweaks. Same modal, same proposal kind.
+        // Once published, the post is live — no more proposing changes.
         if (!pendingCopyProposal) {
           out.push({ label: 'Propose changes', tone: 'primary', action: 'propose-copy' });
         }
@@ -2726,77 +2731,116 @@ const PostPlanDetailView = ({
             <div className="card-head"><div className="card-title" style={{ fontSize: 18 }}>Timeline</div></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, padding: '0 16px 16px' }}>
               {(() => {
-                // The Posted step lights up off the publications list
-                // (the source of truth for "is this live") and the
-                // earliest publishedAt becomes the step's timestamp —
-                // so when a plan goes live on IG first and LinkedIn a
-                // day later, the timeline shows the IG moment.
+                // Five-step lifecycle: Created → Drafting → Sent for review
+                // → Approved → Posted. Each step has explicit state:
+                //   * done    — we're past this step
+                //   * current — we're AT this step right now (gets the
+                //               "Now" pill + a stronger accent ring)
+                //   * pending — we haven't reached this step yet
+                // "Current" reflects WHERE WE ARE, not WHERE WE'RE GOING
+                // NEXT, so a Drafting plan correctly shows "Drafting · Now"
+                // instead of misleadingly showing "Sent for review · Now".
+                //
+                // The drafting macro-step covers brand_draft / drafting /
+                // proposed — all "being put together, not yet handed to
+                // brand for approval."
                 const earliestPub = publications.reduce((earliest, p) => {
                   if (!p.publishedAt) return earliest;
                   if (!earliest || p.publishedAt < earliest) return p.publishedAt;
                   return earliest;
                 }, null);
-                const isSentForReview = ['needs_review','needs_brand_feedback','needs_admin_revision','approved','scheduled','posted'].includes(plan.status);
-                const isApproved = !!plan.approvedAt || ['approved','scheduled','posted'].includes(plan.status);
                 const isPosted = publications.length > 0;
-                // Current step = the next step that isn't done yet.
-                // Gets a "Now" badge + a softer accent ring so the
-                // brand sees at-a-glance "where are we in the journey."
-                // Past steps stay filled; future steps stay muted.
-                let currentIdx;
-                if (isPosted) currentIdx = 3;
-                else if (isApproved) currentIdx = 3;             // waiting to post
-                else if (isSentForReview) currentIdx = 2;        // waiting on approval
-                else currentIdx = 1;                              // drafting → waiting for review
+                const isApproved = !isPosted && (!!plan.approvedAt || ['approved','scheduled'].includes(plan.status));
+                const isInReview = !isApproved && !isPosted
+                  && ['needs_review','needs_brand_feedback','needs_admin_revision'].includes(plan.status);
+                // Drafting macro: everything before the agency sends it
+                // off for brand review. brand_draft / drafting / proposed
+                // / legacy aliases all map here.
+                const isDraftingStage = !isPosted && !isApproved && !isInReview;
+
+                // The "approved" timestamp lights up on the Approved row
+                // for approved AND posted plans (it doesn't unset on
+                // publish). Same for createdAt → Created row.
+                const approvedAt = plan.approvedAt
+                  || (isApproved || isPosted ? plan.updatedAt : null);
+
+                const stateOf = (stepKey) => {
+                  switch (stepKey) {
+                    case 'created':
+                      return plan.createdAt ? 'done' : 'pending';
+                    case 'drafting':
+                      if (isDraftingStage) return 'current';
+                      return 'done';  // any post-draft state means we passed through
+                    case 'sent_for_review':
+                      if (isInReview) return 'current';
+                      if (isApproved || isPosted) return 'done';
+                      return 'pending';
+                    case 'approved':
+                      if (isApproved) return 'current';
+                      if (isPosted) return 'done';
+                      return 'pending';
+                    case 'posted':
+                      if (isPosted) return 'current';
+                      return 'pending';
+                    default:
+                      return 'pending';
+                  }
+                };
+
                 return [
-                  { k: 'Created',         v: plan.createdAt, on: !!plan.createdAt },
-                  { k: 'Sent for review', v: null,           on: isSentForReview },
-                  { k: 'Approved',        v: plan.approvedAt, on: isApproved },
-                  { k: 'Posted',          v: earliestPub,    on: isPosted },
-                ].map((step, i) => ({ ...step, current: i === currentIdx && !step.on }));
-              })().map((step, i) => (
-                <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <span style={{
-                    width: 8, height: 8, borderRadius: 4,
-                    background: step.on || step.current ? 'var(--accent)' : 'var(--ink-5)',
-                    boxShadow: step.on
-                      ? '0 0 0 3px var(--accent-soft)'
-                      : step.current
-                        ? '0 0 0 3px color-mix(in oklab, var(--accent) 30%, transparent)'
-                        : 'none',
-                    flex: '0 0 auto',
-                  }}/>
-                  <div style={{
-                    flex: 1,
-                    color: step.on || step.current ? 'var(--ink)' : 'var(--ink-3)',
-                    fontWeight: step.on || step.current ? 500 : 400,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                  }}>
-                    <span>{step.k}</span>
-                    {step.current && (
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 500,
-                          letterSpacing: '0.04em',
-                          textTransform: 'uppercase',
-                          padding: '1px 6px',
-                          borderRadius: 99,
-                          background: 'color-mix(in oklab, var(--accent) 14%, var(--surface))',
-                          color: 'var(--accent-ink, var(--accent))',
-                        }}
-                      >
-                        Now
-                      </span>
-                    )}
+                  { key: 'created',         label: 'Created',         v: plan.createdAt },
+                  { key: 'drafting',        label: 'Drafting',        v: null },
+                  { key: 'sent_for_review', label: 'Sent for review', v: null },
+                  { key: 'approved',        label: 'Approved',        v: approvedAt && approvedAt !== plan.updatedAt ? approvedAt : (isApproved || isPosted ? plan.approvedAt : null) },
+                  { key: 'posted',          label: 'Posted',          v: earliestPub },
+                ].map((step) => ({ ...step, state: stateOf(step.key) }));
+              })().map((step, i) => {
+                const isDone    = step.state === 'done';
+                const isCurrent = step.state === 'current';
+                return (
+                  <div key={step.key} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <span style={{
+                      width: 8, height: 8, borderRadius: 4,
+                      background: (isDone || isCurrent) ? 'var(--accent)' : 'var(--ink-5)',
+                      boxShadow: isDone
+                        ? '0 0 0 3px var(--accent-soft)'
+                        : isCurrent
+                          ? '0 0 0 3px color-mix(in oklab, var(--accent) 30%, transparent)'
+                          : 'none',
+                      flex: '0 0 auto',
+                    }}/>
+                    <div style={{
+                      flex: 1,
+                      color: (isDone || isCurrent) ? 'var(--ink)' : 'var(--ink-3)',
+                      fontWeight: (isDone || isCurrent) ? 500 : 400,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}>
+                      <span>{step.label}</span>
+                      {isCurrent && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 500,
+                            letterSpacing: '0.04em',
+                            textTransform: 'uppercase',
+                            padding: '1px 6px',
+                            borderRadius: 99,
+                            background: 'color-mix(in oklab, var(--accent) 14%, var(--surface))',
+                            color: 'var(--accent-ink, var(--accent))',
+                          }}
+                        >
+                          Now
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ color: 'var(--ink-4)', fontSize: 12 }}>
+                      {step.v ? new Date(step.v).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                    </div>
                   </div>
-                  <div style={{ color: 'var(--ink-4)', fontSize: 12 }}>
-                    {step.v ? new Date(step.v).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </aside>
