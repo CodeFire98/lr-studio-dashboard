@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
+import { diffWords } from '../lib/wordDiff.js';
 import {
   PLATFORMS,
   PLATFORM_BY_KEY,
@@ -26,7 +27,9 @@ import {
   deletePostPlan,
   loadMessagesForPostPlan,
   loadProposalsForPlan,
+  createProposal,
   resolveProposal,
+  acknowledgeProposal,
   addMessageForPostPlan,
   subscribeToMessagesForPostPlan,
   loadPostPlanAttachments,
@@ -238,6 +241,340 @@ const PendingDateProposalCard = ({ proposal, plan, isAdmin, busy, onAccept, onRe
             Awaiting agency review
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+// =====================================================================
+// Inline word-diff renderer — shows tokens from wordDiff.diffWords()
+// with red strikethrough for removed and green underline for added.
+// =====================================================================
+const DiffView = ({ tokens, emptyText }) => {
+  if (!tokens || tokens.length === 0) {
+    return <div style={{ fontSize: 12.5, color: 'var(--ink-4)', fontStyle: 'italic' }}>{emptyText || '(no copy)'}</div>;
+  }
+  return (
+    <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--ink-1)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+      {tokens.map((tok, i) => {
+        if (tok.type === 'unchanged') return <span key={i}>{tok.text}</span>;
+        if (tok.type === 'removed') {
+          return (
+            <span
+              key={i}
+              style={{
+                textDecoration: 'line-through',
+                textDecorationColor: '#b91c1c',
+                background: 'color-mix(in oklab, #b91c1c 8%, transparent)',
+                color: '#7f1d1d',
+              }}
+            >
+              {tok.text}
+            </span>
+          );
+        }
+        // added
+        return (
+          <span
+            key={i}
+            style={{
+              background: 'color-mix(in oklab, var(--good) 14%, transparent)',
+              color: 'var(--good)',
+              fontWeight: 500,
+            }}
+          >
+            {tok.text}
+          </span>
+        );
+      })}
+    </div>
+  );
+};
+
+// =====================================================================
+// PendingCopyProposalCard — agency Accept/Reject for a brand-proposed
+// copy change. Shows a per-platform diff inline; only platforms whose
+// copy actually differs are rendered.
+// =====================================================================
+const PendingCopyProposalCard = ({ proposal, plan, isAdmin, busy, onAccept, onReject }) => {
+  if (!proposal || !plan) return null;
+  const proposedVariants = proposal.payload?.copy_variants || {};
+  const currentVariants = plan.copyVariants || {};
+  const changedPlatforms = Object.keys(proposedVariants).filter((k) => {
+    const before = currentVariants[k] ?? '';
+    const after  = proposedVariants[k] ?? '';
+    return before !== after;
+  });
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        padding: '12px 14px',
+        border: '1px solid color-mix(in oklab, #C44A2C 35%, var(--line))',
+        background: 'color-mix(in oklab, #C44A2C 6%, var(--surface))',
+        borderRadius: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        maxWidth: 760,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, color: 'var(--ink-1)', fontWeight: 500 }}>
+            Brand proposed copy changes
+          </div>
+          {proposal.note && (
+            <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--ink-2)', fontStyle: 'italic' }}>
+              "{proposal.note}"
+            </div>
+          )}
+        </div>
+        {isAdmin && (
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={onAccept}
+              style={{ background: 'var(--good)', borderColor: 'var(--good)', color: '#fff' }}
+            >
+              {busy ? 'Working…' : 'Accept'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              disabled={busy}
+              onClick={onReject}
+            >
+              Reject
+            </button>
+          </div>
+        )}
+        {!isAdmin && (
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', flexShrink: 0, alignSelf: 'center' }}>
+            Awaiting agency review
+          </div>
+        )}
+      </div>
+      {changedPlatforms.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: 'var(--ink-4)', fontStyle: 'italic' }}>
+          No copy differences — proposed text matches the current plan.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {changedPlatforms.map((k) => {
+            const platform = PLATFORMS.find((p) => p.key === k);
+            const label = platform?.label || k;
+            const before = currentVariants[k] ?? '';
+            const after  = proposedVariants[k] ?? '';
+            const tokens = diffWords(before, after);
+            return (
+              <div key={k} style={{ padding: '10px 12px', border: '1px solid var(--line)', background: 'var(--surface)', borderRadius: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  {platform && <PlatformChip platform={k} size="sm" />}
+                  <span style={{ fontSize: 12, color: 'var(--ink-3)', fontWeight: 500 }}>{label}</span>
+                </div>
+                <DiffView tokens={tokens} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// =====================================================================
+// ProposeCopyChangesModal — brand-side composer for proposing edits
+// to a needs_review or approved plan's copy. Per-platform textareas
+// pre-filled with the current copy; live diff preview at the bottom;
+// optional note; send proposal.
+// =====================================================================
+const ProposeCopyChangesModal = ({ plan, accountId, userId, onCancel, onSent }) => {
+  const initial = plan?.copyVariants || {};
+  const platformKeys = (plan?.platforms && plan.platforms.length > 0)
+    ? plan.platforms
+    : Object.keys(initial);
+  const [drafts, setDrafts] = useState(() => {
+    const out = {};
+    for (const k of platformKeys) out[k] = initial[k] ?? '';
+    return out;
+  });
+  const [activeTab, setActiveTab] = useState(platformKeys[0] || null);
+  const [note, setNote] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !sending) onCancel?.(); };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [sending, onCancel]);
+
+  // Only include platforms whose copy actually differs.
+  const changedVariants = useMemo(() => {
+    const out = {};
+    for (const k of platformKeys) {
+      const before = initial[k] ?? '';
+      const after  = drafts[k] ?? '';
+      if (before !== after) out[k] = after;
+    }
+    return out;
+  }, [drafts, initial, platformKeys]);
+
+  const hasChanges = Object.keys(changedVariants).length > 0;
+
+  const send = async () => {
+    if (sending || !hasChanges || !plan?.id || !accountId || !userId) return;
+    setSending(true);
+    setError(null);
+    try {
+      await createProposal({
+        planId: plan.id,
+        accountId,
+        kind: 'copy_change',
+        payload: { copy_variants: changedVariants },
+        note: note.trim() || null,
+        userId,
+      });
+      onSent?.();
+    } catch (err) {
+      console.error('createProposal copy_change failed', err);
+      setError(err?.message || 'Could not send proposal.');
+      setSending(false);
+    }
+  };
+
+  return (
+    <div
+      className="login-modal-backdrop"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !sending) onCancel?.(); }}
+    >
+      <div
+        className="login-modal"
+        role="dialog"
+        aria-modal="true"
+        style={{ maxWidth: 720, width: 'calc(100vw - 48px)' }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="login-modal-head" style={{ paddingBottom: 14 }}>
+          <h2 className="login-modal-title" style={{ fontSize: 22 }}>Propose copy changes</h2>
+          <p className="login-modal-sub" style={{ marginTop: 6 }}>
+            Edit the copy per platform. Your agency reviews a diff of what changed and can accept or reject.
+          </p>
+        </div>
+        <div className="login-modal-body" style={{ paddingTop: 4, paddingBottom: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {platformKeys.length > 1 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {platformKeys.map((k) => {
+                const platform = PLATFORMS.find((p) => p.key === k);
+                const label = platform?.label || k;
+                const before = initial[k] ?? '';
+                const after  = drafts[k] ?? '';
+                const dirty = before !== after;
+                const active = activeTab === k;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setActiveTab(k)}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: 999,
+                      border: '1px solid ' + (active ? 'var(--accent)' : 'var(--line)'),
+                      background: active ? 'color-mix(in oklab, var(--accent) 10%, var(--surface))' : 'var(--surface)',
+                      color: active ? 'var(--ink-1)' : 'var(--ink-2)',
+                      fontSize: 12.5,
+                      fontWeight: 500,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <PlatformChip platform={k} size="sm" />
+                    <span>{label}</span>
+                    {dirty && (
+                      <span
+                        aria-hidden
+                        style={{ width: 6, height: 6, borderRadius: 99, background: 'var(--accent)' }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {activeTab && (
+            <textarea
+              value={drafts[activeTab] || ''}
+              onChange={(e) => setDrafts((prev) => ({ ...prev, [activeTab]: e.target.value }))}
+              placeholder={`Edit the ${PLATFORMS.find((p) => p.key === activeTab)?.label || activeTab} copy…`}
+              rows={8}
+              disabled={sending}
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+                background: 'var(--surface)',
+                color: 'var(--ink-1)',
+                fontSize: 13,
+                outline: 'none',
+                resize: 'vertical',
+                minHeight: 180,
+                fontFamily: 'inherit',
+                lineHeight: 1.5,
+              }}
+            />
+          )}
+          {activeTab && (initial[activeTab] ?? '') !== (drafts[activeTab] ?? '') && (
+            <div style={{ padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--surface-2)' }}>
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                Diff preview
+              </div>
+              <DiffView tokens={diffWords(initial[activeTab] ?? '', drafts[activeTab] ?? '')} />
+            </div>
+          )}
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Optional note for the agency — why these changes?"
+            rows={2}
+            disabled={sending}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              border: '1px solid var(--line)',
+              borderRadius: 6,
+              background: 'var(--surface)',
+              color: 'var(--ink-1)',
+              fontSize: 13,
+              outline: 'none',
+              resize: 'vertical',
+              minHeight: 50,
+              fontFamily: 'inherit',
+              lineHeight: 1.5,
+            }}
+          />
+          {error && (
+            <div style={{ color: '#b91c1c', fontSize: 12 }}>{error}</div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" className="btn btn-ghost" disabled={sending} onClick={() => onCancel?.()}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary" disabled={sending || !hasChanges} onClick={send}>
+              {sending ? 'Sending…' : 'Send proposal'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -679,6 +1016,7 @@ const PostPlanDetailView = ({
   // "pending" notice on their own proposal.
   const [proposals, setProposals] = useState([]);
   const [resolvingProposalId, setResolvingProposalId] = useState(null);
+  const [proposeCopyOpen, setProposeCopyOpen] = useState(false);
 
   const refreshProposals = useCallback(() => {
     if (!postPlanId) return;
@@ -692,6 +1030,20 @@ const PostPlanDetailView = ({
   const pendingDateProposal = proposals.find(
     (p) => p.status === 'pending' && p.kind === 'date_change'
   ) || null;
+  const pendingCopyProposal = proposals.find(
+    (p) => p.status === 'pending' && p.kind === 'copy_change'
+  ) || null;
+
+  // When agency opens the plan, mark any unacknowledged pending proposals
+  // as acknowledged so the red dot on the calendar card clears. Brand
+  // doesn't get a red dot indicator in v1, so this is agency-only.
+  useEffect(() => {
+    if (!isAdmin) return;
+    const unacked = proposals.filter((p) => p.status === 'pending' && !p.acknowledgedAt);
+    if (unacked.length === 0) return;
+    Promise.all(unacked.map((p) => acknowledgeProposal(p.id).catch(() => null)))
+      .then(() => refreshProposals());
+  }, [isAdmin, proposals, refreshProposals]);
 
   // Locally-edited fields. We hydrate from `plan` and write back to the
   // server on blur/change so the page feels live without a Save button.
@@ -1350,6 +1702,17 @@ const PostPlanDetailView = ({
         out.push({ label: 'Propose plan', tone: 'primary', next: 'proposed' });
       } else if (statusBucket === 'needs_review') {
         out.push({ label: 'Approve', tone: 'good', next: 'approved' });
+        // Brand can also request changes instead of approving. Opens the
+        // copy-proposal modal; doesn't change plan status.
+        if (!pendingCopyProposal) {
+          out.push({ label: 'Propose changes', tone: 'ghost', action: 'propose-copy' });
+        }
+      } else if (statusBucket === 'approved') {
+        // On an already-approved plan, brand can still propose copy
+        // tweaks. Same modal, same proposal kind.
+        if (!pendingCopyProposal) {
+          out.push({ label: 'Propose changes', tone: 'ghost', action: 'propose-copy' });
+        }
       }
     }
     return out;
@@ -1559,6 +1922,49 @@ const PostPlanDetailView = ({
               }}
             />
           )}
+          {pendingCopyProposal && (
+            <PendingCopyProposalCard
+              proposal={pendingCopyProposal}
+              plan={plan}
+              isAdmin={isAdmin}
+              busy={resolvingProposalId === pendingCopyProposal.id}
+              onAccept={async () => {
+                if (resolvingProposalId) return;
+                setResolvingProposalId(pendingCopyProposal.id);
+                try {
+                  // Merge proposed copy_variants into the plan (only the
+                  // keys the brand touched; other platforms untouched).
+                  const nextVariants = {
+                    ...(plan.copyVariants || {}),
+                    ...(pendingCopyProposal.payload?.copy_variants || {}),
+                  };
+                  const updated = await updatePostPlan(plan.id, { copyVariants: nextVariants });
+                  setPlan(updated);
+                  setCopyVariants(updated.copyVariants || {});
+                  setCopyDrafts(updated.copyVariants || {});
+                  onPlanChanged?.(updated);
+                  await resolveProposal({ proposalId: pendingCopyProposal.id, status: 'approved' });
+                  refreshProposals();
+                } catch (e) {
+                  console.error('accept copy proposal failed', e);
+                } finally {
+                  setResolvingProposalId(null);
+                }
+              }}
+              onReject={async () => {
+                if (resolvingProposalId) return;
+                setResolvingProposalId(pendingCopyProposal.id);
+                try {
+                  await resolveProposal({ proposalId: pendingCopyProposal.id, status: 'rejected' });
+                  refreshProposals();
+                } catch (e) {
+                  console.error('reject copy proposal failed', e);
+                } finally {
+                  setResolvingProposalId(null);
+                }
+              }}
+            />
+          )}
           <div className="sub" style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
             <StatusPill status={getDisplayStatus({ status }, publications)} size="lg"/>
             {plan?.aiGenerated && (
@@ -1606,6 +2012,8 @@ const PostPlanDetailView = ({
               onClick={() => {
                 if (a.action === 'delete') {
                   handleDelete();
+                } else if (a.action === 'propose-copy') {
+                  setProposeCopyOpen(true);
                 } else {
                   transitionStatus(a.next, { requireComment: a.requireComment });
                 }
@@ -2316,6 +2724,19 @@ const PostPlanDetailView = ({
         onSubmit={handleMarkPostedSubmit}
         onCancel={() => setPostedModalOpen(false)}
       />
+
+      {proposeCopyOpen && plan?.id && (
+        <ProposeCopyChangesModal
+          plan={plan}
+          accountId={plan.accountId}
+          userId={userId}
+          onCancel={() => setProposeCopyOpen(false)}
+          onSent={() => {
+            setProposeCopyOpen(false);
+            refreshProposals();
+          }}
+        />
+      )}
     </div></div>
   );
 };
