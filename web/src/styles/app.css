@@ -5641,6 +5641,15 @@ input, textarea { font: inherit; color: inherit; }
   white-space: pre-wrap;
   word-wrap: break-word;
 }
+.conv-msg-text a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.conv-msg-text a:hover {
+  text-decoration-thickness: 2px;
+}
 .conv-msg-actions {
   display: flex;
   gap: 8px;

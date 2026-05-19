@@ -15,6 +15,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
 import { StatusPill } from './postPlanShared.jsx';
+import { linkifyText } from './IdeateView.jsx';
 import {
   loadConversationForAccount,
   loadConversationMessages,
@@ -252,7 +253,7 @@ function MessageBubble({
           <div className="conv-msg-tombstone">Message deleted</div>
         ) : (
           <>
-            {message.body && <div className="conv-msg-text">{message.body}</div>}
+            {message.body && <div className="conv-msg-text">{linkifyText(message.body)}</div>}
             {message.attachments && message.attachments.length > 0 && (
               <div className="conv-msg-attachments">
                 {message.attachments.map((a) => (
