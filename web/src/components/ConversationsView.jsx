@@ -51,8 +51,9 @@ function formatPlanRowTime(iso) {
 }
 // Humanized variant used on the inline plan chip. Reuses formatPlanRowTime
 // for anything outside the today/yesterday/tomorrow window so wording stays
-// consistent with the tag-picker dropdown.
-function formatPlanChipTime(iso) {
+// consistent with the tag-picker dropdown. Exported so the Co-pilot
+// proposal card can render the same humanized label.
+export function formatPlanChipTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';

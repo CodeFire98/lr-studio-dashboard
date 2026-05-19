@@ -4866,6 +4866,14 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--ink-2);
   line-height: 1.4;
 }
+.copilot-tool-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .copilot-tool-platforms {
   display: flex;
   gap: 4px;
