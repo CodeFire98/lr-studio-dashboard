@@ -6,7 +6,7 @@
 
    Replaces the old popup modal — the calendar now navigates to this
    route instead of opening a modal in place. */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Icon } from './Icon.jsx';
 import { Avatar } from './primitives.jsx';
@@ -25,6 +25,8 @@ import {
   updatePostPlan,
   deletePostPlan,
   loadMessagesForPostPlan,
+  loadProposalsForPlan,
+  resolveProposal,
   addMessageForPostPlan,
   subscribeToMessagesForPostPlan,
   loadPostPlanAttachments,
@@ -161,6 +163,85 @@ const formatBytes = (n) => {
 
 const isImageMime = (m) => typeof m === 'string' && m.startsWith('image/');
 const isVideoMime = (m) => typeof m === 'string' && m.startsWith('video/');
+
+// =====================================================================
+// PendingDateProposalCard — surfaces a brand's pending date_change
+// proposal at the top of the plan detail view. Agency sees Accept /
+// Reject buttons; brand sees a read-only "Awaiting agency review" notice.
+// =====================================================================
+function formatProposalTimestamp(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+}
+
+const PendingDateProposalCard = ({ proposal, plan, isAdmin, busy, onAccept, onReject }) => {
+  if (!proposal || !plan) return null;
+  const proposedAt = proposal.payload?.scheduled_at || null;
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        padding: '12px 14px',
+        border: '1px solid color-mix(in oklab, #C44A2C 35%, var(--line))',
+        background: 'color-mix(in oklab, #C44A2C 6%, var(--surface))',
+        borderRadius: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        maxWidth: 640,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, color: 'var(--ink-1)', fontWeight: 500 }}>
+            Brand proposed a new date
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>{formatProposalTimestamp(plan.scheduledAt)}</span>
+            <span style={{ color: 'var(--ink-4)' }}>→</span>
+            <strong style={{ color: 'var(--ink-1)', fontWeight: 500 }}>{formatProposalTimestamp(proposedAt)}</strong>
+          </div>
+          {proposal.note && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--ink-2)', fontStyle: 'italic' }}>
+              "{proposal.note}"
+            </div>
+          )}
+        </div>
+        {isAdmin && (
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={onAccept}
+              style={{ background: 'var(--good)', borderColor: 'var(--good)', color: '#fff' }}
+            >
+              {busy ? 'Working…' : 'Accept'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              disabled={busy}
+              onClick={onReject}
+            >
+              Reject
+            </button>
+          </div>
+        )}
+        {!isAdmin && (
+          <div style={{ fontSize: 12, color: 'var(--ink-3)', flexShrink: 0, alignSelf: 'center' }}>
+            Awaiting agency review
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCaption = false, onCaptionSave }) => {
   const showImage = isImageMime(att.mimeType) && att.url;
@@ -592,6 +673,25 @@ const PostPlanDetailView = ({
     });
     return () => { cancelled = true; unsub?.(); };
   }, [postPlanId, userId]);
+
+  // Pending proposals on this plan (date_change / copy_change). Surfaced
+  // to the agency with Accept / Reject buttons; brand sees a read-only
+  // "pending" notice on their own proposal.
+  const [proposals, setProposals] = useState([]);
+  const [resolvingProposalId, setResolvingProposalId] = useState(null);
+
+  const refreshProposals = useCallback(() => {
+    if (!postPlanId) return;
+    loadProposalsForPlan(postPlanId)
+      .then((rows) => setProposals(rows))
+      .catch((e) => console.warn('loadProposalsForPlan failed', e));
+  }, [postPlanId]);
+
+  useEffect(() => { refreshProposals(); }, [refreshProposals]);
+
+  const pendingDateProposal = proposals.find(
+    (p) => p.status === 'pending' && p.kind === 'date_change'
+  ) || null;
 
   // Locally-edited fields. We hydrate from `plan` and write back to the
   // server on blur/change so the page feels live without a Save button.
@@ -1418,6 +1518,46 @@ const PostPlanDetailView = ({
                 </button>
               </div>
             </div>
+          )}
+          {pendingDateProposal && (
+            <PendingDateProposalCard
+              proposal={pendingDateProposal}
+              plan={plan}
+              isAdmin={isAdmin}
+              busy={resolvingProposalId === pendingDateProposal.id}
+              onAccept={async () => {
+                if (resolvingProposalId) return;
+                setResolvingProposalId(pendingDateProposal.id);
+                try {
+                  // 1) Apply the proposed date to the plan, 2) mark proposal approved.
+                  // The plan UPDATE is gated by RLS to agency; the proposal UPDATE is
+                  // also agency-only. Trigger emits "accepted the proposed date change."
+                  const updated = await updatePostPlan(plan.id, {
+                    scheduledAt: pendingDateProposal.payload?.scheduled_at,
+                  });
+                  setPlan(updated);
+                  onPlanChanged?.(updated);
+                  await resolveProposal({ proposalId: pendingDateProposal.id, status: 'approved' });
+                  refreshProposals();
+                } catch (e) {
+                  console.error('accept date proposal failed', e);
+                } finally {
+                  setResolvingProposalId(null);
+                }
+              }}
+              onReject={async () => {
+                if (resolvingProposalId) return;
+                setResolvingProposalId(pendingDateProposal.id);
+                try {
+                  await resolveProposal({ proposalId: pendingDateProposal.id, status: 'rejected' });
+                  refreshProposals();
+                } catch (e) {
+                  console.error('reject date proposal failed', e);
+                } finally {
+                  setResolvingProposalId(null);
+                }
+              }}
+            />
           )}
           <div className="sub" style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
             <StatusPill status={getDisplayStatus({ status }, publications)} size="lg"/>

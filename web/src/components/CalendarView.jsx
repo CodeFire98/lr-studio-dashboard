@@ -13,6 +13,7 @@ import { SafeImage } from './SafeImage.jsx';
 import { VideoThumb } from './VideoThumb.jsx';
 import {
   createPostPlan,
+  createProposal,
   duplicatePostPlan,
   loadPostPlanListRollups,
   loadPublicationsForPlanIds,
@@ -187,6 +188,120 @@ function buildMonthMatrix(viewYear, viewMonth) {
   }
   return cells;
 }
+
+// =====================================================================
+// ProposeNewDateModal — shown when a brand drags a needs_review/approved
+// plan to a new day. Captures an optional note + sends a date_change
+// proposal to the agency. Time-of-day is preserved (drag = date-only).
+// =====================================================================
+function formatProposalDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+}
+
+const ProposeNewDateModal = ({ plan, fromIso, toIso, accountId, userId, onCancel, onSent }) => {
+  const [note, setNote] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !sending) onCancel?.(); };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [sending, onCancel]);
+
+  const send = async () => {
+    if (sending || !plan?.id || !accountId || !userId) return;
+    setSending(true);
+    setError(null);
+    try {
+      await createProposal({
+        planId: plan.id,
+        accountId,
+        kind: 'date_change',
+        payload: { scheduled_at: toIso },
+        note: note.trim() || null,
+        userId,
+      });
+      onSent?.();
+    } catch (err) {
+      console.error('[Calendar] createProposal failed', err);
+      setError(err?.message || 'Could not send proposal.');
+      setSending(false);
+    }
+  };
+
+  return (
+    <div
+      className="login-modal-backdrop"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !sending) onCancel?.(); }}
+    >
+      <div
+        className="login-modal"
+        role="dialog"
+        aria-modal="true"
+        style={{ maxWidth: 460 }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="login-modal-head" style={{ paddingBottom: 14 }}>
+          <h2 className="login-modal-title" style={{ fontSize: 22 }}>Propose a new date</h2>
+          <p className="login-modal-sub" style={{ marginTop: 6 }}>
+            Your agency will review and accept or reject the move. Time of day stays the same.
+          </p>
+        </div>
+        <div className="login-modal-body" style={{ paddingTop: 4, paddingBottom: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 13 }}>
+            <div style={{ color: 'var(--ink-3)' }}>{formatProposalDate(fromIso)}</div>
+            <div style={{ color: 'var(--ink-4)' }}>→</div>
+            <div style={{ color: 'var(--ink-1)', fontWeight: 500 }}>{formatProposalDate(toIso)}</div>
+          </div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Optional note (why?) — helps the agency review faster."
+            rows={3}
+            disabled={sending}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              border: '1px solid var(--line)',
+              borderRadius: 6,
+              background: 'var(--surface)',
+              color: 'var(--ink-1)',
+              fontSize: 13,
+              outline: 'none',
+              resize: 'vertical',
+              minHeight: 70,
+              fontFamily: 'inherit',
+              lineHeight: 1.5,
+            }}
+          />
+          {error && (
+            <div style={{ color: '#b91c1c', fontSize: 12 }}>{error}</div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" className="btn btn-ghost" disabled={sending} onClick={() => onCancel?.()}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary" disabled={sending} onClick={send}>
+              {sending ? 'Sending…' : 'Send proposal'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const PostChip = ({ post, onOpen, onContextMenu, unreadCount = 0, draggable = false, isDragging = false, onDragStart, onDragEnd }) => {
   const displayStatus = post.displayStatus || post.status;
@@ -373,13 +488,13 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
           // chip currently lives) is intentionally NOT highlighted, since
           // dropping there is a no-op.
           const isDropTarget =
-            isAdmin && dragState?.planId && dragState?.overIso === c.iso && dragState?.sourceIso !== c.iso;
+            !!dragState?.planId && dragState?.overIso === c.iso && dragState?.sourceIso !== c.iso;
           return (
             <div
               key={c.iso + '_' + i}
-              onDragOver={isAdmin ? (e) => onCellDragOver?.(e, c.iso) : undefined}
-              onDragLeave={isAdmin ? (e) => onCellDragLeave?.(e, c.iso) : undefined}
-              onDrop={isAdmin ? (e) => onCellDrop?.(e, c.iso) : undefined}
+              onDragOver={(e) => onCellDragOver?.(e, c.iso)}
+              onDragLeave={(e) => onCellDragLeave?.(e, c.iso)}
+              onDrop={(e) => onCellDrop?.(e, c.iso)}
               style={{
                 padding: 6,
                 borderRight: (i % 7 === 6) ? 'none' : '1px solid var(--line-2)',
@@ -455,7 +570,7 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                     onOpen={onOpenPost}
                     onContextMenu={onChipContextMenu}
                     unreadCount={unreadByPlan?.get(p.id) || 0}
-                    draggable={isAdmin && p.displayStatus !== 'posted'}
+                    draggable={p.canDrag}
                     isDragging={dragState?.planId === p.id}
                     onDragStart={onChipDragStart}
                     onDragEnd={onChipDragEnd}
@@ -520,7 +635,7 @@ const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
         // right initial status (drafting vs proposed).
         const cellClickable = true;
         const isDropTarget =
-          isAdmin && dragState?.planId && dragState?.overIso === d.iso && dragState?.sourceIso !== d.iso;
+          !!dragState?.planId && dragState?.overIso === d.iso && dragState?.sourceIso !== d.iso;
         return (
           <div
             key={d.iso}
@@ -529,9 +644,9 @@ const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
               + (d.isToday ? ' is-today' : '')
               + (isDropTarget ? ' is-drop-target' : '')
             }
-            onDragOver={isAdmin ? (e) => onCellDragOver?.(e, d.iso) : undefined}
-            onDragLeave={isAdmin ? (e) => onCellDragLeave?.(e, d.iso) : undefined}
-            onDrop={isAdmin ? (e) => onCellDrop?.(e, d.iso) : undefined}
+            onDragOver={(e) => onCellDragOver?.(e, d.iso)}
+            onDragLeave={(e) => onCellDragLeave?.(e, d.iso)}
+            onDrop={(e) => onCellDrop?.(e, d.iso)}
           >
             <div
               className="cal-week-col-head"
@@ -567,7 +682,7 @@ const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                     onOpen={onOpenPost}
                     onContextMenu={onChipContextMenu}
                     unreadCount={unreadByPlan?.get(p.id) || 0}
-                    draggable={isAdmin && p.displayStatus !== 'posted'}
+                    draggable={p.canDrag}
                     isDragging={dragState?.planId === p.id}
                     onDragStart={onChipDragStart}
                     onDragEnd={onChipDragEnd}
@@ -926,6 +1041,10 @@ const CalendarView = ({
   const [dupSource, setDupSource] = useState(null); // plan or null
   // Send-update modal state (agency-only).
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  // Propose-new-date popover state — opened when brand drags a needs_review
+  // or approved plan to a new day. `null` when closed.
+  // { plan, fromIso, toIso } when open.
+  const [proposeDateState, setProposeDateState] = useState(null);
 
   // Publications-by-plan-id, used to derive "Posted" display status. We
   // bulk-fetch on mount and whenever the visible plan-id set changes, and
@@ -976,11 +1095,34 @@ const CalendarView = ({
   // displayStatus instead of plan.status so "Posted" shows up uniformly
   // wherever a plan is rendered.
   const decoratedPostPlans = useMemo(() => {
-    return postPlans.map((p) => ({
-      ...p,
-      displayStatus: getDisplayStatus(p, pubsByPlanId.get(p.id)),
-    }));
-  }, [postPlans, pubsByPlanId]);
+    return postPlans.map((p) => {
+      const displayStatus = getDisplayStatus(p, pubsByPlanId.get(p.id));
+      // Drag rules:
+      //   * posted plans: never draggable.
+      //   * Agency: drag = free reschedule (existing behaviour).
+      //   * Brand on own brand_draft: drag = free reschedule.
+      //   * Brand on needs_review / approved: drag = propose new date.
+      //   * Brand on own proposed plan: not draggable (already submitted,
+      //     waiting on agency to accept / reject).
+      //   * Brand on agency-owned drafting plan: shouldn't be visible,
+      //     but defensively not draggable.
+      let canDrag = false;
+      let dragMode = null;  // 'free' | 'propose'
+      if (displayStatus !== 'posted') {
+        if (isAdmin) {
+          canDrag = true;
+          dragMode = 'free';
+        } else if (p.status === 'brand_draft' && p.createdBy === userId) {
+          canDrag = true;
+          dragMode = 'free';
+        } else if (p.status === 'needs_review' || p.status === 'approved') {
+          canDrag = true;
+          dragMode = 'propose';
+        }
+      }
+      return { ...p, displayStatus, canDrag, dragMode };
+    });
+  }, [postPlans, pubsByPlanId, isAdmin, userId]);
 
   const filteredPostPlans = useMemo(() => {
     const allowed = STATUS_GROUPS[statusFilter]?.displayStatuses;
@@ -1095,9 +1237,8 @@ const CalendarView = ({
   // drag sources (OS file drags, image drags from elsewhere) don't trip
   // the drop handler.
   const handleChipDragStart = (e, post) => {
-    if (!isAdmin) return;
     if (!post?.id) return;
-    if (post.displayStatus === 'posted') return; // belt-and-suspenders; chip is non-draggable already
+    if (!post.canDrag) return; // belt-and-suspenders; chip is non-draggable already
     try {
       e.dataTransfer.setData(DRAG_MIME, post.id);
       // Also set text/plain as a fallback so the browser doesn't reject
@@ -1131,20 +1272,27 @@ const CalendarView = ({
     setDragState((prev) => (prev.overIso === iso ? { ...prev, overIso: null } : prev));
   };
   const handleCellDrop = async (e, iso) => {
-    if (!isAdmin) return;
     e.preventDefault();
     const planId = e.dataTransfer.getData(DRAG_MIME) || e.dataTransfer.getData('text/plain');
     setDragState({ planId: null, sourceIso: null, overIso: null });
     if (!planId) return;
     const plan = decoratedPostPlans.find((p) => p.id === planId);
-    if (!plan) return;
+    if (!plan || !plan.canDrag) return;
     // Same-day drop — nothing to do.
     const currentIso = plan.scheduledAt ? isoLocalDate(new Date(plan.scheduledAt)) : null;
     if (currentIso === iso) return;
     const nextScheduledAt = rescheduleToDate(plan.scheduledAt, iso);
-    // Optimistic: update parent state immediately so the chip jumps to
-    // the new cell without waiting on the server. If the server write
-    // fails we revert.
+
+    if (plan.dragMode === 'propose') {
+      // Brand dragging a non-own plan (needs_review / approved). Open the
+      // propose-new-date popover; the actual write happens inside the
+      // popover's send handler.
+      setProposeDateState({ plan, fromIso: plan.scheduledAt, toIso: nextScheduledAt });
+      return;
+    }
+
+    // Free reschedule path — agency on anything, or brand on own brand_draft.
+    // Optimistic update + revert-on-failure so the chip jumps immediately.
     const optimistic = { ...plan, scheduledAt: nextScheduledAt };
     onPlanChanged?.(optimistic);
     try {
@@ -1456,6 +1604,18 @@ const CalendarView = ({
         accountName={accountName}
         onClose={() => setUpdateModalOpen(false)}
       />
+
+      {proposeDateState && (
+        <ProposeNewDateModal
+          plan={proposeDateState.plan}
+          fromIso={proposeDateState.fromIso}
+          toIso={proposeDateState.toIso}
+          accountId={accountId}
+          userId={userId}
+          onCancel={() => setProposeDateState(null)}
+          onSent={() => setProposeDateState(null)}
+        />
+      )}
 
     </div></div>
   );
