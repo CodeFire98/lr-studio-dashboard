@@ -84,10 +84,20 @@ function persistMessages(userId, accountId, messages) {
 // chip yet AND when both AI + templated paths fail. Same three strings
 // as v1's hardcoded EMPTY_SUGGESTIONS so a cold first-render doesn't
 // show a blank welcome state.
-const FALLBACK_SUGGESTIONS = [
+// Hardcoded fallback chips per caller role. Used during the cold first
+// render (before the AI stream produces its own chips) and when the
+// streaming + templated fallbacks both fail. Agency framing talks
+// about planning client content; brand framing is about proposing
+// posts the agency will review.
+const FALLBACK_SUGGESTIONS_AGENCY = [
   "Draft an Instagram post about our newest product for next Tuesday at 10am",
   "Plan three posts for next week across IG and LinkedIn",
   "Brainstorm a campaign concept for the holiday season",
+];
+const FALLBACK_SUGGESTIONS_BRAND = [
+  "Brainstorm a caption idea for our next launch",
+  "Suggest copy variants for next week's Instagram post",
+  "What angle should we test for our new product line?",
 ];
 
 // Mirror of the server's SUGGESTIONS_SCHEMA (web/api/ai/suggestions.ts).
@@ -100,7 +110,7 @@ const SUGGESTIONS_SCHEMA = z.object({
   suggestions: z.array(z.string()),
 });
 
-const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan, onCommitDraft, brandSlug }) => {
+const CopilotPanel = ({ accountId, brandName, userId, isAgency = false, onClose, onNavigateToPlan, onCommitDraft, brandSlug }) => {
   // DefaultChatTransport handles auth header injection per request and
   // appends accountId to the request body. Memoized on accountId so brand
   // switches rebuild the transport (otherwise it closes over stale value).
@@ -153,8 +163,8 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
   // for deterministic brand-aware chips from Supabase data alone.
   // No AI cost, no streaming, no spinner — just a graceful safety net.
   //
-  // FINAL FALLBACK: FALLBACK_SUGGESTIONS hardcoded set, so the welcome
-  // screen never renders blank even on Supabase outage.
+  // FINAL FALLBACK: role-specific hardcoded set (FALLBACK_SUGGESTIONS_AGENCY
+  // / _BRAND), so the welcome screen never renders blank even on outage.
   const suggestionsHook = useObject({
     api: "/api/ai/suggestions",
     schema: SUGGESTIONS_SCHEMA,
@@ -242,8 +252,8 @@ const CopilotPanel = ({ accountId, brandName, userId, onClose, onNavigateToPlan,
     if (Array.isArray(templatedSuggestions) && templatedSuggestions.length > 0) {
       return templatedSuggestions;
     }
-    return FALLBACK_SUGGESTIONS;
-  }, [refreshingSuggestions, suggestionsHook.object, templatedSuggestions]);
+    return isAgency ? FALLBACK_SUGGESTIONS_AGENCY : FALLBACK_SUGGESTIONS_BRAND;
+  }, [refreshingSuggestions, suggestionsHook.object, templatedSuggestions, isAgency]);
 
   const suggestionsLoading = suggestionsHook.isLoading;
 

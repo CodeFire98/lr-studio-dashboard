@@ -1106,26 +1106,21 @@ const App = () => {
   // brand-side surface. Agency staff see Inbox in the sidebar instead.
   const showGotIdeasCta = !!auth && !auth.isAgency && route.view !== "ideate";
 
-  // AI Co-pilot eligibility — agency-only, per-brand, gated by the
-  // VITE_AI_COPILOT_BRAND_IDS allowlist during rollout. Drives the
-  // ✨ Co-pilot button in the topbar (Phase 1: still agency-only;
-  // Phase 2 will broaden to brand callers too).
+  // AI Co-pilot eligibility — opens to BOTH agency and brand callers as
+  // of Phase 2 (Bamboo Bear allowlist still applies). The route itself
+  // auth-checks brand membership + enforces the 50/day brand quota; the
+  // system prompt branches on caller role.
   const copilotEligible =
-    !!auth?.isAgency &&
-    !isAllClientsMode &&
-    !!scopeAccountId &&
-    COPILOT_ALLOWED_BRAND_IDS.has(scopeAccountId);
-
-  // Inline AI eligibility — drives the "✨ AI draft" button on the copy
-  // editor and the AI image-prompt panel. Phase 1 opens these to brand
-  // users on allowlisted brands too (the routes themselves auth-check
-  // brand membership + enforce the 50/day brand quota). Brand users
-  // see these affordances on plans they can edit (own brand_draft).
-  const aiInlineEligible =
     !!auth?.id &&
     !isAllClientsMode &&
     !!scopeAccountId &&
     COPILOT_ALLOWED_BRAND_IDS.has(scopeAccountId);
+
+  // Inline AI eligibility — same gate as copilotEligible now that brand
+  // has access to both surfaces. Kept as a separate prop so future
+  // tightening (e.g. inline-only for one user class) can split them
+  // again without touching every gate.
+  const aiInlineEligible = copilotEligible;
 
   // Auto-close the panel if the active brand changes out of eligibility
   // (e.g. user switches to a non-whitelisted brand via BrandPicker).
@@ -1217,6 +1212,7 @@ const App = () => {
             brandName={calendarAccountName}
             brandSlug={brandAccounts.find((b) => b.id === scopeAccountId)?.slug || auth?.account?.slug || null}
             userId={auth?.id}
+            isAgency={!!auth?.isAgency}
             onClose={() => setCopilotOpen(false)}
             onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setCopilotOpen(false); }}
             onCommitDraft={async (draft) => {
