@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-19 (**Digest crons moved to Supabase pg_cron.** Both digest crons — the 18:00 IST brand daily-digest and the 07:30 IST agency usage-digest — move off Vercel Hobby cron onto Supabase pg_cron, calling the same Vercel API routes via `pg_net.http_post()`. Same shape as migration `0045` for engagement-refresh. Triggered by two confirmed Vercel-cron deploy-churn misses (2026-05-11 and 2026-05-19) — both days had heavy PR-merge activity, and Vercel's scheduler skips fires that overlap with active deploy windows. pg_cron is decoupled from Vercel deploys entirely. The Vercel routes themselves (`/api/daily-digest`, `/api/usage-digest`) are untouched — same CRON_SECRET bearer auth, same idempotency, same `daily_digest_log` write path. Only the caller changed. New migration `0054_digests_to_pg_cron.sql` adds a `vercel_app_url` Vault secret (operator sets to `https://agency.linkrunner.io` after applying), re-uses the existing `engagement_cron_secret` Vault entry from `0045`, and schedules two `pg_cron` jobs (`daily-digest-brand` at `30 12 * * *` UTC, `usage-digest-agency` at `0 2 * * *` UTC). Both wrap the HTTP POST in `pg_net.http_post` with a 90s timeout (Vercel function cap is 60s; 90s gives headroom for network egress). `vercel.json` drops both entries from its `crons` array. Trends Radar cron stays on Vercel for now (Trends paused, will revisit when work resumes).)
+**Last updated:** 2026-05-19 (**AI features open to all brands — allowlist dropped.** The `AI_COPILOT_BRAND_IDS` / `VITE_AI_COPILOT_BRAND_IDS` env-var allowlists that gated the AI features to the Bamboo Bear test brand are gone. AI Co-pilot chat, inline ✨ AI draft / redraft on copy fields, the AI image-prompt panel, and the welcome-screen suggestion chips all work for every brand on the platform now — agency and brand callers alike. The per-brand 50/day quota check in `web/api/ai/auth-lib.ts` (Phase 1) stays in place as the live cost guardrail; agency users bypass the cap, brand users hit a 429 with `Daily AI limit reached for this brand (50 / day). Refreshes at midnight IST.` past 50 calls. Server-side: removed the `allowlist: Set<string>` parameter from `authorizeAiCall()`, removed the `if (!allowlist.has(accountId))` block, dropped the per-route `WHITELIST = new Set(process.env.AI_COPILOT_BRAND_IDS ?? '')` constant + the `allowlist: WHITELIST` argument in each of the four AI routes (`chat.ts` / `copy.ts` / `image.ts` / `suggestions.ts`). Frontend: removed the `COPILOT_ALLOWED_BRAND_IDS` Set + `VITE_AI_COPILOT_BRAND_IDS` env read in `web/src/App.jsx`; `copilotEligible` is now just `auth?.id && !isAllClientsMode && !!scopeAccountId` — any signed-in user with a selected brand context. The auto-close useEffect that closes the panel when the active brand falls off eligibility still runs and still works (now it only closes when the user switches to All-clients mode, which is correct). Cost monitoring: the daily usage-digest email at 07:30 IST + the new `service_usage_log` table from #108 give live visibility into Claude / Apify / Firecrawl spend, so any unexpected spike from the wider rollout is visible the next morning. Trends Radar daily refresh-cron (`web/api/trends/refresh-cron.ts`) still respects the allowlist deliberately — Trends Radar is paused per the user's broader call, and the brand-context compiler falls back gracefully when trend snapshots are absent. Follow-up after this PR: clear `AI_COPILOT_BRAND_IDS` + `VITE_AI_COPILOT_BRAND_IDS` from Vercel project env (they're now orphan reads — no code references them — so removing is cosmetic ops cleanup, not breaking).)
+
+**Previous (2026-05-19):** **Digest crons moved to Supabase pg_cron.** Both digest crons — the 18:00 IST brand daily-digest and the 07:30 IST agency usage-digest — move off Vercel Hobby cron onto Supabase pg_cron, calling the same Vercel API routes via `pg_net.http_post()`. Same shape as migration `0045` for engagement-refresh. Triggered by two confirmed Vercel-cron deploy-churn misses (2026-05-11 and 2026-05-19) — both days had heavy PR-merge activity, and Vercel's scheduler skips fires that overlap with active deploy windows. pg_cron is decoupled from Vercel deploys entirely. The Vercel routes themselves (`/api/daily-digest`, `/api/usage-digest`) are untouched — same CRON_SECRET bearer auth, same idempotency, same `daily_digest_log` write path. Only the caller changed. New migration `0054_digests_to_pg_cron.sql` adds a `vercel_app_url` Vault secret (operator sets to `https://agency.linkrunner.io` after applying), re-uses the existing `engagement_cron_secret` Vault entry from `0045`, and schedules two `pg_cron` jobs (`daily-digest-brand` at `30 12 * * *` UTC, `usage-digest-agency` at `0 2 * * *` UTC). Both wrap the HTTP POST in `pg_net.http_post` with a 90s timeout (Vercel function cap is 60s; 90s gives headroom for network egress). `vercel.json` drops both entries from its `crons` array. Trends Radar cron stays on Vercel for now (Trends paused, will revisit when work resumes).)
 
 **Previous (2026-05-19):** (**AI-route telemetry wiring + daily digest header fix.** Follow-up to #108 that completes the telemetry coverage for the AI routes (chat / copy / image / suggestions). Each route's `onFinish` (or, for chat, a newly-added `onFinish`) now fires a parallel `logServiceUsage()` alongside its existing console-log line. `service='anthropic'`, `route` set to the API path, `accountId` + `userId` from the existing auth flow, `tokensIn`/`tokensOut`/`cost_usd` computed via `estimateAnthropicCostUsd()` with the SDK's normalized `inputTokens` (fresh input) + cache-token breakdown, `latencyMs` measured from a `startedAt = Date.now()` captured right before the streamText/streamObject call. Meta carries `{model, finish_reason, cache_read_tokens, cache_write_tokens}` plus route-specific extras (`plan_id`/`platform`/`mode` for copy + image, `caller_is_agency` for chat). chat.ts's `totalUsage` aggregates tokens across multi-step tool-call runs; small repair-model fallbacks (Haiku) bill at Sonnet rates in our estimator — tolerable since repair calls are a single-digit % of token volume. suggestions.ts uses streamObject's `usage` (no finishReason). image.ts has a shared `logUsage` helper used by both ideas-mode (streamObject) and prompt-mode (streamText); the `logServiceUsage` call lives inside that helper so both modes get logged. None of the four routes wraps the call in try/catch — `logServiceUsage` never throws by design. **Cosmetic also fixed:** the daily usage-digest email header was rendering "Daily service usage · Monday Mon May 18, 2026" (long weekday + short weekday). Dropped the `istWeekdayLabel` render from the header in `send-email/index.ts`; istDateLabel already embeds the short weekday. Header now reads "Daily service usage · Mon May 18, 2026" matching the subject line.)
 
@@ -90,6 +92,45 @@
 ---
 
 ## Recent changes log
+
+### 2026-05-19 — AI features open to all brands (allowlist dropped)
+
+The Bamboo Bear-only allowlist is gone. AI Co-pilot chat, inline ✨ AI draft / redraft on the copy editor, the AI image-prompt panel, and the welcome-screen suggestion chips all work for every brand on the platform now — agency and brand callers alike.
+
+**Cost protection still in place.** The per-brand 50 AI calls / day quota in `web/api/ai/auth-lib.ts`'s `checkAndRecordAiUsage()` (shipped in Phase 1) stays as the live guardrail:
+- **Agency users:** uncapped; calls still logged for telemetry.
+- **Brand users:** hard 50/day cap across all 4 AI surfaces, day boundary midnight IST. 429 past the cap with the "Refreshes at midnight IST" message the AI SDK surfaces in the chat panel.
+
+Combined with the daily usage-digest from #108 (next fire: 07:30 IST tomorrow), any spend spike from the wider rollout will be visible the next morning.
+
+**Server-side changes:**
+- [web/api/ai/auth-lib.ts](web/api/ai/auth-lib.ts) — removed the `allowlist: Set<string>` parameter from `authorizeAiCall()`'s signature; removed the `if (!allowlist.has(accountId)) return 403` block; updated the docstring to describe the new (3-step) auth flow.
+- [web/api/ai/chat.ts](web/api/ai/chat.ts) — removed the `WHITELIST = new Set(process.env.AI_COPILOT_BRAND_IDS ?? '')` constant + the `allowlist: WHITELIST` argument in the `authorizeAiCall({...})` call.
+- [web/api/ai/copy.ts](web/api/ai/copy.ts) — same removals.
+- [web/api/ai/image.ts](web/api/ai/image.ts) — same removals.
+- [web/api/ai/suggestions.ts](web/api/ai/suggestions.ts) — same removals.
+
+**Frontend changes (`web/src/App.jsx`):**
+- Removed `COPILOT_ALLOWED_BRAND_IDS` Set + `import.meta.env.VITE_AI_COPILOT_BRAND_IDS` env read.
+- `copilotEligible` simplifies to `auth?.id && !isAllClientsMode && !!scopeAccountId` — any signed-in user with a selected brand context. `aiInlineEligible` continues to alias `copilotEligible`.
+- The auto-close useEffect that closes the Co-pilot panel when eligibility falls off stays — now it only closes when the user switches to All-clients mode (which is correct behavior).
+
+**What stays gated (deliberate):**
+- The Trends Radar daily refresh-cron at [web/api/trends/refresh-cron.ts](web/api/trends/refresh-cron.ts) still respects the `AI_COPILOT_BRAND_IDS` allowlist. That cron refreshes `brand_trend_snapshots` used by the AI brand-context compiler, but Trends Radar is paused per the user's broader call, and `compileBrandContext` falls back gracefully when trend snapshots are absent. When Trends comes off pause, this gate goes too.
+- The `accounts_ensure_brand_conversation` trigger and other gating elsewhere in the system that's role-based (agency vs brand, owner vs member) is unchanged — this PR only drops the AI feature allowlist.
+
+**Operator cleanup (post-merge, optional):**
+- `AI_COPILOT_BRAND_IDS` env var in Vercel — now orphan, no code references it. Remove from Vercel project env when convenient. Not blocking.
+- `VITE_AI_COPILOT_BRAND_IDS` env var in Vercel — same.
+
+**Test plan after merge:**
+- [ ] Sign in as a non-Bamboo-Bear brand. BrandPicker → that brand → look for the ✨ Co-pilot button in the topbar. **Should be visible** (was hidden before this PR).
+- [ ] Open the Co-pilot, send a chat message. **Should stream back** (was 403'd before).
+- [ ] On a post plan, click ✨ AI draft on a copy field with an instruction. **Should stream a draft**.
+- [ ] Same for image-prompt panel + suggestion chips.
+- [ ] Tomorrow morning at 07:30 IST: the usage-digest email should show Claude cost for whichever brand exercised the new access (assuming any did between now and tomorrow's window close at 00:00 IST May 20).
+
+**Sections touched:** Recent changes log; `Last updated`; §10 Edge functions & integrations (auth-lib's allowlist gate removed); §14 Pending work (drop the "AI Co-pilot per-account toggle vs env-var allowlist" entry — replaced by this PR's reality). No schema change, no migration.
 
 ### 2026-05-19 — Digest crons moved to Supabase pg_cron
 

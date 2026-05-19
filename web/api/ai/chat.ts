@@ -86,13 +86,6 @@ const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY ?? "";
 const WEB_SEARCH_RESULT_LIMIT = 5;
 const WEB_SEARCH_SUMMARY_CHARS = 280;
 
-const WHITELIST = new Set(
-  (process.env.AI_COPILOT_BRAND_IDS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-);
-
 const MODEL_ID = "claude-sonnet-4-6";
 const REPAIR_MODEL_ID = "claude-haiku-4-5-20251001";
 const MAX_STEPS = 8;
@@ -523,7 +516,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const auth = await authorizeAiCall({
     authHeader,
     accountId: body.accountId,
-    allowlist: WHITELIST,
   });
   if (!auth.ok) {
     return res.status(auth.status).json({ error: auth.error });
