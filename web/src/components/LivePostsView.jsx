@@ -581,6 +581,20 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
           <div className="sub" style={{ marginTop: 8 }}>
             Every plan that's gone live. Tiles link to the post; click the title to open the originating plan.
           </div>
+          <div
+            className="sub"
+            style={{
+              marginTop: 6,
+              fontSize: 12,
+              color: 'var(--ink-4)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <Icon name="clock" size={12} />
+            Engagement stats refresh daily at 6:00 AM IST.
+          </div>
         </div>
       </div>
 
