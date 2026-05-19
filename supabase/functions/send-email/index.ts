@@ -103,7 +103,67 @@ type DailyDigestRequest = {
   approved: DailyDigestPlan[];
 };
 
-type SendEmailRequest = TeamInviteRequest | AgencyUpdateRequest | DailyDigestRequest;
+// service-usage-daily payload: every field is pre-aggregated by the
+// /api/usage-digest cron route. Same render-only contract as the
+// daily-digest template — no DB reads happen in the edge function.
+type ServiceUsageDailyService = {
+  service: "anthropic" | "firecrawl" | "apify";
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number;
+  baselineDailyAvgCostUsd: number | null;
+};
+
+type ServiceUsageDailyBrand = {
+  accountId: string;
+  brandName: string | null;
+  calls: number;
+  costUsd: number;
+  firstDay: boolean;
+};
+
+type ServiceUsageDailyAlert = {
+  accountId: string;
+  brandName: string | null;
+  used: number;
+  cap: number;
+  percent: number;
+};
+
+type ServiceUsageDailyError = {
+  service: "anthropic" | "firecrawl" | "apify";
+  route: string;
+  count: number;
+  exampleError: string | null;
+};
+
+type ServiceUsageDailyRequest = {
+  template: "service-usage-daily";
+  istDateLabel: string;
+  istWeekdayLabel: string;
+  windowStartUtc: string;
+  windowEndUtc: string;
+  totals: {
+    cost: number;
+    calls: number;
+    activeBrands: number;
+    totalBrands: number;
+    vsBaselineDailyAvgPct: number | null;
+  };
+  services: ServiceUsageDailyService[];
+  topBrands: ServiceUsageDailyBrand[];
+  alerts: ServiceUsageDailyAlert[];
+  errors: ServiceUsageDailyError[];
+  recipients: string[];
+  appUrl: string;
+};
+
+type SendEmailRequest =
+  | TeamInviteRequest
+  | AgencyUpdateRequest
+  | DailyDigestRequest
+  | ServiceUsageDailyRequest;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -768,6 +828,349 @@ async function handleDailyDigest(body: DailyDigestRequest): Promise<Response> {
   });
 }
 
+// =====================================================================
+// service-usage-daily template
+// =====================================================================
+//
+// Visual approach (matches the mockup approved 2026-05-19):
+//   - Header band: brand wordmark + date + IST window.
+//   - Snapshot tile: total cost, total calls, active brands of total.
+//   - By service: table — calls, volume (service-specific), cost,
+//     Δ vs prior 7-day average daily.
+//   - Top 5 brands: list with name + cost + calls + first-day flag.
+//   - Alerts: only rendered when array non-empty. Mustard accent
+//     matches the `needs_review` pill (#A16207 / #FEF3C7).
+//   - Errors: always shown. "None." when empty.
+//   - Footer: link back to agency.linkrunner.io.
+//
+// No marketing copy, no unsubscribe — this is an operational email
+// to the agency team. Recipients are the agency-account members,
+// queried at cron time by /api/usage-digest.
+
+function formatUsd(n: number): string {
+  // 0.00 for cents-or-more; up to four decimals for sub-cent values
+  // so the daily Apify (~$0.0023) totals don't show as $0.00.
+  if (n === 0) return "$0.00";
+  if (Math.abs(n) < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function formatTokens(n: number): string {
+  if (n === 0) return "—";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+}
+
+function formatPercent(n: number): string {
+  const sign = n > 0 ? "+" : n < 0 ? "" : "";
+  return `${sign}${n}%`;
+}
+
+function trendArrow(pct: number | null): { arrow: string; color: string; label: string } {
+  if (pct === null) return { arrow: "—", color: "#9b9590", label: "—" };
+  if (pct >= 5) return { arrow: "▲", color: "#A16207", label: formatPercent(pct) };
+  if (pct <= -5) return { arrow: "▼", color: "#15803D", label: formatPercent(pct) };
+  return { arrow: "─", color: "#9b9590", label: "flat" };
+}
+
+// Service-specific "Volume" column. Anthropic: token total. Apify: scrape
+// count. Firecrawl: query count (= call count here).
+function serviceVolumeLabel(s: ServiceUsageDailyService): string {
+  if (s.service === "anthropic") {
+    const total = (s.tokensIn ?? 0) + (s.tokensOut ?? 0);
+    return total > 0 ? `${formatTokens(total)} tokens` : "—";
+  }
+  if (s.service === "apify") {
+    return s.calls === 1 ? "1 scrape" : `${s.calls} scrapes`;
+  }
+  if (s.service === "firecrawl") {
+    return s.calls === 1 ? "1 query" : `${s.calls} queries`;
+  }
+  return "—";
+}
+
+function serviceDisplayName(s: ServiceUsageDailyService["service"]): string {
+  if (s === "anthropic") return "Anthropic";
+  if (s === "firecrawl") return "Firecrawl";
+  if (s === "apify") return "Apify";
+  return s;
+}
+
+function renderServiceUsageDaily(body: ServiceUsageDailyRequest): {
+  subject: string;
+  html: string;
+  text: string;
+} {
+  const totalCost = formatUsd(body.totals.cost);
+  const alertCount = body.alerts.length;
+  const isIdle = body.totals.calls === 0;
+  const subject = isIdle
+    ? `Linkrunner Media · Daily usage · ${body.istDateLabel} · idle`
+    : alertCount > 0
+      ? `Linkrunner Media · Daily usage · ${body.istDateLabel} · ${totalCost} · ${alertCount} alert${alertCount === 1 ? "" : "s"}`
+      : `Linkrunner Media · Daily usage · ${body.istDateLabel} · ${totalCost}`;
+
+  // ----- HTML rows -----
+  const serviceRows = body.services.length === 0
+    ? `<tr><td colspan="4" style="padding:14px 16px;font-size:13px;color:#9b9590;text-align:center;font-style:italic">No external service calls in this window.</td></tr>`
+    : body.services
+        .map((s) => {
+          const baselineDailyAvg = s.baselineDailyAvgCostUsd;
+          const pct =
+            baselineDailyAvg === null || baselineDailyAvg === 0
+              ? null
+              : Math.round(((s.costUsd - baselineDailyAvg) / baselineDailyAvg) * 100);
+          const tr = trendArrow(pct);
+          return `
+            <tr>
+              <td style="padding:10px 16px;border-top:1px solid #ECE5DC;font-size:13px;color:#1a1612;font-weight:500">${escapeHtml(serviceDisplayName(s.service))}</td>
+              <td style="padding:10px 16px;border-top:1px solid #ECE5DC;font-size:13px;color:#1a1612;font-variant-numeric:tabular-nums" align="right">${s.calls}</td>
+              <td style="padding:10px 16px;border-top:1px solid #ECE5DC;font-size:13px;color:#6e6862" align="right">${escapeHtml(serviceVolumeLabel(s))}</td>
+              <td style="padding:10px 16px;border-top:1px solid #ECE5DC;font-size:13px;color:#1a1612;font-variant-numeric:tabular-nums" align="right">${escapeHtml(formatUsd(s.costUsd))}</td>
+              <td style="padding:10px 16px;border-top:1px solid #ECE5DC;font-size:12px;color:${tr.color};font-variant-numeric:tabular-nums" align="right" nowrap>${tr.arrow} ${escapeHtml(tr.label)}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
+  const brandRows = body.topBrands.length === 0
+    ? ""
+    : body.topBrands
+        .map((b) => {
+          const name = b.brandName || `(deleted brand ${b.accountId.slice(0, 8)})`;
+          const annot = b.firstDay ? `<span style="color:#9b9590;font-size:11px;margin-left:8px">first day</span>` : "";
+          return `
+            <tr>
+              <td style="padding:8px 16px;font-size:13px;color:#1a1612">${escapeHtml(name)}${annot}</td>
+              <td style="padding:8px 16px;font-size:13px;color:#1a1612;font-variant-numeric:tabular-nums" align="right">${escapeHtml(formatUsd(b.costUsd))}</td>
+              <td style="padding:8px 16px;font-size:12px;color:#6e6862" align="right">${b.calls} call${b.calls === 1 ? "" : "s"}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
+  const alertRows = alertCount === 0
+    ? ""
+    : `
+      <tr>
+        <td style="padding:24px 0 0 0">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#FEF3C7;border-radius:8px">
+            <tr><td style="padding:12px 16px 4px;font-size:13px;font-weight:600;color:#A16207">⚠ ${alertCount} alert${alertCount === 1 ? "" : "s"}</td></tr>
+            ${body.alerts
+              .map((a) => {
+                const name = a.brandName || `(deleted brand ${a.accountId.slice(0, 8)})`;
+                return `<tr><td style="padding:4px 16px;font-size:13px;color:#A16207">• ${escapeHtml(name)} used ${a.used} of ${a.cap} chat msgs today (${a.percent}% of cap). Resets at 00:00 IST.</td></tr>`;
+              })
+              .join("")}
+            <tr><td style="padding:8px"></td></tr>
+          </table>
+        </td>
+      </tr>
+    `;
+
+  const errorBlock = body.errors.length === 0
+    ? `<div style="font-size:13px;color:#6e6862">None.</div>`
+    : body.errors
+        .map((e) => {
+          const example = e.exampleError
+            ? `<div style="font-size:12px;color:#6e6862;margin-top:2px;font-family:ui-monospace,SFMono-Regular,monospace">${escapeHtml(e.exampleError.slice(0, 200))}</div>`
+            : "";
+          return `
+            <div style="margin-bottom:8px">
+              <div style="font-size:13px;color:#C44A2C"><strong>${escapeHtml(serviceDisplayName(e.service))}</strong> · ${escapeHtml(e.route)} · ${e.count} failure${e.count === 1 ? "" : "s"}</div>
+              ${example}
+            </div>
+          `;
+        })
+        .join("");
+
+  const trendArrowSnapshot = trendArrow(body.totals.vsBaselineDailyAvgPct);
+  const snapshotDelta =
+    body.totals.vsBaselineDailyAvgPct === null
+      ? ""
+      : `<div style="font-size:11px;color:${trendArrowSnapshot.color};margin-top:4px">${trendArrowSnapshot.arrow} ${escapeHtml(trendArrowSnapshot.label)} vs 7-day avg</div>`;
+
+  const idleNotice = isIdle
+    ? `<tr><td style="padding:32px 16px;text-align:center;font-size:14px;color:#6e6862;font-style:italic">No external service calls were made in this window. Either traffic was zero, or the telemetry pipeline didn't fire. Worth a glance at the next run.</td></tr>`
+    : "";
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;padding:0;background:#FAF7F1;font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1612">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#FAF7F1">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;background:#FFFFFF;border-radius:12px;overflow:hidden">
+        <!-- Header -->
+        <tr><td style="background:#f5efe8;padding:20px 24px;border-bottom:1px solid #ECE5DC">
+          <div style="font-family:'EB Garamond',Georgia,serif;font-size:20px;font-weight:600;letter-spacing:-0.01em;color:#1a1612">Linkrunner <span style="color:#C44A2C">Media</span></div>
+          <div style="font-size:13px;color:#6e6862;margin-top:6px">Daily service usage · ${escapeHtml(body.istWeekdayLabel)} ${escapeHtml(body.istDateLabel)}</div>
+        </td></tr>
+
+        <!-- Snapshot tiles -->
+        ${isIdle ? idleNotice : `
+        <tr><td style="padding:24px">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <td width="33%" align="center" style="padding:8px">
+                <div style="font-size:24px;font-weight:600;color:#1a1612;font-variant-numeric:tabular-nums">${escapeHtml(formatUsd(body.totals.cost))}</div>
+                <div style="font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;margin-top:4px">Total spend</div>
+                ${snapshotDelta}
+              </td>
+              <td width="33%" align="center" style="padding:8px;border-left:1px solid #ECE5DC;border-right:1px solid #ECE5DC">
+                <div style="font-size:24px;font-weight:600;color:#1a1612;font-variant-numeric:tabular-nums">${body.totals.calls}</div>
+                <div style="font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;margin-top:4px">API calls</div>
+              </td>
+              <td width="33%" align="center" style="padding:8px">
+                <div style="font-size:24px;font-weight:600;color:#1a1612;font-variant-numeric:tabular-nums">${body.totals.activeBrands} <span style="font-size:14px;color:#9b9590;font-weight:400">of ${body.totals.totalBrands}</span></div>
+                <div style="font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;margin-top:4px">Active brands</div>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+
+        <!-- By service -->
+        <tr><td style="padding:0 24px 24px">
+          <div style="font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">By service</div>
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px solid #ECE5DC;border-radius:8px;overflow:hidden">
+            <thead>
+              <tr style="background:#FAF7F1">
+                <th align="left" style="padding:8px 16px;font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;font-weight:500">Service</th>
+                <th align="right" style="padding:8px 16px;font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;font-weight:500">Calls</th>
+                <th align="right" style="padding:8px 16px;font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;font-weight:500">Volume</th>
+                <th align="right" style="padding:8px 16px;font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;font-weight:500">Cost</th>
+                <th align="right" style="padding:8px 16px;font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.04em;font-weight:500">vs 7-day avg</th>
+              </tr>
+            </thead>
+            <tbody>${serviceRows}</tbody>
+          </table>
+        </td></tr>
+
+        ${body.topBrands.length === 0 ? "" : `
+        <!-- Top brands -->
+        <tr><td style="padding:0 24px 24px">
+          <div style="font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px">Top ${body.topBrands.length} brand${body.topBrands.length === 1 ? "" : "s"} by spend</div>
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px solid #ECE5DC;border-radius:8px;overflow:hidden">
+            <tbody>${brandRows}</tbody>
+          </table>
+        </td></tr>
+        `}
+
+        ${alertRows ? `<tr><td style="padding:0 24px 24px">${alertRows}</td></tr>` : ""}
+
+        <!-- Errors -->
+        <tr><td style="padding:0 24px 24px;border-top:1px solid #ECE5DC">
+          <div style="font-size:11px;color:#9b9590;text-transform:uppercase;letter-spacing:0.06em;margin:20px 0 12px">Errors (last 24h)</div>
+          ${errorBlock}
+        </td></tr>
+        `}
+
+        <!-- Footer -->
+        <tr><td style="padding:16px 24px;background:#FAF7F1;border-top:1px solid #ECE5DC;font-size:11px;color:#9b9590;text-align:center">
+          Full breakdown in <code style="font-family:ui-monospace,SFMono-Regular,monospace;color:#6e6862">service_usage_log</code> · <a href="${escapeHtml(body.appUrl)}" style="color:#C44A2C;text-decoration:none">agency.linkrunner.io</a>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  // ----- Plain-text fallback -----
+  const textLines: string[] = [];
+  textLines.push(`Linkrunner Media — Daily service usage`);
+  textLines.push(`${body.istWeekdayLabel} ${body.istDateLabel}`);
+  textLines.push("");
+  if (isIdle) {
+    textLines.push("No external service calls were made in this window.");
+  } else {
+    textLines.push("YESTERDAY'S SPEND");
+    textLines.push(`  Total cost:    ${formatUsd(body.totals.cost)}`);
+    textLines.push(`  Total calls:   ${body.totals.calls}`);
+    textLines.push(`  Active brands: ${body.totals.activeBrands} of ${body.totals.totalBrands}`);
+    if (body.totals.vsBaselineDailyAvgPct !== null) {
+      textLines.push(`  ${formatPercent(body.totals.vsBaselineDailyAvgPct)} vs 7-day daily avg`);
+    }
+    textLines.push("");
+    textLines.push("BY SERVICE");
+    for (const s of body.services) {
+      const pct =
+        s.baselineDailyAvgCostUsd === null || s.baselineDailyAvgCostUsd === 0
+          ? null
+          : Math.round(((s.costUsd - s.baselineDailyAvgCostUsd) / s.baselineDailyAvgCostUsd) * 100);
+      const tr = trendArrow(pct);
+      textLines.push(
+        `  ${serviceDisplayName(s.service).padEnd(12)} ${String(s.calls).padStart(4)} calls   ${serviceVolumeLabel(s).padEnd(18)} ${formatUsd(s.costUsd).padStart(9)}   ${tr.arrow} ${tr.label}`,
+      );
+    }
+    if (body.topBrands.length > 0) {
+      textLines.push("");
+      textLines.push(`TOP ${body.topBrands.length} BRAND${body.topBrands.length === 1 ? "" : "S"}`);
+      for (const b of body.topBrands) {
+        const name = (b.brandName || `(deleted brand ${b.accountId.slice(0, 8)})`).padEnd(24);
+        const annot = b.firstDay ? "  (first day)" : "";
+        textLines.push(`  ${name} ${formatUsd(b.costUsd).padStart(9)}   ${b.calls} calls${annot}`);
+      }
+    }
+    if (alertCount > 0) {
+      textLines.push("");
+      textLines.push(`ALERTS (${alertCount})`);
+      for (const a of body.alerts) {
+        const name = a.brandName || `(deleted brand ${a.accountId.slice(0, 8)})`;
+        textLines.push(`  • ${name} used ${a.used} of ${a.cap} chat msgs today (${a.percent}% of cap).`);
+      }
+    }
+  }
+  textLines.push("");
+  textLines.push(`ERRORS (LAST 24H)`);
+  if (body.errors.length === 0) {
+    textLines.push("  None.");
+  } else {
+    for (const e of body.errors) {
+      textLines.push(`  ${serviceDisplayName(e.service)} · ${e.route} · ${e.count} failure${e.count === 1 ? "" : "s"}`);
+      if (e.exampleError) textLines.push(`    ${e.exampleError.slice(0, 200)}`);
+    }
+  }
+  textLines.push("");
+  textLines.push("—");
+  textLines.push(`Full breakdown in service_usage_log. ${body.appUrl}`);
+
+  return { subject, html, text: textLines.join("\n") };
+}
+
+async function handleServiceUsageDaily(body: ServiceUsageDailyRequest): Promise<Response> {
+  if (!Array.isArray(body.recipients) || body.recipients.length === 0) {
+    return jsonResponse({ error: "recipients[] required" }, 400);
+  }
+  if (!body.istDateLabel || !body.istWeekdayLabel) {
+    return jsonResponse({ error: "istDateLabel + istWeekdayLabel required" }, 400);
+  }
+
+  const rendered = renderServiceUsageDaily(body);
+  const { ids, failures } = await callResendBatch({
+    recipients: body.recipients,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+  });
+  const total = body.recipients.length;
+  if (ids.length === 0) {
+    return jsonResponse({ ok: false, sent: 0, total, failed: failures }, 502);
+  }
+  return jsonResponse({
+    ok: true,
+    sent: ids.length,
+    total,
+    ids,
+    failed: failures,
+    subject: rendered.subject,
+  });
+}
+
 Deno.serve(async (req) => {
   const opt = handleOptions(req);
   if (opt) return opt;
@@ -826,6 +1229,26 @@ Deno.serve(async (req) => {
       );
     }
     return handleDailyDigest(body);
+  }
+
+  // Same cron-secret-as-gate model as daily-digest: the
+  // /api/usage-digest Vercel cron route holds CRON_SECRET and forwards
+  // a fully-aggregated payload. No user JWT is involved.
+  if (body?.template === "service-usage-daily") {
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (!CRON_SECRET) {
+      return jsonResponse(
+        { error: "service-usage-daily is misconfigured: CRON_SECRET not set on this function. Run: supabase secrets set CRON_SECRET=<same-value-as-Vercel>" },
+        500,
+      );
+    }
+    if (token !== CRON_SECRET) {
+      return jsonResponse(
+        { error: "service-usage-daily requires the shared CRON_SECRET bearer" },
+        403,
+      );
+    }
+    return handleServiceUsageDaily(body);
   }
 
   const userClient = createClient(SUPABASE_URL, ANON_KEY, {
