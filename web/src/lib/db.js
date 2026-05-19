@@ -3234,6 +3234,8 @@ export function mapConversationMessageRow(row, viewerUserId) {
     from: mine ? 'me' : 'them',
     who: author,
     body: row.body || '',
+    kind: row.kind || 'user',  // 'user' (default) or 'system' — system events
+                               // emitted by the lifecycle triggers (migration 0047/0050).
     time: formatRelative(row.created_at),
     createdAt: row.created_at,
     editedAt: row.edited_at || null,

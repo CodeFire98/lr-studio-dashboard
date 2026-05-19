@@ -232,6 +232,27 @@ function MessageBubble({
   // dropped in 0043 so the orphaned id is the only signal.
   const taggedPlanMissing = !!message.taggedPostPlanId && !plan;
 
+  // System messages — emitted by the post-plan / plan-proposal triggers
+  // for lifecycle events (status changes, proposal accepted/rejected,
+  // etc.). Rendered as compact, italic, no-avatar one-liners so they
+  // don't compete visually with real human DMs.
+  if (message.kind === 'system' && !isDeleted) {
+    return (
+      <div className="conv-msg conv-msg-system">
+        <span className="conv-msg-system-text">
+          <strong>{message.who?.name || 'Someone'}</strong>
+          {' '}
+          {message.body || 'made a change.'}
+          <span className="conv-msg-system-time"> · {message.time}</span>
+        </span>
+        {plan && (
+          <PlanChip plan={plan} brandSlug={brandSlug} navigate={navigate} />
+        )}
+        {taggedPlanMissing && <PlanChip deletedPlaceholder />}
+      </div>
+    );
+  }
+
   return (
     <div
       className={

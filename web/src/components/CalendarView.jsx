@@ -79,9 +79,11 @@ function greetingTail(now = new Date()) {
 // Posted (derived) sinks below Approved since it's "done, doesn't need
 // my eyes". Legacy enum values are mapped to their new-enum equivalent.
 const STATUS_ORDER = {
+  proposed:             0,
   needs_review:         0,
   needs_brand_feedback: 0,
   needs_admin_revision: 0,
+  brand_draft:          1,
   drafting:             1,
   not_started:          1,
   wip:                  1,
@@ -100,6 +102,7 @@ const STATUS_ORDER = {
 // can chase.
 const STATUS_GROUPS = {
   all:          { label: 'All',          displayStatuses: null },
+  brand_draft:  { label: 'Draft',        displayStatuses: ['brand_draft'] },
   proposed:     { label: 'Proposed',     displayStatuses: ['proposed'] },
   drafting:     { label: 'Drafting',     displayStatuses: ['drafting', 'not_started', 'wip', 'delayed'] },
   needs_review: { label: 'Needs review', displayStatuses: ['needs_review', 'needs_brand_feedback', 'needs_admin_revision'] },
@@ -358,12 +361,13 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
           const posts = postsByDate.get(c.iso) || [];
           const visible = posts.slice(0, maxChips);
           const overflow = posts.length - visible.length;
-          // Admins can plan a new post by clicking the small `+` button in
-          // the cell header. The whole-cell click target was removed
-          // (2026-05-07) because users were creating accidental post plans
-          // from stray clicks on empty space below the day number. Now
-          // only the explicit `+` button creates — matches week view.
-          const canCreate = isAdmin && c.inMonth;
+          // Both agency and brand can plan a new post via the small `+`
+          // button in the cell header — brand's plan lands in 'proposed'
+          // status pending agency review (handled in createStubAndOpen).
+          // The whole-cell click target was removed (2026-05-07) because
+          // users were creating accidental plans from stray clicks below
+          // the day number. Now only the explicit `+` button creates.
+          const canCreate = c.inMonth;
           // Drop target highlight — only when there's an active drag AND
           // the hover iso matches this cell. The source cell (where the
           // chip currently lives) is intentionally NOT highlighted, since
@@ -416,8 +420,8 @@ const MonthGrid = ({ viewDate, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                       e.stopPropagation();
                       onOpenDay(c);
                     }}
-                    title="Plan a new post on this day"
-                    aria-label={`Plan a new post on ${c.iso}`}
+                    title={isAdmin ? 'Plan a new post on this day' : 'Propose a new post on this day'}
+                    aria-label={`${isAdmin ? 'Plan' : 'Propose'} a new post on ${c.iso}`}
                     style={{
                       border: 0,
                       background: 'transparent',
@@ -511,7 +515,10 @@ const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
     <div className="cal-week-grid">
       {days.map((d) => {
         const posts = postsByDate.get(d.iso) || [];
-        const cellClickable = isAdmin;
+        // Brand can also click a day header to propose a new plan on
+        // that date. createStubAndOpen branches on isAdmin to set the
+        // right initial status (drafting vs proposed).
+        const cellClickable = true;
         const isDropTarget =
           isAdmin && dragState?.planId && dragState?.overIso === d.iso && dragState?.sourceIso !== d.iso;
         return (
@@ -537,7 +544,7 @@ const WeekGrid = ({ weekStart, postsByDate, onOpenPost, onOpenDay, isAdmin, unre
                   onOpenDay({ date: d.date });
                 }
               }}
-              title={cellClickable ? 'Click to plan a new post on this day' : undefined}
+              title={cellClickable ? (isAdmin ? 'Click to plan a new post on this day' : 'Click to propose a new post on this day') : undefined}
             >
               <div className="cal-week-col-weekday">{d.weekday}</div>
               <div className="cal-week-col-day">
@@ -785,18 +792,16 @@ const ListView = ({ viewDate, postPlans, onOpenPost, onChipContextMenu, unreadBy
         <div className="sub">
           {isAdmin
             ? 'Use Today or the prev/next arrows to browse another month, or click below to plan one now.'
-            : 'Your agency is putting together your social calendar — posts will show up here once they\'re drafted.'}
+            : 'Nothing here yet. Use the prev/next arrows to browse another month, or click below to propose a post for your agency to review.'}
         </div>
-        {isAdmin && (
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            style={{ marginTop: 14 }}
-            onClick={() => onOpenDay({ date: new Date() })}
-          >
-            <Icon name="plus" size={13}/> Plan a post now
-          </button>
-        )}
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          style={{ marginTop: 14 }}
+          onClick={() => onOpenDay({ date: new Date() })}
+        >
+          <Icon name="plus" size={13}/> {isAdmin ? 'Plan a post now' : 'Propose a post now'}
+        </button>
       </div>
     );
   }
@@ -1036,13 +1041,17 @@ const CalendarView = ({
   const goToday  = () => setViewDate(new Date());
 
   // Create a stub plan for the given day at 9am, then route to its detail
-  // page so the admin fills in concept/copy/etc inline. Stubs are real
-  // rows — if the admin walks away, an empty card sits on the calendar
+  // page so the user fills in concept/copy/etc inline. Stubs are real
+  // rows — if the user walks away, an empty card sits on the calendar
   // until they delete it. Cleanest UX vs. keeping a parallel "draft" path.
+  //
+  // Brand-side stubs land in status='brand_draft' — a private editing
+  // state the brand can fill in without notifying agency. A separate
+  // "Propose plan" button on PostPlanDetailView flips brand_draft →
+  // 'proposed'; the status-change trigger from migration 0050 emits the
+  // "proposed a new post plan." message at submission time, not now.
+  // Agency-side still lands in 'drafting' as before.
   const createStubAndOpen = async (jsDate) => {
-    // Surface the gating reason to the console so a silent failure (e.g.
-    // no active brand) is debuggable without instrumenting the click.
-    if (!isAdmin) { console.warn('[Calendar] create blocked: not admin'); return; }
     if (!accountId) { console.warn('[Calendar] create blocked: no active brand selected'); return; }
     if (creating) return;
     setCreating(true);
@@ -1058,7 +1067,7 @@ const CalendarView = ({
         platforms: [],
         concept: '',
         copyVariants: {},
-        status: 'drafting',
+        status: isAdmin ? 'drafting' : 'brand_draft',
       });
       // Push into App-level state immediately so the chip appears on the
       // calendar without waiting for the realtime round-trip.
@@ -1232,12 +1241,14 @@ const CalendarView = ({
           <h1>Social Calendar</h1>
           <div className="sub">
             Plan and preview every Instagram, LinkedIn, and X post for your brand.
-            {isAdmin ? ' Click the + on any day to plan a new post.' : ' Click a post to review and give feedback.'}
+            {isAdmin
+              ? ' Click the + on any day to plan a new post.'
+              : ' Click the + on any day to propose a new post — your agency will review.'}
           </div>
         </div>
-        {isAdmin && (
+        {accountId && (
           <div className="actions" style={{ display: 'flex', gap: 8 }}>
-            {accountId && (
+            {isAdmin && (
               <button
                 className="btn btn-sm"
                 onClick={() => setUpdateModalOpen(true)}
@@ -1247,7 +1258,7 @@ const CalendarView = ({
               </button>
             )}
             <button className="btn btn-primary btn-sm" onClick={openCreateNow}>
-              <Icon name="plus" size={13}/>New post plan
+              <Icon name="plus" size={13}/>{isAdmin ? 'New post plan' : 'Propose plan'}
             </button>
           </div>
         )}
