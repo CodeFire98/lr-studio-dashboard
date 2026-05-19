@@ -4866,6 +4866,14 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--ink-2);
   line-height: 1.4;
 }
+.copilot-tool-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .copilot-tool-platforms {
   display: flex;
   gap: 4px;
@@ -5641,6 +5649,15 @@ input, textarea { font: inherit; color: inherit; }
   white-space: pre-wrap;
   word-wrap: break-word;
 }
+.conv-msg-text a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.conv-msg-text a:hover {
+  text-decoration-thickness: 2px;
+}
 .conv-msg-actions {
   display: flex;
   gap: 8px;
@@ -5713,6 +5730,19 @@ input, textarea { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 320px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.conv-plan-chip-time {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.conv-plan-chip-time::before {
+  content: '·';
+  color: var(--ink-4);
+  margin-right: 6px;
 }
 .conv-plan-chip-remove {
   appearance: none;

@@ -41,6 +41,7 @@ import { z } from "zod";
 import { Icon } from "./Icon.jsx";
 import { supabase } from "../lib/supabase.js";
 import { buildTemplatedCopilotSuggestions } from "../lib/db.js";
+import { formatPlanChipTime } from "./ConversationsView.jsx";
 // AI Elements' `Conversation` was intentionally dropped from Phase 2a —
 // its stick-to-bottom scroll behaviour conflicts with the existing
 // `.copilot-scroll` overflow logic. We keep manual auto-scroll via a
@@ -938,6 +939,12 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
       {isPlan && input?.concept && (
         <div className="copilot-tool-body">
           <div className="copilot-tool-concept">{input.concept}</div>
+          {input?.scheduled_at && (
+            <div className="copilot-tool-when">
+              <Icon name="calendar" size={11} />
+              <span>{formatPlanChipTime(input.scheduled_at)}</span>
+            </div>
+          )}
           {Array.isArray(input.platforms) && (
             <div className="copilot-tool-platforms">
               {input.platforms.map((p) => (
