@@ -100,6 +100,7 @@ const STATUS_ORDER = {
 // can chase.
 const STATUS_GROUPS = {
   all:          { label: 'All',          displayStatuses: null },
+  proposed:     { label: 'Proposed',     displayStatuses: ['proposed'] },
   drafting:     { label: 'Drafting',     displayStatuses: ['drafting', 'not_started', 'wip', 'delayed'] },
   needs_review: { label: 'Needs review', displayStatuses: ['needs_review', 'needs_brand_feedback', 'needs_admin_revision'] },
   approved:     { label: 'Approved',     displayStatuses: ['approved', 'scheduled'] },

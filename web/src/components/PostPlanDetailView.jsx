@@ -934,8 +934,24 @@ const PostPlanDetailView = ({
       setTimeout(() => pendingDraftRef.current?.focus(), 0);
       return;
     }
-    persist({ status: next });
+    // Optimistic, then revert on DB error so the trigger guards from
+    // migration 0048 (agency-can't-approve, brand-only-approves-from-
+    // needs_review) don't leave the UI in a phantom state.
+    const prevStatus = status;
     setStatus(next);
+    setSaving(true);
+    try {
+      const updated = await updatePostPlan(plan.id, { status: next });
+      setPlan(updated);
+      onPlanChanged?.(updated);
+      markPostPlanSeen(plan.id, userId);
+      onPlanSeen?.(plan.id);
+    } catch (e) {
+      console.error('status transition failed', e);
+      setStatus(prevStatus);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const cancelPendingTransition = () => {
@@ -961,8 +977,22 @@ const PostPlanDetailView = ({
       console.error('reason post failed', e);
       return;
     }
-    persist({ status: next });
+    // Status transition with revert-on-failure (see transitionStatus).
+    const prevStatus = status;
     setStatus(next);
+    setSaving(true);
+    try {
+      const updated = await updatePostPlan(plan.id, { status: next });
+      setPlan(updated);
+      onPlanChanged?.(updated);
+      markPostPlanSeen(plan.id, userId);
+      onPlanSeen?.(plan.id);
+    } catch (e) {
+      console.error('status transition failed', e);
+      setStatus(prevStatus);
+    } finally {
+      setSaving(false);
+    }
     cancelPendingTransition();
   };
 
@@ -1172,14 +1202,23 @@ const PostPlanDetailView = ({
   const statusBucket = (() => {
     if (status === 'approved' || status === 'scheduled' || status === 'posted') return 'approved';
     if (status === 'needs_review' || status === 'needs_brand_feedback' || status === 'needs_admin_revision') return 'needs_review';
+    if (status === 'proposed') return 'proposed';
     return 'drafting';
   })();
 
+  // Workflow buttons replace the old status dropdown. The dropdown let
+  // agency manually set "approved" by accident; under the brand-proposals
+  // model approval is brand-exclusive. Forward + recall transitions are
+  // explicit, named buttons; the underlying trigger (migration 0048)
+  // hard-enforces the same rules at the DB level so the UI is not the
+  // only line of defence.
   const statusActions = (() => {
     const out = [];
     if (isAdmin) {
       if (statusBucket === 'drafting') {
         out.push({ label: 'Submit for review', tone: 'primary', next: 'needs_review' });
+      } else if (statusBucket === 'needs_review') {
+        out.push({ label: 'Recall to drafting', tone: 'ghost', next: 'drafting' });
       } else if (statusBucket === 'approved') {
         out.push({ label: 'Back to draft', tone: 'ghost', next: 'drafting' });
       }
@@ -1454,20 +1493,6 @@ const PostPlanDetailView = ({
           >
             <Icon name="chat" size={13}/>Discuss this plan
           </button>
-          {isAdmin && (
-            <select
-              className="btn btn-sm"
-              value={statusBucket}
-              onChange={(e) => { setStatus(e.target.value); persist({ status: e.target.value }); }}
-              disabled={saving}
-              style={{ appearance: 'none', paddingRight: 28 }}
-              title="Override status"
-            >
-              <option value="drafting">Set: Drafting</option>
-              <option value="needs_review">Set: Needs review</option>
-              <option value="approved">Set: Approved</option>
-            </select>
-          )}
         </div>
       </div>
 

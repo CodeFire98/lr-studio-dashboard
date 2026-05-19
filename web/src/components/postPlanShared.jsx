@@ -65,20 +65,22 @@ export const PLATFORM_BY_KEY = Object.fromEntries(PLATFORMS.map((p) => [p.key, p
 // from "this is live, leave it alone".
 const POSTED_TINT       = '#7C5CFF';
 const NEEDS_REVIEW_TINT = '#A16207';
+const PROPOSED_TINT     = '#C44A2C';  // coral — distinguishes a brand-originated proposal from agency review
 export const STATUS_CONFIG = {
-  drafting:     { label: 'Drafting',     color: 'var(--ink-4)',     background: 'var(--surface-2)' },
-  needs_review: { label: 'Needs review', color: NEEDS_REVIEW_TINT,  background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },
-  approved:     { label: 'Approved',     color: 'var(--good)',      background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
-  posted:       { label: 'Posted',       color: POSTED_TINT,        background: `color-mix(in oklab, ${POSTED_TINT} 16%, var(--surface))` },
+  drafting:     { label: 'Drafting',                color: 'var(--ink-4)',    background: 'var(--surface-2)' },
+  proposed:     { label: 'Awaiting agency review',  color: PROPOSED_TINT,     background: `color-mix(in oklab, ${PROPOSED_TINT} 14%, var(--surface))` },
+  needs_review: { label: 'Awaiting brand approval', color: NEEDS_REVIEW_TINT, background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },
+  approved:     { label: 'Approved',                color: 'var(--good)',     background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
+  posted:       { label: 'Posted',                  color: POSTED_TINT,       background: `color-mix(in oklab, ${POSTED_TINT} 16%, var(--surface))` },
 
   // Legacy aliases — render any cached row that slips through with a
   // sensible bucket equivalent rather than the unknown-status fallback.
-  not_started:          { label: 'Drafting',     color: 'var(--ink-4)',     background: 'var(--surface-2)' },
-  wip:                  { label: 'Drafting',     color: 'var(--ink-4)',     background: 'var(--surface-2)' },
-  delayed:              { label: 'Drafting',     color: 'var(--ink-4)',     background: 'var(--surface-2)' },
-  needs_brand_feedback: { label: 'Needs review', color: NEEDS_REVIEW_TINT,  background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },
-  needs_admin_revision: { label: 'Needs review', color: NEEDS_REVIEW_TINT,  background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },
-  scheduled:            { label: 'Approved',     color: 'var(--good)',      background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
+  not_started:          { label: 'Drafting',                color: 'var(--ink-4)',    background: 'var(--surface-2)' },
+  wip:                  { label: 'Drafting',                color: 'var(--ink-4)',    background: 'var(--surface-2)' },
+  delayed:              { label: 'Drafting',                color: 'var(--ink-4)',    background: 'var(--surface-2)' },
+  needs_brand_feedback: { label: 'Awaiting brand approval', color: NEEDS_REVIEW_TINT, background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },
+  needs_admin_revision: { label: 'Awaiting brand approval', color: NEEDS_REVIEW_TINT, background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },
+  scheduled:            { label: 'Approved',                color: 'var(--good)',     background: 'color-mix(in oklab, var(--good) 14%, var(--surface))' },
 };
 
 // Derive the display status for a plan, given any publications it has.
