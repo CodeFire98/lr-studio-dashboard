@@ -2731,46 +2731,46 @@ const PostPlanDetailView = ({
             <div className="card-head"><div className="card-title" style={{ fontSize: 18 }}>Timeline</div></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, padding: '0 16px 16px' }}>
               {(() => {
-                // Five-step lifecycle: Created → Drafting → Sent for review
-                // → Approved → Posted. Each step has explicit state:
-                //   * done    — we're past this step
-                //   * current — we're AT this step right now (gets the
-                //               "Now" pill + a stronger accent ring)
-                //   * pending — we haven't reached this step yet
-                // "Current" reflects WHERE WE ARE, not WHERE WE'RE GOING
-                // NEXT, so a Drafting plan correctly shows "Drafting · Now"
-                // instead of misleadingly showing "Sent for review · Now".
+                // Four-step lifecycle: Drafting → Sent for review →
+                // Approved → Posted. ("Created" was dropped — every plan
+                // starts there, the step was always-done noise.) Each
+                // step is explicitly 'done' | 'current' | 'pending', and
+                // "current" reflects WHERE WE ARE — not WHERE WE'RE
+                // GOING NEXT. The Drafting macro covers brand_draft,
+                // drafting, and proposed (all "being put together, not
+                // yet handed to brand for approval").
                 //
-                // The drafting macro-step covers brand_draft / drafting /
-                // proposed — all "being put together, not yet handed to
-                // brand for approval."
+                // Each step gets a date stamp pinned to when the plan
+                // transitioned INTO that step:
+                //   Drafting        → plan.createdAt (when work began).
+                //   Sent for review → earliest status_log row with
+                //                     to_status in needs_review*.
+                //   Approved        → plan.approvedAt (auto-stamped by
+                //                     the trigger from migration 0021).
+                //   Posted          → earliest publication.publishedAt.
                 const earliestPub = publications.reduce((earliest, p) => {
                   if (!p.publishedAt) return earliest;
                   if (!earliest || p.publishedAt < earliest) return p.publishedAt;
                   return earliest;
                 }, null);
+                const sentForReviewLog = (statusLog || []).find((l) =>
+                  l.toStatus === 'needs_review'
+                  || l.toStatus === 'needs_brand_feedback'
+                  || l.toStatus === 'needs_admin_revision'
+                );
+                const sentForReviewAt = sentForReviewLog?.createdAt || null;
+
                 const isPosted = publications.length > 0;
                 const isApproved = !isPosted && (!!plan.approvedAt || ['approved','scheduled'].includes(plan.status));
                 const isInReview = !isApproved && !isPosted
                   && ['needs_review','needs_brand_feedback','needs_admin_revision'].includes(plan.status);
-                // Drafting macro: everything before the agency sends it
-                // off for brand review. brand_draft / drafting / proposed
-                // / legacy aliases all map here.
                 const isDraftingStage = !isPosted && !isApproved && !isInReview;
-
-                // The "approved" timestamp lights up on the Approved row
-                // for approved AND posted plans (it doesn't unset on
-                // publish). Same for createdAt → Created row.
-                const approvedAt = plan.approvedAt
-                  || (isApproved || isPosted ? plan.updatedAt : null);
 
                 const stateOf = (stepKey) => {
                   switch (stepKey) {
-                    case 'created':
-                      return plan.createdAt ? 'done' : 'pending';
                     case 'drafting':
                       if (isDraftingStage) return 'current';
-                      return 'done';  // any post-draft state means we passed through
+                      return 'done';
                     case 'sent_for_review':
                       if (isInReview) return 'current';
                       if (isApproved || isPosted) return 'done';
@@ -2788,10 +2788,9 @@ const PostPlanDetailView = ({
                 };
 
                 return [
-                  { key: 'created',         label: 'Created',         v: plan.createdAt },
-                  { key: 'drafting',        label: 'Drafting',        v: null },
-                  { key: 'sent_for_review', label: 'Sent for review', v: null },
-                  { key: 'approved',        label: 'Approved',        v: approvedAt && approvedAt !== plan.updatedAt ? approvedAt : (isApproved || isPosted ? plan.approvedAt : null) },
+                  { key: 'drafting',        label: 'Drafting',        v: plan.createdAt },
+                  { key: 'sent_for_review', label: 'Sent for review', v: sentForReviewAt },
+                  { key: 'approved',        label: 'Approved',        v: plan.approvedAt },
                   { key: 'posted',          label: 'Posted',          v: earliestPub },
                 ].map((step) => ({ ...step, state: stateOf(step.key) }));
               })().map((step, i) => {
