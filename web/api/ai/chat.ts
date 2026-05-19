@@ -56,6 +56,7 @@ console.log("[chat] module-load-ok");
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 // supabase-js client now created inside auth-lib.
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
+import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 import {
   convertToModelMessages,
   generateObject,
@@ -701,11 +702,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // UIMessage[] from the client is converted to ModelMessage[] via
     // convertToModelMessages — handles text + tool-call + tool-result
     // parts uniformly.
+    const startedAt = Date.now();
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS_PER_TURN,
       stopWhen: stepCountIs(MAX_STEPS),
       tools,
+      // Telemetry → service_usage_log for the daily digest. Fires once
+      // per request, AFTER all tool-call steps complete; `totalUsage`
+      // aggregates tokens across every LLM call in the multi-step run
+      // (including any repair-model fallbacks for malformed tool inputs).
+      // The cost estimate uses the primary MODEL_ID rate card — small
+      // repair calls bill at Haiku rates but the volume is negligible
+      // (single-digit %), so we tolerate the slight over-estimate.
+      onFinish: ({ totalUsage, finishReason }) => {
+        const cr = totalUsage.inputTokenDetails?.cacheReadTokens ?? 0;
+        const cw = totalUsage.inputTokenDetails?.cacheWriteTokens ?? 0;
+        const out = totalUsage.outputTokens ?? 0;
+        void logServiceUsage({
+          service: "anthropic",
+          route: "/api/ai/chat",
+          accountId: body.accountId,
+          userId: caller.userId,
+          tokensIn: totalUsage.inputTokens ?? 0,
+          tokensOut: out,
+          costUsd: estimateAnthropicCostUsd({
+            model: MODEL_ID,
+            inputTokens: totalUsage.inputTokens ?? 0,
+            outputTokens: out,
+            cacheReadTokens: cr,
+            cacheWriteTokens: cw,
+          }),
+          latencyMs: Date.now() - startedAt,
+          status: "ok",
+          meta: {
+            model: MODEL_ID,
+            caller_is_agency: callerIsAgency,
+            finish_reason: finishReason,
+            cache_read_tokens: cr,
+            cache_write_tokens: cw,
+          },
+        });
+      },
       // Silent repair for malformed tool inputs. The model occasionally
       // emits invalid JSON for big tool calls (e.g. trailing extra
       // braces on multi-platform copy_variants). We try a cheap cleanup

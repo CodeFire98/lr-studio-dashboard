@@ -46,6 +46,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
+import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -299,6 +300,11 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
   // because streamObject and streamText pass slightly different event
   // shapes (streamObject's `onFinish` has `usage` directly; streamText's
   // has `totalUsage`).
+  //
+  // Also fires `logServiceUsage` so cost lands in the daily digest's
+  // service_usage_log. Latency is measured from `startedAt`, captured
+  // right before the streamText/streamObject call below.
+  let startedAt = Date.now();
   const logUsage = (
     label: "ideas" | "prompt",
     u:
@@ -319,9 +325,36 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
       `[image] usage account=${body.accountId} plan=${body.plan_id} platform=${body.platform} mode=${label} ` +
         `input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason ?? "n/a"}`,
     );
+    void logServiceUsage({
+      service: "anthropic",
+      route: "/api/ai/image",
+      accountId: body.accountId,
+      userId: caller.userId,
+      tokensIn: u?.inputTokens ?? 0,
+      tokensOut: out,
+      costUsd: estimateAnthropicCostUsd({
+        model: MODEL_ID,
+        inputTokens: u?.inputTokens ?? 0,
+        outputTokens: out,
+        cacheReadTokens: cr,
+        cacheWriteTokens: cw,
+      }),
+      latencyMs: Date.now() - startedAt,
+      status: "ok",
+      meta: {
+        model: MODEL_ID,
+        plan_id: body.plan_id,
+        platform: body.platform,
+        mode: label,
+        finish_reason: finishReason ?? null,
+        cache_read_tokens: cr,
+        cache_write_tokens: cw,
+      },
+    });
   };
 
   try {
+    startedAt = Date.now();
     if (mode === "ideas") {
       // streamObject constrains Claude to produce schema-conforming JSON
       // and emits JSON-delta chunks. pipeTextStreamToResponse forwards
