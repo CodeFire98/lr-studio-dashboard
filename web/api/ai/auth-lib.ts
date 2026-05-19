@@ -8,7 +8,11 @@
 //   1. Read Authorization header → validate JWT.
 //   2. Look up profile.is_agency.
 //   3. If brand caller, require account_members row for (user, accountId).
-//   4. Verify the brand is on the AI allowlist.
+//
+// (The fourth step was an AI_COPILOT_BRAND_IDS allowlist gate during the
+// Bamboo Bear-only rollout. Dropped 2026-05-19 when AI features opened
+// to all brands. The per-brand 50/day quota below is the live cost
+// guardrail going forward.)
 //
 // Quota: 50 AI calls / day / brand for BRAND callers across all four
 // surfaces. Day boundary = midnight IST (Asia/Kolkata). Agency calls
@@ -45,18 +49,15 @@ export interface AuthFailure {
 
 /**
  * Validate JWT, resolve role, and check brand-membership when caller is
- * not agency. Also enforces the brand allowlist.
- *
- * Pass the route's allowlist (env-driven Set of account_ids) — different
- * routes may have different allowlists in the future, so we don't bake
- * that in here.
+ * not agency. AI features are open to all brands as of 2026-05-19; the
+ * per-brand 50/day quota check (in `checkAndRecordAiUsage` below) is now
+ * the only post-auth gate.
  */
 export async function authorizeAiCall(args: {
   authHeader: string;
   accountId: string;
-  allowlist: Set<string>;
 }): Promise<AuthSuccess | AuthFailure> {
-  const { authHeader, accountId, allowlist } = args;
+  const { authHeader, accountId } = args;
 
   if (!SUPABASE_URL || !SERVICE_ROLE || !ANON_KEY) {
     return { ok: false, status: 500, error: "Supabase env not fully configured." };
@@ -95,10 +96,6 @@ export async function authorizeAiCall(args: {
     if (!count) {
       return { ok: false, status: 403, error: "You don't have access to this brand." };
     }
-  }
-
-  if (!allowlist.has(accountId)) {
-    return { ok: false, status: 403, error: "This brand isn't on the AI allowlist yet." };
   }
 
   return { ok: true, caller: { userId: user.id, isAgency, serviceClient } };

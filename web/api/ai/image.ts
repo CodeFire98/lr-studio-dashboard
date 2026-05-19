@@ -53,13 +53,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const ANON_KEY = process.env.SUPABASE_ANON_KEY ?? "";
 
-const WHITELIST = new Set(
-  (process.env.AI_COPILOT_BRAND_IDS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-);
-
 const MODEL_ID = "claude-sonnet-4-6";
 const MAX_TOKENS_IDEAS = 1200;
 const MAX_TOKENS_PROMPT = 1000;
@@ -177,7 +170,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const auth = await authorizeAiCall({
     authHeader,
     accountId: body.accountId,
-    allowlist: WHITELIST,
   });
   if (!auth.ok) {
     return res.status(auth.status).json({ error: auth.error });

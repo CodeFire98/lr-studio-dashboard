@@ -60,18 +60,6 @@ import { supabase } from './lib/supabase';
 import { ALL_CLIENTS } from './components/BrandPicker.jsx';
 import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 
-// ---- AI Co-pilot allowlist (PR 2 rollout gate) ------------------------
-// Comma-separated list of brand UUIDs that get to see the Co-pilot. Mirror
-// of AI_COPILOT_BRAND_IDS on the server side (which is the real authz —
-// this client-side flag just controls whether the button is rendered).
-// Set VITE_AI_COPILOT_BRAND_IDS in Vercel env vars.
-const COPILOT_ALLOWED_BRAND_IDS = new Set(
-  (import.meta.env.VITE_AI_COPILOT_BRAND_IDS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
-
 // ---------- URL ↔ route mapping (Phase 2 routing layer) ------------------
 // We keep the legacy `route = {view, id}` shape across the codebase so the
 // 55-ish `setRoute(...)` callsites in child components don't have to change.
@@ -1106,24 +1094,23 @@ const App = () => {
   // brand-side surface. Agency staff see Inbox in the sidebar instead.
   const showGotIdeasCta = !!auth && !auth.isAgency && route.view !== "ideate";
 
-  // AI Co-pilot eligibility — opens to BOTH agency and brand callers as
-  // of Phase 2 (Bamboo Bear allowlist still applies). The route itself
-  // auth-checks brand membership + enforces the 50/day brand quota; the
-  // system prompt branches on caller role.
+  // AI Co-pilot eligibility — open to every signed-in user (agency or
+  // brand) once a brand is selected. The route itself auth-checks brand
+  // membership + enforces the 50/day brand quota (agency uncapped); the
+  // system prompt branches on caller role. The Bamboo Bear-only
+  // allowlist was dropped 2026-05-19.
   const copilotEligible =
     !!auth?.id &&
     !isAllClientsMode &&
-    !!scopeAccountId &&
-    COPILOT_ALLOWED_BRAND_IDS.has(scopeAccountId);
+    !!scopeAccountId;
 
-  // Inline AI eligibility — same gate as copilotEligible now that brand
-  // has access to both surfaces. Kept as a separate prop so future
-  // tightening (e.g. inline-only for one user class) can split them
-  // again without touching every gate.
+  // Inline AI eligibility — same gate as copilotEligible. Kept as a
+  // separate prop so future tightening (e.g. inline-only for one user
+  // class) can split them again without touching every gate.
   const aiInlineEligible = copilotEligible;
 
-  // Auto-close the panel if the active brand changes out of eligibility
-  // (e.g. user switches to a non-whitelisted brand via BrandPicker).
+  // Auto-close the panel if the active brand context disappears
+  // (e.g. user switches to All-clients mode via BrandPicker).
   useEffect(() => {
     if (!copilotEligible && copilotOpen) setCopilotOpen(false);
   }, [copilotEligible, copilotOpen]);
