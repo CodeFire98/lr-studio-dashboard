@@ -1900,6 +1900,30 @@ const PostPlanDetailView = ({
               </div>
             </div>
           )}
+          {!isAdmin && statusBucket === 'drafting' && (
+            <div
+              role="status"
+              style={{
+                marginTop: 16,
+                padding: '10px 14px',
+                border: '1px solid color-mix(in oklab, var(--accent) 28%, var(--line))',
+                background: 'color-mix(in oklab, var(--accent) 5%, var(--surface))',
+                borderRadius: 8,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                maxWidth: 640,
+                fontSize: 13,
+                color: 'var(--ink-2)',
+                lineHeight: 1.45,
+              }}
+            >
+              <span aria-hidden style={{ flexShrink: 0, display: 'inline-flex', color: 'var(--accent-ink, var(--accent))' }}>
+                <Icon name="sparkles" size={14}/>
+              </span>
+              <span>Your agency is drafting this post. You'll see it for review when it's ready.</span>
+            </div>
+          )}
           {pendingDateProposal && (
             <PendingDateProposalCard
               proposal={pendingDateProposal}
@@ -2712,22 +2736,61 @@ const PostPlanDetailView = ({
                   if (!earliest || p.publishedAt < earliest) return p.publishedAt;
                   return earliest;
                 }, null);
+                const isSentForReview = ['needs_review','needs_brand_feedback','needs_admin_revision','approved','scheduled','posted'].includes(plan.status);
+                const isApproved = !!plan.approvedAt || ['approved','scheduled','posted'].includes(plan.status);
+                const isPosted = publications.length > 0;
+                // Current step = the next step that isn't done yet.
+                // Gets a "Now" badge + a softer accent ring so the
+                // brand sees at-a-glance "where are we in the journey."
+                // Past steps stay filled; future steps stay muted.
+                let currentIdx;
+                if (isPosted) currentIdx = 3;
+                else if (isApproved) currentIdx = 3;             // waiting to post
+                else if (isSentForReview) currentIdx = 2;        // waiting on approval
+                else currentIdx = 1;                              // drafting → waiting for review
                 return [
-                  { k: 'Created', v: plan.createdAt, on: !!plan.createdAt },
-                  { k: 'Submitted for review', v: null, on: ['needs_review','needs_brand_feedback','needs_admin_revision','approved','scheduled','posted'].includes(plan.status) },
-                  { k: 'Approved', v: plan.approvedAt, on: !!plan.approvedAt },
-                  { k: 'Posted', v: earliestPub, on: publications.length > 0 },
-                ];
+                  { k: 'Created',         v: plan.createdAt, on: !!plan.createdAt },
+                  { k: 'Sent for review', v: null,           on: isSentForReview },
+                  { k: 'Approved',        v: plan.approvedAt, on: isApproved },
+                  { k: 'Posted',          v: earliestPub,    on: isPosted },
+                ].map((step, i) => ({ ...step, current: i === currentIdx && !step.on }));
               })().map((step, i) => (
                 <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <span style={{
                     width: 8, height: 8, borderRadius: 4,
-                    background: step.on ? 'var(--accent)' : 'var(--ink-5)',
-                    boxShadow: step.on ? '0 0 0 3px var(--accent-soft)' : 'none',
+                    background: step.on || step.current ? 'var(--accent)' : 'var(--ink-5)',
+                    boxShadow: step.on
+                      ? '0 0 0 3px var(--accent-soft)'
+                      : step.current
+                        ? '0 0 0 3px color-mix(in oklab, var(--accent) 30%, transparent)'
+                        : 'none',
                     flex: '0 0 auto',
                   }}/>
-                  <div style={{ flex: 1, color: step.on ? 'var(--ink)' : 'var(--ink-3)', fontWeight: step.on ? 500 : 400 }}>
-                    {step.k}
+                  <div style={{
+                    flex: 1,
+                    color: step.on || step.current ? 'var(--ink)' : 'var(--ink-3)',
+                    fontWeight: step.on || step.current ? 500 : 400,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}>
+                    <span>{step.k}</span>
+                    {step.current && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 500,
+                          letterSpacing: '0.04em',
+                          textTransform: 'uppercase',
+                          padding: '1px 6px',
+                          borderRadius: 99,
+                          background: 'color-mix(in oklab, var(--accent) 14%, var(--surface))',
+                          color: 'var(--accent-ink, var(--accent))',
+                        }}
+                      >
+                        Now
+                      </span>
+                    )}
                   </div>
                   <div style={{ color: 'var(--ink-4)', fontSize: 12 }}>
                     {step.v ? new Date(step.v).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
