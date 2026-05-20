@@ -6294,3 +6294,307 @@ input, textarea { font: inherit; color: inherit; }
   border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
   background: color-mix(in oklab, var(--accent) 6%, var(--surface));
 }
+
+/* ============ Live Posts engagement summary (LivePostsSummary.jsx) ============ */
+
+.lps-wrap {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 20px 22px;
+  margin: 0 0 24px;
+}
+.lps-wrap-empty {
+  background: color-mix(in oklab, var(--ink-1) 2%, var(--surface));
+}
+
+.lps-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.lps-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Period picker */
+.lps-period {
+  position: relative;
+}
+.lps-period-button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink-1);
+  font-family: inherit;
+  cursor: pointer;
+}
+.lps-period-button:hover {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+}
+.lps-period-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  padding: 4px;
+  z-index: 50;
+}
+.lps-period-option {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--ink-1);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.lps-period-option:hover {
+  background: color-mix(in oklab, var(--accent) 6%, var(--surface));
+}
+.lps-period-option.is-active {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* KPI tiles row */
+.lps-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+@media (max-width: 720px) {
+  .lps-tiles {
+    grid-template-columns: 1fr;
+  }
+}
+.lps-tile {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--ink-1) 1.5%, var(--surface));
+}
+.lps-tile-value {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.lps-tile-annotation {
+  font-size: 11px;
+  color: var(--ink-4);
+  margin-top: 2px;
+  font-style: italic;
+}
+.lps-tile-label {
+  font-size: 11px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 6px;
+}
+.lps-tile-spark {
+  margin: 10px 0 12px;
+}
+.lps-tile-deltas {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.lps-tile-delta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+/* Trend arrows + delta colors */
+.lps-arrow {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  width: 12px;
+  text-align: center;
+}
+.lps-arrow-up    { color: #15803D; }   /* green-700 */
+.lps-arrow-down  { color: #C44A2C; }   /* brand coral */
+.lps-arrow-flat  { color: var(--ink-4); }
+.lps-arrow-na    { color: var(--ink-4); }
+.lps-delta-value {
+  font-variant-numeric: tabular-nums;
+  min-width: 50px;
+}
+.lps-delta-up    { color: #15803D; }
+.lps-delta-down  { color: #C44A2C; }
+.lps-delta-flat  { color: var(--ink-3); }
+.lps-delta-na    { color: var(--ink-4); }
+.lps-delta-label {
+  color: var(--ink-4);
+  font-size: 11.5px;
+}
+
+/* Sparkline */
+.lps-spark {
+  display: block;
+}
+.lps-spark-empty {
+  background: color-mix(in oklab, var(--ink-1) 3%, transparent);
+  border-radius: 4px;
+}
+
+/* Divider between KPIs and platform rows */
+.lps-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 18px 0 14px;
+}
+
+/* By-platform rows */
+.lps-platforms {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.lps-platforms-label {
+  font-size: 11px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.lps-platform-row {
+  display: grid;
+  grid-template-columns: 130px 80px 1fr 120px 170px;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 4px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  border-top: 1px solid color-mix(in oklab, var(--line) 50%, transparent);
+}
+.lps-platform-row:first-of-type {
+  border-top: 0;
+}
+@media (max-width: 720px) {
+  .lps-platform-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .lps-platform-spark { display: none; }
+}
+.lps-platform-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: var(--ink-1);
+}
+.lps-platform-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.lps-platform-posts {
+  color: var(--ink-3);
+}
+.lps-platform-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+.lps-platform-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-1);
+  cursor: default;
+}
+.lps-platform-metric-icon {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1;
+}
+.lps-platform-metric-val {
+  font-weight: 600;
+}
+.lps-platform-no-data {
+  color: var(--ink-4);
+  font-style: italic;
+  font-size: 12px;
+}
+.lps-platform-delta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.lps-platforms-empty {
+  font-size: 12.5px;
+  color: var(--ink-4);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+/* States */
+.lps-skeleton {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.lps-skel-tile {
+  height: 140px;
+  border-radius: 10px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--ink-1) 3%, var(--surface)),
+    color-mix(in oklab, var(--ink-1) 6%, var(--surface)),
+    color-mix(in oklab, var(--ink-1) 3%, var(--surface))
+  );
+  background-size: 200% 100%;
+  animation: lpsShimmer 1.4s ease-in-out infinite;
+}
+@keyframes lpsShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.lps-error {
+  padding: 24px;
+  font-size: 13px;
+  color: #C44A2C;
+  text-align: center;
+}
+.lps-empty {
+  padding: 16px 0;
+  font-size: 13px;
+  color: var(--ink-3);
+  font-style: italic;
+}

@@ -20,6 +20,7 @@ import {
   PlatformChip,
 } from './postPlanShared.jsx';
 import { LivePostEmbed } from './LivePostEmbed.jsx';
+import { LivePostsSummary } from './LivePostsSummary.jsx';
 import {
   loadBrandPublications,
   subscribeToAllPostPlanPublications,
@@ -597,6 +598,9 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
           </div>
         </div>
       </div>
+
+      {/* Engagement summary strip (KPI tiles + per-platform rows) */}
+      <LivePostsSummary accountId={accountId} />
 
       {/* Filter pills + search */}
       <div
