@@ -118,29 +118,42 @@ function TrendArrow({ kind }) {
 }
 
 // ---------- Sparkline component --------------------------------------
-// Hand-rolled inline SVG. Renders a single polyline for the values
-// passed in. Auto-scales y. Highlights the last point with a dot.
+// Hand-rolled inline SVG. Accepts a series of { date, value } points.
+// `value === null` means "no data for this day" — the path breaks at
+// those points (Move instead of Line) so the line shows a visible gap
+// rather than dropping to zero. Used by the rate sparkline where days
+// with 0 views can't produce a rate.
 function Sparkline({ data, width = 120, height = 24, color = 'var(--accent)' }) {
   if (!data || data.length === 0) {
     return <div className="lps-spark-empty" style={{ width, height }} />;
   }
-  const values = data.map((d) => d.engagement || 0);
-  const max = Math.max(...values, 1); // avoid div-by-zero
-  const min = 0;
+  const numericValues = data.map((d) => (typeof d.value === 'number' ? d.value : null));
+  const definedValues = numericValues.filter((v) => v !== null);
+  if (definedValues.length === 0) {
+    return <div className="lps-spark-empty" style={{ width, height }} />;
+  }
+
+  const max = Math.max(...definedValues, 1);
+  const min = Math.min(...definedValues, 0);
   const range = Math.max(1, max - min);
-  const step = width / Math.max(1, values.length - 1);
+  const step = width / Math.max(1, numericValues.length - 1);
   const padTop = 2;
   const padBottom = 2;
   const innerH = height - padTop - padBottom;
 
-  const points = values.map((v, i) => {
+  // Build path with breaks: M for null-following segments, L otherwise.
+  let path = '';
+  let lastPoint = null;
+  for (let i = 0; i < numericValues.length; i++) {
+    const v = numericValues[i];
+    if (v === null) continue;
     const x = i * step;
     const y = padTop + innerH - ((v - min) / range) * innerH;
-    return [x, y];
-  });
-
-  const path = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
-  const lastPoint = points[points.length - 1];
+    // Start a new sub-path if the previous point was null or this is the first defined value.
+    const prevDefined = i > 0 && numericValues[i - 1] !== null;
+    path += `${prevDefined && path ? 'L' : 'M'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+    lastPoint = [x, y];
+  }
 
   return (
     <svg
@@ -150,7 +163,7 @@ function Sparkline({ data, width = 120, height = 24, color = 'var(--accent)' }) 
       viewBox={`0 0 ${width} ${height}`}
       aria-hidden="true"
     >
-      <path d={path} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={path.trim()} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       {lastPoint && (
         <circle cx={lastPoint[0]} cy={lastPoint[1]} r="2" fill={color} />
       )}
@@ -326,7 +339,7 @@ export function LivePostsSummary({ accountId }) {
 
   const tiles = useMemo(() => {
     if (!summary || summary.isEmpty) return null;
-    const { period: p, deltas, sparklineDaily } = summary;
+    const { period: p, deltas, sparklines } = summary;
     const engKinds = {
       yesterday: trendKind(deltas.vsYesterday.engagement, 'pct'),
       week:      trendKind(deltas.vsLastWeek.engagement, 'pct'),
@@ -337,16 +350,16 @@ export function LivePostsSummary({ accountId }) {
       week:      trendKind(deltas.vsLastWeek.ratePoints, 'pp'),
       month:     trendKind(deltas.vsLastMonth.ratePoints, 'pp'),
     };
-    const activeKinds = {
-      yesterday: trendKind(deltas.vsYesterday.activePubs, 'int'),
-      week:      trendKind(deltas.vsLastWeek.activePubs, 'int'),
-      month:     trendKind(deltas.vsLastMonth.activePubs, 'int'),
+    const postsKinds = {
+      yesterday: trendKind(deltas.vsYesterday.postsCount, 'int'),
+      week:      trendKind(deltas.vsLastWeek.postsCount, 'int'),
+      month:     trendKind(deltas.vsLastMonth.postsCount, 'int'),
     };
     return {
       engagement: {
         value: formatCount(p.engagement),
         label: 'Engagement',
-        sparkData: sparklineDaily,
+        sparkData: sparklines?.engagement || [],
         deltas: [
           { label: 'vs yesterday',   kind: engKinds.yesterday, display: formatPct(deltas.vsYesterday.engagement) },
           { label: 'vs last week',   kind: engKinds.week,      display: formatPct(deltas.vsLastWeek.engagement) },
@@ -357,21 +370,21 @@ export function LivePostsSummary({ accountId }) {
         value: formatRate(p.rate),
         valueAnnotation: p.rateBasis === 'partial' ? 'views from IG/X only' : null,
         label: 'Engagement rate',
-        sparkData: sparklineDaily, // sparkline still shows engagement trend, not rate (more useful)
+        sparkData: sparklines?.rate || [],
         deltas: [
           { label: 'vs yesterday',  kind: rateKinds.yesterday, display: formatRatePoints(deltas.vsYesterday.ratePoints) },
           { label: 'vs last week',  kind: rateKinds.week,      display: formatRatePoints(deltas.vsLastWeek.ratePoints) },
           { label: 'vs last month', kind: rateKinds.month,     display: formatRatePoints(deltas.vsLastMonth.ratePoints) },
         ],
       },
-      activePubs: {
-        value: String(p.activePubs),
-        label: 'Active posts',
-        sparkData: sparklineDaily,
+      posts: {
+        value: String(p.postsCount),
+        label: 'Posts',
+        sparkData: sparklines?.posts || [],
         deltas: [
-          { label: 'vs yesterday',  kind: activeKinds.yesterday, display: formatIntDelta(deltas.vsYesterday.activePubs) },
-          { label: 'vs last week',  kind: activeKinds.week,      display: formatIntDelta(deltas.vsLastWeek.activePubs) },
-          { label: 'vs last month', kind: activeKinds.month,     display: formatIntDelta(deltas.vsLastMonth.activePubs) },
+          { label: 'vs yesterday',  kind: postsKinds.yesterday, display: formatIntDelta(deltas.vsYesterday.postsCount) },
+          { label: 'vs last week',  kind: postsKinds.week,      display: formatIntDelta(deltas.vsLastWeek.postsCount) },
+          { label: 'vs last month', kind: postsKinds.month,     display: formatIntDelta(deltas.vsLastMonth.postsCount) },
         ],
       },
     };
@@ -429,7 +442,7 @@ export function LivePostsSummary({ accountId }) {
       <div className="lps-tiles">
         <KpiTile {...tiles.engagement} />
         <KpiTile {...tiles.rate} />
-        <KpiTile {...tiles.activePubs} />
+        <KpiTile {...tiles.posts} />
       </div>
 
       <div className="lps-divider" />
