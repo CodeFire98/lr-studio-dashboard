@@ -3,7 +3,9 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-19 (**AI features open to all brands — allowlist dropped.** The `AI_COPILOT_BRAND_IDS` / `VITE_AI_COPILOT_BRAND_IDS` env-var allowlists that gated the AI features to the Bamboo Bear test brand are gone. AI Co-pilot chat, inline ✨ AI draft / redraft on copy fields, the AI image-prompt panel, and the welcome-screen suggestion chips all work for every brand on the platform now — agency and brand callers alike. The per-brand 50/day quota check in `web/api/ai/auth-lib.ts` (Phase 1) stays in place as the live cost guardrail; agency users bypass the cap, brand users hit a 429 with `Daily AI limit reached for this brand (50 / day). Refreshes at midnight IST.` past 50 calls. Server-side: removed the `allowlist: Set<string>` parameter from `authorizeAiCall()`, removed the `if (!allowlist.has(accountId))` block, dropped the per-route `WHITELIST = new Set(process.env.AI_COPILOT_BRAND_IDS ?? '')` constant + the `allowlist: WHITELIST` argument in each of the four AI routes (`chat.ts` / `copy.ts` / `image.ts` / `suggestions.ts`). Frontend: removed the `COPILOT_ALLOWED_BRAND_IDS` Set + `VITE_AI_COPILOT_BRAND_IDS` env read in `web/src/App.jsx`; `copilotEligible` is now just `auth?.id && !isAllClientsMode && !!scopeAccountId` — any signed-in user with a selected brand context. The auto-close useEffect that closes the panel when the active brand falls off eligibility still runs and still works (now it only closes when the user switches to All-clients mode, which is correct). Cost monitoring: the daily usage-digest email at 07:30 IST + the new `service_usage_log` table from #108 give live visibility into Claude / Apify / Firecrawl spend, so any unexpected spike from the wider rollout is visible the next morning. Trends Radar daily refresh-cron (`web/api/trends/refresh-cron.ts`) still respects the allowlist deliberately — Trends Radar is paused per the user's broader call, and the brand-context compiler falls back gracefully when trend snapshots are absent. Follow-up after this PR: clear `AI_COPILOT_BRAND_IDS` + `VITE_AI_COPILOT_BRAND_IDS` from Vercel project env (they're now orphan reads — no code references them — so removing is cosmetic ops cleanup, not breaking).)
+**Last updated:** 2026-05-20 (**Live Posts engagement summary strip (revised — per-platform metric breakdown + LinkedIn double-count fix).** New summary block on `/c/:slug/posts`, sitting between the page-head and the platform filter pills. Three KPI tiles (Engagement / Engagement rate / Active posts), each with a hand-rolled inline-SVG sparkline and three deltas underneath (vs yesterday, vs last week, vs last month). Below the tiles, a "By platform" section with one row per active platform (Instagram / LinkedIn / X) showing post count, total engagement, mini-sparkline, and week-over-week % change. Period picker top-right (7d / 30d / 90d / All time, default 30d), choice persisted in `localStorage.lr_live_posts_summary_period`. Data: new `loadEngagementSummaryForBrand(accountId, periodDays)` helper in `web/src/lib/db.js` — single DB read (90 days of `post_engagement_snapshots` rows for the brand's publications), all aggregation client-side. Snapshots are cumulative counts so "engagement gained" = (latest snapshot - earliest snapshot) per publication per window, summed. Daily-delta math bucketed by IST date to align with the cron's 06:00 IST refresh schedule. Engagement rate handling: pubs without view counts (LinkedIn always, X often) contribute their engagement to the numerator but 0 to the views denominator; when at least one pub reports views and at least one doesn't, the tile annotates with "views from IG/X only" so the rate isn't misread. Delta thresholds: |Δ%| < 5 → "flat" with grey dash; absolute deltas (for active-post count) shown as `+N`/`-N` instead of percentage. Color rules: green ▲ for engagement-up, coral ▼ for engagement-down, grey ─ for flat. Empty-state: brand with zero live publications shows a clean "No live posts yet — mark a post plan as posted to start tracking engagement here" instead of empty tiles. Loading skeleton: shimmer animation on 3 tile placeholders so the layout doesn't jump while the query runs. New component `LivePostsSummary.jsx` (~310 LOC, includes inline Sparkline + PeriodPicker + KpiTile + PlatformRow subcomponents). New CSS namespace `.lps-*` (~210 lines in app.css). Wired into `LivePostsView.jsx` with a single import + a `<LivePostsSummary accountId={accountId} />` line directly under the existing "Engagement stats refresh daily at 6:00 AM IST" callout.)
+
+**Previous (2026-05-19):** **AI features open to all brands — allowlist dropped.** The `AI_COPILOT_BRAND_IDS` / `VITE_AI_COPILOT_BRAND_IDS` env-var allowlists that gated the AI features to the Bamboo Bear test brand are gone. AI Co-pilot chat, inline ✨ AI draft / redraft on copy fields, the AI image-prompt panel, and the welcome-screen suggestion chips all work for every brand on the platform now — agency and brand callers alike. The per-brand 50/day quota check in `web/api/ai/auth-lib.ts` (Phase 1) stays in place as the live cost guardrail; agency users bypass the cap, brand users hit a 429 with `Daily AI limit reached for this brand (50 / day). Refreshes at midnight IST.` past 50 calls. Server-side: removed the `allowlist: Set<string>` parameter from `authorizeAiCall()`, removed the `if (!allowlist.has(accountId))` block, dropped the per-route `WHITELIST = new Set(process.env.AI_COPILOT_BRAND_IDS ?? '')` constant + the `allowlist: WHITELIST` argument in each of the four AI routes (`chat.ts` / `copy.ts` / `image.ts` / `suggestions.ts`). Frontend: removed the `COPILOT_ALLOWED_BRAND_IDS` Set + `VITE_AI_COPILOT_BRAND_IDS` env read in `web/src/App.jsx`; `copilotEligible` is now just `auth?.id && !isAllClientsMode && !!scopeAccountId` — any signed-in user with a selected brand context. The auto-close useEffect that closes the panel when the active brand falls off eligibility still runs and still works (now it only closes when the user switches to All-clients mode, which is correct). Cost monitoring: the daily usage-digest email at 07:30 IST + the new `service_usage_log` table from #108 give live visibility into Claude / Apify / Firecrawl spend, so any unexpected spike from the wider rollout is visible the next morning. Trends Radar daily refresh-cron (`web/api/trends/refresh-cron.ts`) still respects the allowlist deliberately — Trends Radar is paused per the user's broader call, and the brand-context compiler falls back gracefully when trend snapshots are absent. Follow-up after this PR: clear `AI_COPILOT_BRAND_IDS` + `VITE_AI_COPILOT_BRAND_IDS` from Vercel project env (they're now orphan reads — no code references them — so removing is cosmetic ops cleanup, not breaking).)
 
 **Previous (2026-05-19):** **Digest crons moved to Supabase pg_cron.** Both digest crons — the 18:00 IST brand daily-digest and the 07:30 IST agency usage-digest — move off Vercel Hobby cron onto Supabase pg_cron, calling the same Vercel API routes via `pg_net.http_post()`. Same shape as migration `0045` for engagement-refresh. Triggered by two confirmed Vercel-cron deploy-churn misses (2026-05-11 and 2026-05-19) — both days had heavy PR-merge activity, and Vercel's scheduler skips fires that overlap with active deploy windows. pg_cron is decoupled from Vercel deploys entirely. The Vercel routes themselves (`/api/daily-digest`, `/api/usage-digest`) are untouched — same CRON_SECRET bearer auth, same idempotency, same `daily_digest_log` write path. Only the caller changed. New migration `0054_digests_to_pg_cron.sql` adds a `vercel_app_url` Vault secret (operator sets to `https://agency.linkrunner.io` after applying), re-uses the existing `engagement_cron_secret` Vault entry from `0045`, and schedules two `pg_cron` jobs (`daily-digest-brand` at `30 12 * * *` UTC, `usage-digest-agency` at `0 2 * * *` UTC). Both wrap the HTTP POST in `pg_net.http_post` with a 90s timeout (Vercel function cap is 60s; 90s gives headroom for network egress). `vercel.json` drops both entries from its `crons` array. Trends Radar cron stays on Vercel for now (Trends paused, will revisit when work resumes).)
 
@@ -92,6 +94,73 @@
 ---
 
 ## Recent changes log
+
+### 2026-05-20 — Live Posts engagement summary strip
+
+New summary block at the top of `/c/:slug/posts` showing KPI tiles + per-platform engagement breakdown, sitting between the existing page-head and the platform filter pills.
+
+**Revised mid-PR** to reflect actual scraper-returned metric coverage rather than aggregating apples-and-oranges. Original PR pulled a single "engagement" total per platform that hid two real issues: (1) LinkedIn's `reaction_count` is populated with the SAME number as `like_count` ([scraper-lib.ts:310-320](web/api/engagement/scraper-lib.ts:310)), so the original sum double-counted LinkedIn engagement; (2) different platforms expose different signals (X has bookmarks + quotes, IG has views on videos, LinkedIn has shares but no views, etc.), and a single rolled-up number obscures that asymmetry. Both addressed below.
+
+**Engagement formula:** `likes + comments + shares + saves`. Universal across platforms, all public signals. **Excluded** from the sum (with rationale):
+- `reaction_count` — duplicates `like_count` on LinkedIn (would double-count), `null` elsewhere
+- `view_count` — reach, not engagement. Stays as the denominator for engagement-rate.
+- `bookmark_count` — X-specific and private (user's personal save list, not public engagement)
+- `quote_count` — X scraper already maps retweets to `share_count`; quotes would double-count shares-equivalent activity
+
+**Per-platform metric breakdown** replaces the single per-platform engagement total. Each platform row now renders an icon-prefixed chip strip showing ONLY the metrics that platform's scraper actually returns:
+
+| Platform | Metrics shown |
+|---|---|
+| Instagram | ♥ likes · 💬 comments · 👁 views (videos only) |
+| LinkedIn | ♥ likes · 💬 comments · ⇱ shares |
+| X | ♥ likes · 💬 comments · ⇱ shares · 👁 views (probed) · 🔖 bookmarks (probed) |
+
+New `perMetricGainPlatform()` private helper in `db.js` returns `null` when no publication on a platform has any non-null sample for a metric — the UI hides the chip rather than rendering "—". This means a brand with only LinkedIn posts won't see ghost "0 views" chips, and an X publication whose scraper run happened to miss `bookmark_count` doesn't get a hallucinated zero.
+
+The KPI tile aggregation still uses the universal `engagement = likes + comments + shares + saves` formula so cross-platform comparison stays meaningful.
+
+**Layout:**
+- **Top row** — 3 KPI tiles (Engagement / Engagement rate / Active posts). Each tile has:
+  - Big-number value
+  - Optional annotation ("views from IG/X only" on the rate tile when partial-coverage)
+  - 24px-tall inline-SVG sparkline showing daily-delta engagement over the selected period
+  - 3 deltas underneath: vs yesterday, vs last week, vs last month (signed % for engagement, percentage-points `pp` for rate, integer `+N`/`-N` for active-post count)
+- **Divider**
+- **Per-platform rows** — Instagram / LinkedIn / X (only rendered for platforms with ≥1 publication). Each row: colored dot + name, post count, total engagement, mini-sparkline, week-over-week % change.
+
+**Period picker top-right:** 7d / 30d / 90d / All time. Default 30d. Choice persisted in `localStorage.lr_live_posts_summary_period`.
+
+**Data layer (`web/src/lib/db.js`):** new `loadEngagementSummaryForBrand(accountId, periodDays)` helper. Single DB read — 90 days of `post_engagement_snapshots` rows for the brand's publications (90 chosen so the "vs last month" baseline window at 30-60 days ago has data even when the selected period is 30d). All aggregation client-side.
+
+**Engagement math:**
+- Snapshots are cumulative counts (likes total, etc.) — to express "engagement gained in a window" we compute (latest snapshot in window − earliest snapshot in window) per publication, then sum.
+- Days bucketed by IST calendar date (`sv-SE` locale + `Asia/Kolkata` timezone) so day boundaries align with the cron's 06:00 IST refresh schedule.
+- Daily-delta carry-forward: missing snapshots on a given day inherit the most recent known value, so a day with no scrape contributes 0 to the daily delta rather than a phantom drop.
+
+**Engagement-rate handling for mixed platforms:** LinkedIn never exposes views, X often doesn't. When at least one pub reports views and at least one doesn't, the rate tile annotates with `views from IG/X only` so the displayed rate isn't misread as platform-wide.
+
+**Delta thresholds:**
+- `|Δ%| < 5` → grey "─ flat"
+- `|Δ pp| < 0.5` → grey "─ flat" (for engagement rate)
+- Active-post count deltas always shown as `+N` / `-N` integers (no percentage)
+- Zero-baseline edge cases handled: 0→0 renders flat, 0→positive renders `—` (can't express infinite growth as %)
+
+**Color rules:** green ▲ for engagement-up, coral ▼ for engagement-down, grey ─ for flat, em-dash `—` for unknown / insufficient data. Matches the daily-digest email's arrow convention.
+
+**Empty + loading states:**
+- Brand with zero live publications → "No live posts yet — mark a post plan as posted (with its live URL) to start tracking engagement here."
+- Loading → 3 shimmer-animated tile placeholders so the layout doesn't jump.
+- Network error → coral error string, doesn't crash the tiles below.
+
+**Touched files:**
+- New: [web/src/components/LivePostsSummary.jsx](web/src/components/LivePostsSummary.jsx) — ~310 LOC. Includes inline Sparkline + PeriodPicker + KpiTile + PlatformRow subcomponents. No new deps.
+- [web/src/lib/db.js](web/src/lib/db.js) — new `loadEngagementSummaryForBrand` helper (+ private helpers `bucketByIstDay` / `lastNIstDateKeys` / `dailyDeltaSeries` / `viewGainsInRange` / `activePubCount` / `pctChange`). ~280 LOC.
+- [web/src/styles/app.css](web/src/styles/app.css) — new `.lps-*` namespace, ~210 LOC. Responsive (1-column at ≤720px).
+- [web/src/components/LivePostsView.jsx](web/src/components/LivePostsView.jsx) — 2-line wiring: import + JSX placement.
+
+**Verification:** typecheck-equivalent passes (Vite-served files all transform cleanly), no console errors, no React rendering errors. Visual verification deferred to production deploy since this worktree has no auth env.
+
+**Sections touched:** Recent changes log; `Last updated`. No schema, no migration, no env var, no edge function changes.
 
 ### 2026-05-19 — AI features open to all brands (allowlist dropped)
 

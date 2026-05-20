@@ -4109,3 +4109,450 @@ export function subscribeToBrandKitNotes(onChange, { accountId } = {}) {
   return () => supabase.removeChannel(channel);
 }
 
+// =====================================================================
+// Live Posts engagement summary
+// =====================================================================
+// Aggregates the cron-driven `post_engagement_snapshots` history into a
+// single per-brand summary blob that powers the Live Posts summary
+// strip (KPI tiles + sparklines + per-platform rows).
+//
+// Snapshots are CUMULATIVE counts (likes total, etc.) — to express
+// "engagement gained in a window" we compute (last snapshot in window
+// - first snapshot in window) per publication, then sum across pubs.
+//
+// One DB read at the top of the function, all aggregations happen
+// client-side from the returned snapshot rows. Window = 90 days
+// regardless of selected period so D / W / M / 30-day baselines
+// always have data when the period is 30d or shorter.
+//
+// Output shape:
+//   {
+//     isEmpty: false,                   // true when the brand has 0 live posts
+//     periodDays: number,               // echoed from input, used for label
+//     period: {                         // metrics over the selected period
+//       engagement: number,             // total engagement gained
+//       views: number,                  // total view gain (only counts pubs that report views)
+//       rate: number|null,              // engagement/views * 100, null when views = 0
+//       rateBasis: 'all'|'partial'|null, // 'partial' when some platforms don't report views
+//       activePubs: number,             // pubs with any positive engagement delta in period
+//     },
+//     deltas: {                         // signed % change vs comparison baseline
+//       vsYesterday:   { engagement, ratePoints, activePubs },
+//       vsLastWeek:    { engagement, ratePoints, activePubs },
+//       vsLastMonth:   { engagement, ratePoints, activePubs },
+//     },
+//     sparklineDaily: Array<{           // last N days, in chronological order
+//       date: 'YYYY-MM-DD',
+//       engagement: number,             // daily delta engagement (could be 0)
+//     }>,
+//     byPlatform: {                     // same period aggregations, per platform
+//       instagram?: { posts, engagement, views, rate, sparklineDaily, deltaWeek },
+//       linkedin?:  { ... },
+//       x?:         { ... },
+//     },
+//   }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function sumPositive(...nums) {
+  let total = 0;
+  for (const n of nums) if (typeof n === 'number' && n > 0) total += n;
+  return total;
+}
+
+// "Engagement" = likes + comments + shares + saves. The universal
+// cross-platform meaningful interactions.
+//
+// Deliberately EXCLUDED from this sum:
+//   - reaction_count: LinkedIn populates this with the SAME number as
+//     like_count (the scraper rolls reactions into a single number);
+//     adding it would double-count LinkedIn engagement. See
+//     scraper-lib.ts:310-320 — `like_count: likes, reaction_count: likes`.
+//   - view_count: views are reach, not engagement. They're the
+//     denominator for the engagement-rate metric, not a numerator.
+//   - bookmark_count: X-specific, and bookmarks are private (user's
+//     personal save list, not a public engagement signal).
+//   - quote_count: X-specific, and the X scraper already maps retweets
+//     to share_count, so quotes would double-count shares-equivalent
+//     activity. (TODO: if Apify ever returns quotes separately as
+//     genuinely-not-retweet activity, decide whether to add them.)
+function snapshotEngagementTotal(snap) {
+  if (!snap) return 0;
+  return sumPositive(
+    snap.likeCount,
+    snap.commentCount,
+    snap.shareCount,
+    snap.saveCount,
+  );
+}
+
+// Build "latest snapshot per (pub, calendar-day IST)" by iterating
+// asc-ordered snapshots and overwriting the day's slot each time. The
+// result is a Map<pubId, Map<'YYYY-MM-DD', snapshotEngagementTotal>>.
+// The fetched_at timestamp is bucketed by IST date so day boundaries
+// align with the cron's IST schedule.
+function bucketByIstDay(snapshotsByPub) {
+  const out = new Map();
+  for (const [pubId, snaps] of snapshotsByPub.entries()) {
+    const dayMap = new Map();
+    for (const s of snaps) {
+      // sv-SE locale = YYYY-MM-DD, Asia/Kolkata = IST. Same trick used
+      // by auth-lib's todayIstStartUtc().
+      const dayKey = new Date(s.fetchedAt).toLocaleDateString('sv-SE', { timeZone: 'Asia/Kolkata' });
+      dayMap.set(dayKey, {
+        engagement: snapshotEngagementTotal(s),
+        views: typeof s.viewCount === 'number' ? s.viewCount : null,
+        platform: null, // filled by caller using publication.platform
+      });
+    }
+    out.set(pubId, dayMap);
+  }
+  return out;
+}
+
+// Pure inline helper: list of "YYYY-MM-DD" IST date strings going
+// back N days, ending today (inclusive of today). Earliest first.
+function lastNIstDateKeys(n, today = new Date()) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * DAY_MS);
+    out.push(d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Kolkata' }));
+  }
+  return out;
+}
+
+// Sum daily-delta engagement across pubs (optionally filtered by
+// platform) over the given list of IST date keys.
+//
+// For each pub, for each date key, the delta is (engagement on that day) -
+// (engagement on the most recent prior day with data). Missing days
+// inherit the prior known value, so a day with no snapshot contributes
+// 0 to the daily delta.
+function dailyDeltaSeries(publications, perPubByDay, dateKeys, platformFilter = null) {
+  // For each pub independently, compute that pub's running engagement
+  // values across the date keys, then per-day delta.
+  const perDayTotal = new Map(dateKeys.map((k) => [k, 0]));
+
+  for (const pub of publications) {
+    if (platformFilter && pub.platform !== platformFilter) continue;
+    const dayMap = perPubByDay.get(pub.id);
+    if (!dayMap || dayMap.size === 0) continue;
+
+    // Carry-forward the latest engagement value across date keys.
+    let runningEng = null;
+    let priorEng = null;
+    for (const key of dateKeys) {
+      const hit = dayMap.get(key);
+      if (hit) runningEng = hit.engagement;
+      if (runningEng !== null && priorEng !== null) {
+        const delta = Math.max(0, runningEng - priorEng);
+        perDayTotal.set(key, (perDayTotal.get(key) || 0) + delta);
+      }
+      priorEng = runningEng;
+    }
+  }
+
+  return dateKeys.map((date) => ({ date, engagement: perDayTotal.get(date) || 0 }));
+}
+
+// Aggregate-helper: given a series of { date, engagement } points, sum
+// engagement over the whole list. Used for KPI period totals + delta
+// comparisons.
+function sumSeriesEngagement(series) {
+  let total = 0;
+  for (const point of series) total += point.engagement || 0;
+  return total;
+}
+
+// View gains over the same date keys. Same carry-forward semantics as
+// dailyDeltaSeries but for view counts. Pubs without view counts
+// (LinkedIn, sometimes X) contribute 0 — we track in `partialBasis`
+// whether any pub returned views so the UI can annotate the rate as
+// "IG only" or similar.
+function viewGainsInRange(publications, perPubByDay, dateKeys, platformFilter = null) {
+  let totalViewGain = 0;
+  let anyPubReportedViews = false;
+  let anyPubMissingViews = false;
+
+  for (const pub of publications) {
+    if (platformFilter && pub.platform !== platformFilter) continue;
+    const dayMap = perPubByDay.get(pub.id);
+    if (!dayMap || dayMap.size === 0) continue;
+
+    let firstViews = null;
+    let lastViews = null;
+    let hadAnyViewSample = false;
+    for (const key of dateKeys) {
+      const hit = dayMap.get(key);
+      if (hit && typeof hit.views === 'number') {
+        if (firstViews === null) firstViews = hit.views;
+        lastViews = hit.views;
+        hadAnyViewSample = true;
+      }
+    }
+    if (hadAnyViewSample) {
+      anyPubReportedViews = true;
+      if (firstViews !== null && lastViews !== null) {
+        totalViewGain += Math.max(0, lastViews - firstViews);
+      }
+    } else {
+      // Pub had snapshots in range but never reported views — partial coverage signal.
+      // Only flag as partial if the pub had any snapshot at all in the range.
+      let hadAnySnapshot = false;
+      for (const key of dateKeys) if (dayMap.get(key)) { hadAnySnapshot = true; break; }
+      if (hadAnySnapshot) anyPubMissingViews = true;
+    }
+  }
+
+  const basis = anyPubReportedViews && anyPubMissingViews ? 'partial' : anyPubReportedViews ? 'all' : null;
+  return { views: totalViewGain, basis };
+}
+
+// Per-metric delta over a window, for a single platform. Returns null
+// when NO publication on this platform has any non-null sample for the
+// metric inside the window — that's the clean "not available" signal
+// for the UI ("LinkedIn doesn't expose views").
+//
+// `metricKey` is one of the camelCase property names on a mapped
+// snapshot (likeCount, commentCount, shareCount, saveCount, viewCount,
+// bookmarkCount, quoteCount, reactionCount).
+function perMetricGainPlatform(publications, snapshotsByPub, fromMs, toMs, platform, metricKey) {
+  let hasAnyData = false;
+  let total = 0;
+  for (const pub of publications) {
+    if (pub.platform !== platform) continue;
+    const snaps = snapshotsByPub.get(pub.id) || [];
+    let firstVal = null;
+    let lastVal = null;
+    for (const s of snaps) {
+      const t = new Date(s.fetchedAt).getTime();
+      if (t < fromMs || t > toMs) continue;
+      const v = s[metricKey];
+      if (typeof v !== 'number') continue;
+      hasAnyData = true;
+      if (firstVal === null) firstVal = v;
+      lastVal = v;
+    }
+    if (firstVal !== null && lastVal !== null) {
+      total += Math.max(0, lastVal - firstVal);
+    }
+  }
+  return hasAnyData ? total : null;
+}
+
+// Count pubs with any positive daily-delta engagement in range.
+function activePubCount(publications, perPubByDay, dateKeys, platformFilter = null) {
+  let n = 0;
+  for (const pub of publications) {
+    if (platformFilter && pub.platform !== platformFilter) continue;
+    const dayMap = perPubByDay.get(pub.id);
+    if (!dayMap || dayMap.size === 0) continue;
+
+    let runningEng = null;
+    let priorEng = null;
+    let activeInRange = false;
+    for (const key of dateKeys) {
+      const hit = dayMap.get(key);
+      if (hit) runningEng = hit.engagement;
+      if (runningEng !== null && priorEng !== null && runningEng - priorEng > 0) {
+        activeInRange = true;
+        break;
+      }
+      priorEng = runningEng;
+    }
+    if (activeInRange) n += 1;
+  }
+  return n;
+}
+
+// % change between two numbers with safe handling of zero baselines:
+//   - baseline > 0 → ((current - baseline) / baseline) * 100
+//   - baseline === 0 && current === 0 → 0% (flat)
+//   - baseline === 0 && current > 0 → null (can't express "infinite growth" as a %)
+function pctChange(current, baseline) {
+  if (baseline === 0) {
+    if (current === 0) return 0;
+    return null;
+  }
+  return ((current - baseline) / baseline) * 100;
+}
+
+/**
+ * Aggregate engagement summary for a brand's Live Posts page.
+ *
+ * @param {string} accountId  - brand account id
+ * @param {number} [periodDays=30] - lookback window for the headline KPIs
+ *                                   and the sparkline range (7 / 30 / 90 / 'all')
+ * @returns {Promise<object|null>} - see shape in the top-of-section comment
+ */
+export async function loadEngagementSummaryForBrand(accountId, periodDays = 30) {
+  if (!accountId) return null;
+
+  const publications = await loadBrandPublications(accountId);
+  if (publications.length === 0) {
+    return { isEmpty: true, publications: [] };
+  }
+
+  // Load 90 days of snapshots — enough headroom for the 30d period + the
+  // "vs last month" baseline window (30-60 days ago).
+  const now = new Date();
+  const lookbackDays = 90;
+  const fromIso = new Date(now.getTime() - lookbackDays * DAY_MS).toISOString();
+  const toIso = now.toISOString();
+  const pubIds = publications.map((p) => p.id);
+
+  const { data, error } = await supabase
+    .from('post_engagement_snapshots')
+    .select('*')
+    .in('publication_id', pubIds)
+    .gte('fetched_at', fromIso)
+    .lte('fetched_at', toIso)
+    .order('fetched_at', { ascending: true });
+  if (error) throw error;
+
+  // Group snapshots by publication, then bucket by IST calendar day so the
+  // daily-delta math aligns with the cron's IST schedule.
+  const snapshotsByPub = new Map();
+  for (const row of data || []) {
+    const mapped = mapEngagementSnapshotRow(row);
+    const list = snapshotsByPub.get(mapped.publicationId) || [];
+    list.push(mapped);
+    snapshotsByPub.set(mapped.publicationId, list);
+  }
+  const perPubByDay = bucketByIstDay(snapshotsByPub);
+
+  // Resolve period — when periodDays === 'all', cap at the lookback
+  // window since that's what we loaded.
+  const effectivePeriod = periodDays === 'all' ? lookbackDays : Math.min(periodDays, lookbackDays);
+
+  // Date-key series for the period + comparison baselines.
+  const periodKeys     = lastNIstDateKeys(effectivePeriod, now);
+  // Yesterday vs day-before-yesterday → 1-day windows.
+  const yesterdayKeys  = lastNIstDateKeys(1, new Date(now.getTime() - 1 * DAY_MS));
+  const dayBeforeKeys  = lastNIstDateKeys(1, new Date(now.getTime() - 2 * DAY_MS));
+  // Last 7 days vs prior 7 days.
+  const lastWeekKeys   = lastNIstDateKeys(7, now);
+  const prevWeekKeys   = lastNIstDateKeys(7, new Date(now.getTime() - 7 * DAY_MS));
+  // Last 30 days vs prior 30 days.
+  const lastMonthKeys  = lastNIstDateKeys(30, now);
+  const prevMonthKeys  = lastNIstDateKeys(30, new Date(now.getTime() - 30 * DAY_MS));
+
+  // Headline numbers — period totals.
+  const periodSeries = dailyDeltaSeries(publications, perPubByDay, periodKeys);
+  const periodEng = sumSeriesEngagement(periodSeries);
+  const { views: periodViews, basis: rateBasis } = viewGainsInRange(publications, perPubByDay, periodKeys);
+  const periodRate = periodViews > 0 ? (periodEng / periodViews) * 100 : null;
+  const periodActivePubs = activePubCount(publications, perPubByDay, periodKeys);
+
+  // Engagement totals for each comparison window.
+  const yesterdayEng  = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, yesterdayKeys));
+  const dayBeforeEng  = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, dayBeforeKeys));
+  const lastWeekEng   = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, lastWeekKeys));
+  const prevWeekEng   = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, prevWeekKeys));
+  const lastMonthEng  = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, lastMonthKeys));
+  const prevMonthEng  = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, prevMonthKeys));
+
+  // Active-pubs comparison windows.
+  const yesterdayActive = activePubCount(publications, perPubByDay, yesterdayKeys);
+  const dayBeforeActive = activePubCount(publications, perPubByDay, dayBeforeKeys);
+  const lastWeekActive  = activePubCount(publications, perPubByDay, lastWeekKeys);
+  const prevWeekActive  = activePubCount(publications, perPubByDay, prevWeekKeys);
+  const lastMonthActive = activePubCount(publications, perPubByDay, lastMonthKeys);
+  const prevMonthActive = activePubCount(publications, perPubByDay, prevMonthKeys);
+
+  // Engagement-rate comparison windows. Rate is points-difference, not %.
+  const calcRate = (eng, viewsInfo) => (viewsInfo.views > 0 ? (eng / viewsInfo.views) * 100 : null);
+  const yesterdayViews = viewGainsInRange(publications, perPubByDay, yesterdayKeys);
+  const dayBeforeViews = viewGainsInRange(publications, perPubByDay, dayBeforeKeys);
+  const lastWeekViews  = viewGainsInRange(publications, perPubByDay, lastWeekKeys);
+  const prevWeekViews  = viewGainsInRange(publications, perPubByDay, prevWeekKeys);
+  const lastMonthViews = viewGainsInRange(publications, perPubByDay, lastMonthKeys);
+  const prevMonthViews = viewGainsInRange(publications, perPubByDay, prevMonthKeys);
+  const yesterdayRate  = calcRate(yesterdayEng,  yesterdayViews);
+  const dayBeforeRate  = calcRate(dayBeforeEng,  dayBeforeViews);
+  const lastWeekRate   = calcRate(lastWeekEng,   lastWeekViews);
+  const prevWeekRate   = calcRate(prevWeekEng,   prevWeekViews);
+  const lastMonthRate  = calcRate(lastMonthEng,  lastMonthViews);
+  const prevMonthRate  = calcRate(prevMonthEng,  prevMonthViews);
+  const ratePoints = (a, b) => (a === null || b === null ? null : a - b);
+
+  const deltas = {
+    vsYesterday: {
+      engagement: pctChange(yesterdayEng, dayBeforeEng),
+      ratePoints: ratePoints(yesterdayRate, dayBeforeRate),
+      activePubs: yesterdayActive - dayBeforeActive,
+    },
+    vsLastWeek: {
+      engagement: pctChange(lastWeekEng, prevWeekEng),
+      ratePoints: ratePoints(lastWeekRate, prevWeekRate),
+      activePubs: lastWeekActive - prevWeekActive,
+    },
+    vsLastMonth: {
+      engagement: pctChange(lastMonthEng, prevMonthEng),
+      ratePoints: ratePoints(lastMonthRate, prevMonthRate),
+      activePubs: lastMonthActive - prevMonthActive,
+    },
+  };
+
+  // Per-platform aggregation. Same period window, same series helper —
+  // just narrowed to one platform at a time.
+  const byPlatform = {};
+  const platformCounts = { instagram: 0, linkedin: 0, x: 0 };
+  for (const pub of publications) {
+    if (platformCounts[pub.platform] !== undefined) platformCounts[pub.platform] += 1;
+  }
+  // Window bounds (ms) for the period — used by perMetricGainPlatform
+  // since it works on raw fetched_at, not bucketed days.
+  const periodFromMs = new Date(periodKeys[0] + 'T00:00:00+05:30').getTime();
+  const periodToMs = new Date(periodKeys[periodKeys.length - 1] + 'T23:59:59+05:30').getTime();
+
+  for (const platform of ['instagram', 'linkedin', 'x']) {
+    if (platformCounts[platform] === 0) continue;
+    const series = dailyDeltaSeries(publications, perPubByDay, periodKeys, platform);
+    const eng = sumSeriesEngagement(series);
+    const viewsInfo = viewGainsInRange(publications, perPubByDay, periodKeys, platform);
+    const platformRate = viewsInfo.views > 0 ? (eng / viewsInfo.views) * 100 : null;
+    const weekSeriesThis = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, lastWeekKeys, platform));
+    const weekSeriesPrev = sumSeriesEngagement(dailyDeltaSeries(publications, perPubByDay, prevWeekKeys, platform));
+    // Per-metric availability + period gain. Null = the platform's
+    // scraper doesn't return this field; the UI hides the chip in that
+    // case rather than rendering "—". See scraper-lib.ts for the
+    // per-platform metric matrix:
+    //   IG:       like + comment + view (videos only)
+    //   LinkedIn: like + comment + share
+    //   X:        like + comment + share + view + bookmark (probed)
+    const metrics = {
+      likes:     perMetricGainPlatform(publications, snapshotsByPub, periodFromMs, periodToMs, platform, 'likeCount'),
+      comments:  perMetricGainPlatform(publications, snapshotsByPub, periodFromMs, periodToMs, platform, 'commentCount'),
+      shares:    perMetricGainPlatform(publications, snapshotsByPub, periodFromMs, periodToMs, platform, 'shareCount'),
+      saves:     perMetricGainPlatform(publications, snapshotsByPub, periodFromMs, periodToMs, platform, 'saveCount'),
+      views:     perMetricGainPlatform(publications, snapshotsByPub, periodFromMs, periodToMs, platform, 'viewCount'),
+      bookmarks: perMetricGainPlatform(publications, snapshotsByPub, periodFromMs, periodToMs, platform, 'bookmarkCount'),
+    };
+    byPlatform[platform] = {
+      posts: platformCounts[platform],
+      engagement: eng,
+      views: viewsInfo.views,
+      rate: platformRate,
+      rateBasis: viewsInfo.basis,
+      sparklineDaily: series,
+      deltaWeek: pctChange(weekSeriesThis, weekSeriesPrev),
+      metrics,
+    };
+  }
+
+  return {
+    isEmpty: false,
+    periodDays: effectivePeriod,
+    period: {
+      engagement: periodEng,
+      views: periodViews,
+      rate: periodRate,
+      rateBasis,
+      activePubs: periodActivePubs,
+    },
+    deltas,
+    sparklineDaily: periodSeries,
+    byPlatform,
+  };
+}
