@@ -61,9 +61,8 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, conversationsUnrea
 // Agency "All clients" nav — empty. Every workflow is brand-scoped now,
 // including Trends Radar (which moved to /c/:slug/trends on 2026-05-06).
 // The empty sidebar pushes the agency to pick a brand to do anything
-// meaningful. Reaching the cross-client clients view is implicit:
-// selecting "All clients" in the BrandPicker bounces /home → /clients
-// via the route-snap effect in App.jsx.
+// meaningful. Selecting "All clients" in the BrandPicker navigates
+// directly to /clients (AdminClientsView).
 const buildAllClientsNav = () => ({
   primary: [],
   secondary: [],
@@ -267,9 +266,9 @@ const Sidebar = ({
 
               {/* L+R Team is in the sidebar nav for agency users. The
                   cross-client clients view is reachable by selecting
-                  "All clients" in the BrandPicker (bounces /home →
-                  /clients via App.jsx's route-snap effect). Profile
-                  menu stays focused on personal account actions. */}
+                  "All clients" in the BrandPicker (navigates directly
+                  to /clients). Profile menu stays focused on personal
+                  account actions. */}
               <div className="user-menu-sep"/>
 
               <div className="user-menu-group">

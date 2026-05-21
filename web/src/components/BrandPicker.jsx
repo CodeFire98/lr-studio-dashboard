@@ -175,7 +175,7 @@ const BrandPicker = ({
                   agency users can't create brand workspaces (RPC
                   create_additional_brand_account blocks is_agency=true)
                   and the All-clients view is reachable by selecting
-                  "All clients" above (route-snap bounces /home → /clients).
+                  "All clients" above (navigates directly to /clients).
                   Removed 2026-05-21. */}
             </>
           ) : (

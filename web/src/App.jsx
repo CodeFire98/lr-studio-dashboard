@@ -779,10 +779,19 @@ const App = () => {
     // If the user has 2+ brand memberships and hasn't picked one yet, the
     // BrandSelectView is about to take over the screen — running a pending
     // submit now would fail with a null account.id and surface a misleading
-    // "no brand workspace" alert. Drop the pending action and re-prompt
-    // after they pick a brand (handled by the effect below).
+    // "no brand workspace" alert. Drop the pending action so it doesn't
+    // fire against a null brand context.
+    //
+    // We do NOT set an inviteBanner here anymore: the only callers of
+    // requireAuth in this codebase pass `afterSignIn = null` (a generic
+    // "open the login modal" flow with no follow-up), so the "resend your
+    // brief" copy was always a lie. Worse, the banner was never cleared
+    // after the user picked a brand — it persisted through the picker
+    // and onto whatever brand surface they landed on, only disappearing
+    // on hard refresh. If a future caller adds a real `afterSignIn`
+    // continuation that loses to brand-selection, surface that prompt
+    // itself in the modal/picker rather than via a sticky banner.
     if (profile?.requiresBrandSelection) {
-      setInviteBanner({ status: 'pending', text: 'Choose a brand workspace below, then resend your brief.' });
       setPendingAction(null);
       return;
     }
@@ -824,9 +833,15 @@ const App = () => {
     if (!id) return;
     if (auth?.isAgency) {
       setActiveAdminBrandId(id);
-      // Navigate to the brand's slug URL (or bare path for All-clients).
+      // Navigate to the brand's slug URL (or /clients for All-clients).
+      // We used to navigate('/home') here and rely on the route-snap
+      // effect below to bounce to /clients, but /home isn't a real route
+      // so parsePathToRoute returned `not_found` — and `not_found` is in
+      // `allClientsRoutes` (so the route-snap doesn't override it), which
+      // made the 404 view render for a full beat before any user
+      // interaction. Go straight to /clients.
       if (id === ALL_CLIENTS) {
-        navigate('/home');
+        navigate('/clients');
       } else {
         const match = brandAccounts.find((b) => b.id === id);
         if (match?.slug) {
