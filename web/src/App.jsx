@@ -870,16 +870,41 @@ const App = () => {
         } catch (e) { console.warn('refresh brand list failed', e); }
       } else {
         // Brand user added a new brand workspace via "Create new brand"
-        // in the picker. setActiveBrand rehydrates auth (new account +
-        // memberships); read it fresh for the slug so we navigate to the
-        // newly-created brand, not whatever was active before.
-        try {
-          await setActiveBrand(newId);
-          const freshAuth = readAuth();
-          if (freshAuth?.account?.slug) {
-            navigate(`/c/${freshAuth.account.slug}/calendar`);
-          }
-        } catch (e) { console.warn('switch to new brand failed', e); }
+        // in the picker. `createAdditionalBrand` (auth.js) ALREADY called
+        // setActiveBrand(newId) internally — so _cachedAuth is the new
+        // brand profile and its `memberships` list already includes the
+        // new brand row.
+        //
+        // DO NOT add another `await setActiveBrand(newId)` here: the
+        // extra microtask boundary lets the brand-side URL-sync effect
+        // (above, ~line 288) fire on the auth-change render with
+        // `auth.account.slug = newSlug` but `URL.slug = oldSlug`. It
+        // takes the URL as the source of truth, calls
+        // setActiveBrand(oldBrand.id) fire-and-forget, and snaps
+        // _cachedAuth back to the previous brand. By the time we resume
+        // and read `readAuth().account.slug`, we get the OLD slug and
+        // navigate to it — i.e. no URL change, user stuck on old brand.
+        //
+        // Instead: navigate SYNCHRONOUSLY using a memberships lookup
+        // (memberships always contains the new brand row regardless of
+        // which brand `auth.account` currently points at after the
+        // race). The URL update batches with the pending setAuth so the
+        // URL-sync effect sees URL.slug === auth.account.slug and
+        // early-returns; if the race already happened and auth got
+        // reset, the URL-sync effect re-fires after our navigate, finds
+        // newSlug in memberships, and calls setActiveBrand(newId) to
+        // converge auth onto the new brand.
+        const freshAuth = readAuth();
+        const newSlug = (freshAuth?.memberships || [])
+          .find((m) => m?.account?.id === newId)?.account?.slug;
+        if (newSlug) {
+          navigate(`/c/${newSlug}/calendar`);
+        } else {
+          console.warn(
+            'handleCreateBrand: new brand not found in memberships post-create',
+            { newId }
+          );
+        }
       }
       return newId;
     } catch (e) {
