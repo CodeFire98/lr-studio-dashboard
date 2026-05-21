@@ -5080,30 +5080,130 @@ input, textarea { font: inherit; color: inherit; }
   flex-shrink: 0;
 }
 
-/* Floating "Start new" button — appears top-right of the LinkAI page
-   only when there's a conversation to clear. Replaces the in-panel
-   header strip which was redundant with the app's topbar breadcrumb. */
-.link-ai-page-startnew {
-  position: absolute;
-  top: 14px;
-  right: var(--space-6);
-  z-index: 3;
+/* ---------- LinkAI history rail (PR C1) -----------------------------
+   The page surface now wraps the panel content in a flex row with a
+   240px-wide left rail listing past conversations (newest-first). The
+   "+ New chat" affordance lives at the top of the rail, replacing PR A's
+   floating "Start new" pill. */
+.link-ai-page-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+.link-ai-history {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 14px var(--space-3);
+  background: var(--bg-panel);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+.link-ai-history-new {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink-3);
-  font-size: 11.5px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12.5px;
   font-weight: 500;
-  padding: 5px 12px;
-  border-radius: 999px;
+  padding: 8px 12px;
+  border-radius: 8px;
   cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
-.link-ai-page-startnew:hover {
+.link-ai-history-new:hover {
   border-color: var(--accent);
   color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 6%, transparent);
+}
+.link-ai-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+.link-ai-history-empty {
+  font-size: 11.5px;
+  color: var(--ink-4);
+  padding: 12px 4px;
+  font-style: italic;
+}
+.link-ai-history-row {
+  display: flex;
+  align-items: stretch;
+  border-radius: 6px;
+  transition: background 120ms ease;
+}
+.link-ai-history-row:hover {
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+}
+.link-ai-history-row.is-active {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+.link-ai-history-row.is-active .link-ai-history-row-title {
+  color: var(--ink);
+  font-weight: 500;
+}
+.link-ai-history-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.link-ai-history-row-title {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.link-ai-history-row-time {
+  font-size: 10.5px;
+  color: var(--ink-4);
+}
+.link-ai-history-row-delete {
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  color: var(--ink-4);
+  cursor: pointer;
+  width: 24px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  border-radius: 4px;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+.link-ai-history-row:hover .link-ai-history-row-delete,
+.link-ai-history-row.is-active .link-ai-history-row-delete {
+  opacity: 1;
+}
+.link-ai-history-row-delete:hover {
+  color: var(--accent-ink);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+
+@media (max-width: 720px) {
+  /* On narrow screens, collapse the rail under the panel. PR D's full
+     redesign will replace this with a proper mobile drawer. */
+  .link-ai-page-wrapper { flex-direction: column; }
+  .link-ai-history {
+    flex: 0 0 auto;
+    max-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
 }
 
 /* Page-variant composer: textarea + Send on one row (no full-width
