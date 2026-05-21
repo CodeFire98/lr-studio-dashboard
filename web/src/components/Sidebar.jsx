@@ -60,8 +60,9 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, conversationsUnrea
 
 // Agency "All clients" nav — empty. Every workflow is brand-scoped now,
 // including Trends Radar (which moved to /c/:slug/trends on 2026-05-06).
-// Clients/Manage live inside BrandPicker; the empty sidebar pushes the
-// agency to pick a brand to do anything meaningful.
+// The empty sidebar pushes the agency to pick a brand to do anything
+// meaningful. Selecting "All clients" in the BrandPicker navigates
+// directly to /clients (AdminClientsView).
 const buildAllClientsNav = () => ({
   primary: [],
   secondary: [],
@@ -87,7 +88,6 @@ const Sidebar = ({
   isAllClientsMode,
   onSelectBrand,
   onCreateBrand,
-  onManageClients,
 }) => {
   const isGuest = !auth;
   const isAgency = !!auth?.isAgency;
@@ -152,7 +152,6 @@ const Sidebar = ({
           auth={auth}
           onSelectBrand={onSelectBrand}
           onCreateBrand={onCreateBrand}
-          onManageClients={onManageClients}
         />
       )}
 
@@ -265,9 +264,11 @@ const Sidebar = ({
                 </button>
               </div>
 
-              {/* Manage-clients lives in the BrandPicker dropdown; L+R
-                  Team is in the sidebar nav for agency users. Profile
-                  menu stays focused on personal account actions. */}
+              {/* L+R Team is in the sidebar nav for agency users. The
+                  cross-client clients view is reachable by selecting
+                  "All clients" in the BrandPicker (navigates directly
+                  to /clients). Profile menu stays focused on personal
+                  account actions. */}
               <div className="user-menu-sep"/>
 
               <div className="user-menu-group">

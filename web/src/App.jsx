@@ -779,10 +779,19 @@ const App = () => {
     // If the user has 2+ brand memberships and hasn't picked one yet, the
     // BrandSelectView is about to take over the screen — running a pending
     // submit now would fail with a null account.id and surface a misleading
-    // "no brand workspace" alert. Drop the pending action and re-prompt
-    // after they pick a brand (handled by the effect below).
+    // "no brand workspace" alert. Drop the pending action so it doesn't
+    // fire against a null brand context.
+    //
+    // We do NOT set an inviteBanner here anymore: the only callers of
+    // requireAuth in this codebase pass `afterSignIn = null` (a generic
+    // "open the login modal" flow with no follow-up), so the "resend your
+    // brief" copy was always a lie. Worse, the banner was never cleared
+    // after the user picked a brand — it persisted through the picker
+    // and onto whatever brand surface they landed on, only disappearing
+    // on hard refresh. If a future caller adds a real `afterSignIn`
+    // continuation that loses to brand-selection, surface that prompt
+    // itself in the modal/picker rather than via a sticky banner.
     if (profile?.requiresBrandSelection) {
-      setInviteBanner({ status: 'pending', text: 'Choose a brand workspace below, then resend your brief.' });
       setPendingAction(null);
       return;
     }
@@ -824,9 +833,15 @@ const App = () => {
     if (!id) return;
     if (auth?.isAgency) {
       setActiveAdminBrandId(id);
-      // Navigate to the brand's slug URL (or bare path for All-clients).
+      // Navigate to the brand's slug URL (or /clients for All-clients).
+      // We used to navigate('/home') here and rely on the route-snap
+      // effect below to bounce to /clients, but /home isn't a real route
+      // so parsePathToRoute returned `not_found` — and `not_found` is in
+      // `allClientsRoutes` (so the route-snap doesn't override it), which
+      // made the 404 view render for a full beat before any user
+      // interaction. Go straight to /clients.
       if (id === ALL_CLIENTS) {
-        navigate('/home');
+        navigate('/clients');
       } else {
         const match = brandAccounts.find((b) => b.id === id);
         if (match?.slug) {
@@ -847,64 +862,48 @@ const App = () => {
     }
   };
 
+  // Brand-user path only — `createAdditionalBrand` (auth.js) blocks
+  // is_agency=true at the RPC layer (`create_additional_brand_account`),
+  // so the agency "Add a client" button was always a no-op and has been
+  // removed from BrandPicker. This handler is wired only into the brand
+  // user "Create new brand" button.
+  //
+  // `createAdditionalBrand` already calls setActiveBrand(newId)
+  // internally — so _cachedAuth is the new brand profile and its
+  // `memberships` list already includes the new brand row.
+  //
+  // DO NOT add another `await setActiveBrand(newId)` here: the extra
+  // microtask boundary lets the brand-side URL-sync effect (above,
+  // ~line 288) fire on the auth-change render with
+  // `auth.account.slug = newSlug` but `URL.slug = oldSlug`. It takes
+  // the URL as the source of truth, calls setActiveBrand(oldBrand.id)
+  // fire-and-forget, and snaps _cachedAuth back to the previous brand.
+  // By the time we resume and read `readAuth().account.slug`, we get
+  // the OLD slug and navigate to it — i.e. no URL change, user stuck
+  // on old brand.
+  //
+  // Instead: navigate SYNCHRONOUSLY using a memberships lookup
+  // (memberships always contains the new brand row regardless of which
+  // brand `auth.account` currently points at after the race). The URL
+  // update batches with the pending setAuth so the URL-sync effect
+  // sees URL.slug === auth.account.slug and early-returns; if the
+  // race already happened and auth got reset, the URL-sync effect
+  // re-fires after our navigate, finds newSlug in memberships, and
+  // calls setActiveBrand(newId) to converge auth onto the new brand.
   const handleCreateBrand = async () => {
     try {
       const newId = await promptCreateBrand();
       if (!newId) return null;
-      // This function owns post-create navigation for BOTH paths (agency
-      // and brand). The previous "create then onSelectBrand(newId)" call
-      // pattern from BrandPicker lost to a stale-closure race: the picker
-      // ran handleSelectBrand against the pre-create brandAccounts /
-      // auth.memberships, never found the new brand, never navigated —
-      // and the URL-sync effect (App.jsx ~265) then snapped activeAdminBrandId
-      // back to whatever brand the still-old URL slug pointed at.
-      if (auth?.isAgency) {
-        try {
-          const rows = await loadBrandAccounts();
-          setBrandAccounts(rows);
-          const created = rows.find((b) => b.id === newId);
-          if (created?.slug) {
-            setActiveAdminBrandId(newId);
-            navigate(`/c/${created.slug}/calendar`);
-          }
-        } catch (e) { console.warn('refresh brand list failed', e); }
+      const freshAuth = readAuth();
+      const newSlug = (freshAuth?.memberships || [])
+        .find((m) => m?.account?.id === newId)?.account?.slug;
+      if (newSlug) {
+        navigate(`/c/${newSlug}/calendar`);
       } else {
-        // Brand user added a new brand workspace via "Create new brand"
-        // in the picker. `createAdditionalBrand` (auth.js) ALREADY called
-        // setActiveBrand(newId) internally — so _cachedAuth is the new
-        // brand profile and its `memberships` list already includes the
-        // new brand row.
-        //
-        // DO NOT add another `await setActiveBrand(newId)` here: the
-        // extra microtask boundary lets the brand-side URL-sync effect
-        // (above, ~line 288) fire on the auth-change render with
-        // `auth.account.slug = newSlug` but `URL.slug = oldSlug`. It
-        // takes the URL as the source of truth, calls
-        // setActiveBrand(oldBrand.id) fire-and-forget, and snaps
-        // _cachedAuth back to the previous brand. By the time we resume
-        // and read `readAuth().account.slug`, we get the OLD slug and
-        // navigate to it — i.e. no URL change, user stuck on old brand.
-        //
-        // Instead: navigate SYNCHRONOUSLY using a memberships lookup
-        // (memberships always contains the new brand row regardless of
-        // which brand `auth.account` currently points at after the
-        // race). The URL update batches with the pending setAuth so the
-        // URL-sync effect sees URL.slug === auth.account.slug and
-        // early-returns; if the race already happened and auth got
-        // reset, the URL-sync effect re-fires after our navigate, finds
-        // newSlug in memberships, and calls setActiveBrand(newId) to
-        // converge auth onto the new brand.
-        const freshAuth = readAuth();
-        const newSlug = (freshAuth?.memberships || [])
-          .find((m) => m?.account?.id === newId)?.account?.slug;
-        if (newSlug) {
-          navigate(`/c/${newSlug}/calendar`);
-        } else {
-          console.warn(
-            'handleCreateBrand: new brand not found in memberships post-create',
-            { newId }
-          );
-        }
+        console.warn(
+          'handleCreateBrand: new brand not found in memberships post-create',
+          { newId }
+        );
       }
       return newId;
     } catch (e) {
@@ -912,8 +911,6 @@ const App = () => {
       return null;
     }
   };
-
-  const handleManageClients = () => setRoute({ view: 'clients' });
 
   // ----- Breadcrumb for topbar -----
   const inAllClients = isAllClientsMode;
@@ -1196,7 +1193,6 @@ const App = () => {
         isAllClientsMode={isAllClientsMode}
         onSelectBrand={handleSelectBrand}
         onCreateBrand={handleCreateBrand}
-        onManageClients={handleManageClients}
       />
       <div className="main">
         {inviteBanner && (

@@ -41,8 +41,7 @@ const BrandPicker = ({
   auth,
   // Handlers
   onSelectBrand,        // (id) => void — id may be '__all__' for agency
-  onCreateBrand,        // () => Promise<newAccountId | null>
-  onManageClients,      // agency only
+  onCreateBrand,        // () => Promise<newAccountId | null> — brand callers only
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -172,30 +171,12 @@ const BrandPicker = ({
                   );
                 })
               )}
-              <div className="brand-picker-sep"/>
-              <button
-                type="button"
-                className="brand-picker-row"
-                onClick={async () => {
-                  setOpen(false);
-                  // onCreateBrand (handleCreateBrand in App.jsx) now owns
-                  // the navigation so it can use the freshly-loaded brand
-                  // list. Don't also call onSelectBrand here — it would
-                  // run against the stale closure and never navigate.
-                  await onCreateBrand?.();
-                }}
-              >
-                <Icon name="plus" size={13}/>
-                <span>Add a client</span>
-              </button>
-              <button
-                type="button"
-                className="brand-picker-row"
-                onClick={() => { setOpen(false); onManageClients?.(); }}
-              >
-                <Icon name="settings" size={13}/>
-                <span>Manage clients</span>
-              </button>
+              {/* "Add a client" + "Manage clients" used to live here, but
+                  agency users can't create brand workspaces (RPC
+                  create_additional_brand_account blocks is_agency=true)
+                  and the All-clients view is reachable by selecting
+                  "All clients" above (navigates directly to /clients).
+                  Removed 2026-05-21. */}
             </>
           ) : (
             <>
