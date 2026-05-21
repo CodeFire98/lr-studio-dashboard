@@ -5129,6 +5129,26 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--accent);
   background: color-mix(in oklab, var(--accent) 6%, transparent);
 }
+.link-ai-history-new:disabled,
+.link-ai-history-new-collapsed:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+/* Rail rows in disabled (mid-generation) state — grey them out so the
+   user reads "this is unavailable right now"; tooltip on the inner
+   button explains why ("wait or hit Stop"). The currently-active
+   row stays clickable-looking since the user IS already on it. */
+.link-ai-history-row.is-disabled {
+  opacity: 0.5;
+}
+.link-ai-history-row.is-disabled .link-ai-history-row-main {
+  cursor: not-allowed;
+}
+.link-ai-history-row-main:disabled,
+.link-ai-history-row-delete:disabled {
+  cursor: not-allowed;
+}
 /* Mini "+" icon-only button when the rail is collapsed — same action
    as the full "New chat" button. */
 .link-ai-history-new-collapsed {
@@ -5449,6 +5469,173 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 10.5px;
   color: var(--ink-4);
   letter-spacing: 0.02em;
+}
+
+/* ---------- LinkAI composer attachments (PR C2) ---------------------
+   Paperclip button left of the textarea opens a file picker. Files can
+   also be drag-and-dropped onto the LinkAI page; .link-ai-page-wrapper
+   handles the dropzone events and renders a translucent overlay
+   (.link-ai-drop-overlay) while a file is hovering over the page.
+   Queued attachments render as chips in .link-ai-attach-tray above
+   the composer row. */
+.link-ai-attach-btn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 8px;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.link-ai-attach-btn:hover {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
+}
+.link-ai-attach-btn:disabled {
+  color: var(--ink-5);
+  background: var(--surface-2);
+  cursor: not-allowed;
+  border-color: var(--line);
+}
+.link-ai-attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.link-ai-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  max-width: 280px;
+  position: relative;
+}
+.link-ai-attach-thumb {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.link-ai-attach-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.link-ai-attach-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.link-ai-attach-size {
+  color: var(--ink-4);
+  font-size: 10.5px;
+}
+.link-ai-attach-remove {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--ink-4);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.link-ai-attach-remove:hover {
+  color: var(--accent-ink);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+.link-ai-attach-error {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+/* Attached image rendered inline on the user's message bubble.
+   Clickable — opens full-size in a new tab. */
+.link-ai-attachment-img {
+  display: inline-block;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  max-width: 320px;
+  cursor: zoom-in;
+}
+.link-ai-attachment-img img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.link-ai-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  margin-bottom: 4px;
+}
+
+/* Drop overlay — translucent fill of the whole LinkAI page area with
+   a centered card while the user is dragging a file over. The wrapper
+   already owns the dropzone events; this is the visual feedback. */
+.link-ai-page-wrapper {
+  position: relative;
+}
+.link-ai-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  /* Outline the dropzone with a dashed accent border for clarity. */
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+}
+.link-ai-drop-overlay-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 22px 28px;
+  text-align: center;
+  color: var(--ink);
+  box-shadow: 0 20px 40px -20px rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
+}
+.link-ai-drop-overlay-title {
+  margin-top: 8px;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.link-ai-drop-overlay-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-4);
 }
 .link-ai-welcome--page {
   background: transparent;

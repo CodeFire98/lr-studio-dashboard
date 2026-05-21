@@ -3,7 +3,26 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-21 (**LinkAI PR C4 — collapsible history rail + side-by-side artifact pane with explicit "Add to calendar".** Built ahead of PR C2 (attachments) and C3 (@-mentions) at the user's request — they wanted the side panel + rail collapse together since opening an artifact must auto-collapse the rail to keep the three-column layout sane.
+**Last updated:** 2026-05-21 (**LinkAI PR C2 — image attachments in the composer (paperclip + drag-drop).** The LinkAI composer now accepts image attachments. Two entry points: a paperclip button at the left of the composer row (opens the native file picker), and drag-and-drop anywhere on the LinkAI page (renders a translucent overlay with a dashed accent border + "Drop to attach" card while a file is dragged over the page).
+
+**Constraints (client-enforced):**
+- Mime types: `image/png`, `image/jpeg`, `image/webp`, `image/gif` (the four Claude vision supports). PDFs deferred.
+- 5 MB per file (Claude's vision limit).
+- 4 attachments per message.
+
+Each accepted file is read as a base64 `data:` URL via `FileReader.readAsDataURL` and queued as an `{ id, name, mimeType, size, dataUrl }` entry in component state. Queued files render as chips in a `.link-ai-attach-tray` above the composer row — thumbnail (for images) + name + size + remove ×. First rejection per add-batch surfaces as an inline error chip in the same tray.
+
+**Send-side wiring.** `handleSend` now builds a UIMessage `parts` array: `{type:'file', mediaType, filename, url: dataUrl}` for each attachment, followed by `{type:'text', text}` if there's a prompt. Attachment-only sends (no text) are allowed — "look at this and tell me what you think" with just a dropped image is a real use case. The AI SDK's `useChat.sendMessage` accepts the parts array directly; server-side `convertToModelMessages` in `web/api/ai/chat.ts` maps `file` parts to Claude's vision input blocks with no chat.ts change needed (the AI SDK v6 + Anthropic provider handles it transparently).
+
+**Render in chat thread.** New `file` branch in `renderPart`: image mime types render as a clickable thumbnail (`.link-ai-attachment-img`) on the user's message bubble (max-width 320px, opens full size in a new tab); other file types render as a paperclip-icon chip with filename.
+
+**Persistence.** Attachments are deliberately NOT persisted to localStorage. A 5 MB base64 data URL × multiple messages would torch the 5–10 MB localStorage quota in ~2 turns. The chat stays multimodal in-memory during the session; on reload a small breadcrumb text part (`_[attached N image(s) — not retained after reload]_`) replaces the file parts so the conversation still reads coherently. A future PR can move attachment storage to Supabase Storage with stable URLs and replace the breadcrumb pattern with proper rehydration.
+
+**Composer hint** updated to `⌘↩ to send · drop an image to attach` so users discover the feature without docs.
+
+Pure client + CSS change. No schema/migration/env-var. Sections touched: Recent changes log; `Last updated`. ~280 LOC added between `LinkAIPanel.jsx` (state, helpers, handlers, JSX) and `app.css` (paperclip button, attach tray + chips, drop overlay, in-message attachment renderers).)
+
+**Previous (2026-05-21):** (**LinkAI PR C4 — collapsible history rail + side-by-side artifact pane with explicit "Add to calendar".** Built ahead of PR C2 (attachments) and C3 (@-mentions) at the user's request — they wanted the side panel + rail collapse together since opening an artifact must auto-collapse the rail to keep the three-column layout sane.
 
 **1) Rail collapse.** New `.link-ai-history-controls` row at the top of the rail with a chevron toggle (`<` to collapse, `>` to expand) and the existing "+ New chat" button. Collapsed state is a 44px-wide strip with just the toggle + an icon-only "+" button — the rest of the rail rolls up. User preference persists per-user (not per-brand — collapse intent is global) at `lr_link_ai_rail_collapsed_${userId}` (`"1"` / `"0"`). When the artifact pane opens, the rail is *temporarily* forced collapsed (`railCollapsed = railManuallyCollapsed || !!artifact`) without touching the persisted preference; closing the artifact restores it.
 
