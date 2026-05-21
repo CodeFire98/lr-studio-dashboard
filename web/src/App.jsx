@@ -851,12 +851,60 @@ const App = () => {
     try {
       const newId = await promptCreateBrand();
       if (!newId) return null;
-      // Agency: refresh the picker list so the new brand shows up.
+      // This function owns post-create navigation for BOTH paths (agency
+      // and brand). The previous "create then onSelectBrand(newId)" call
+      // pattern from BrandPicker lost to a stale-closure race: the picker
+      // ran handleSelectBrand against the pre-create brandAccounts /
+      // auth.memberships, never found the new brand, never navigated —
+      // and the URL-sync effect (App.jsx ~265) then snapped activeAdminBrandId
+      // back to whatever brand the still-old URL slug pointed at.
       if (auth?.isAgency) {
         try {
           const rows = await loadBrandAccounts();
           setBrandAccounts(rows);
+          const created = rows.find((b) => b.id === newId);
+          if (created?.slug) {
+            setActiveAdminBrandId(newId);
+            navigate(`/c/${created.slug}/calendar`);
+          }
         } catch (e) { console.warn('refresh brand list failed', e); }
+      } else {
+        // Brand user added a new brand workspace via "Create new brand"
+        // in the picker. `createAdditionalBrand` (auth.js) ALREADY called
+        // setActiveBrand(newId) internally — so _cachedAuth is the new
+        // brand profile and its `memberships` list already includes the
+        // new brand row.
+        //
+        // DO NOT add another `await setActiveBrand(newId)` here: the
+        // extra microtask boundary lets the brand-side URL-sync effect
+        // (above, ~line 288) fire on the auth-change render with
+        // `auth.account.slug = newSlug` but `URL.slug = oldSlug`. It
+        // takes the URL as the source of truth, calls
+        // setActiveBrand(oldBrand.id) fire-and-forget, and snaps
+        // _cachedAuth back to the previous brand. By the time we resume
+        // and read `readAuth().account.slug`, we get the OLD slug and
+        // navigate to it — i.e. no URL change, user stuck on old brand.
+        //
+        // Instead: navigate SYNCHRONOUSLY using a memberships lookup
+        // (memberships always contains the new brand row regardless of
+        // which brand `auth.account` currently points at after the
+        // race). The URL update batches with the pending setAuth so the
+        // URL-sync effect sees URL.slug === auth.account.slug and
+        // early-returns; if the race already happened and auth got
+        // reset, the URL-sync effect re-fires after our navigate, finds
+        // newSlug in memberships, and calls setActiveBrand(newId) to
+        // converge auth onto the new brand.
+        const freshAuth = readAuth();
+        const newSlug = (freshAuth?.memberships || [])
+          .find((m) => m?.account?.id === newId)?.account?.slug;
+        if (newSlug) {
+          navigate(`/c/${newSlug}/calendar`);
+        } else {
+          console.warn(
+            'handleCreateBrand: new brand not found in memberships post-create',
+            { newId }
+          );
+        }
       }
       return newId;
     } catch (e) {
@@ -1077,6 +1125,36 @@ const App = () => {
 
   const isGuest = !auth;
 
+  // AI Co-pilot eligibility — open to every signed-in user (agency or
+  // brand) once a brand is selected. The route itself auth-checks brand
+  // membership + enforces the 50/day brand quota (agency uncapped); the
+  // system prompt branches on caller role. The Bamboo Bear-only
+  // allowlist was dropped 2026-05-19.
+  //
+  // Computed BEFORE the brand-selection early return below so the
+  // copilot-auto-close useEffect below it always runs — otherwise the
+  // hook count changes between renders when `requiresBrandSelection`
+  // flips (login → pick brand, brand-delete → back to picker), tripping
+  // React error #310 "Rendered more hooks than during the previous
+  // render" and surfacing the error boundary's "snag" page.
+  const copilotEligible =
+    !!auth?.id &&
+    !isAllClientsMode &&
+    !!scopeAccountId;
+
+  // Inline AI eligibility — same gate as copilotEligible. Kept as a
+  // separate prop so future tightening (e.g. inline-only for one user
+  // class) can split them again without touching every gate.
+  const aiInlineEligible = copilotEligible;
+
+  // Auto-close the panel if the active brand context disappears
+  // (e.g. user switches to All-clients mode via BrandPicker).
+  // MUST stay above the early return below — see comment on
+  // `copilotEligible`.
+  useEffect(() => {
+    if (!copilotEligible && copilotOpen) setCopilotOpen(false);
+  }, [copilotEligible, copilotOpen]);
+
   // Brand-selection gate: show picker when a signed-in brand user belongs to
   // 2+ brands and hasn't picked one yet. Skip for agency and guests.
   // Note: rendered WITHOUT the `.app` wrapper — that's a grid with a sidebar
@@ -1093,27 +1171,6 @@ const App = () => {
   // Brand "Got ideas?" CTA — quick way to jump to the composer from any
   // brand-side surface. Agency staff see Inbox in the sidebar instead.
   const showGotIdeasCta = !!auth && !auth.isAgency && route.view !== "ideate";
-
-  // AI Co-pilot eligibility — open to every signed-in user (agency or
-  // brand) once a brand is selected. The route itself auth-checks brand
-  // membership + enforces the 50/day brand quota (agency uncapped); the
-  // system prompt branches on caller role. The Bamboo Bear-only
-  // allowlist was dropped 2026-05-19.
-  const copilotEligible =
-    !!auth?.id &&
-    !isAllClientsMode &&
-    !!scopeAccountId;
-
-  // Inline AI eligibility — same gate as copilotEligible. Kept as a
-  // separate prop so future tightening (e.g. inline-only for one user
-  // class) can split them again without touching every gate.
-  const aiInlineEligible = copilotEligible;
-
-  // Auto-close the panel if the active brand context disappears
-  // (e.g. user switches to All-clients mode via BrandPicker).
-  useEffect(() => {
-    if (!copilotEligible && copilotOpen) setCopilotOpen(false);
-  }, [copilotEligible, copilotOpen]);
 
   return (
     <div

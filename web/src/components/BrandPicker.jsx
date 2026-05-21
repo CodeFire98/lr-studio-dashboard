@@ -178,8 +178,11 @@ const BrandPicker = ({
                 className="brand-picker-row"
                 onClick={async () => {
                   setOpen(false);
-                  const newId = await onCreateBrand?.();
-                  if (newId) onSelectBrand?.(newId);
+                  // onCreateBrand (handleCreateBrand in App.jsx) now owns
+                  // the navigation so it can use the freshly-loaded brand
+                  // list. Don't also call onSelectBrand here — it would
+                  // run against the stale closure and never navigate.
+                  await onCreateBrand?.();
                 }}
               >
                 <Icon name="plus" size={13}/>
@@ -237,8 +240,9 @@ const BrandPicker = ({
                 className="brand-picker-row"
                 onClick={async () => {
                   setOpen(false);
-                  const newId = await onCreateBrand?.();
-                  if (newId) onSelectBrand?.(newId);
+                  // Same pattern as agency "Add a client" above:
+                  // onCreateBrand owns the navigation.
+                  await onCreateBrand?.();
                 }}
               >
                 <Icon name="plus" size={13}/>
