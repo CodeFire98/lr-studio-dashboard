@@ -561,6 +561,125 @@ const LinkAIPanel = ({
     setArtifact(null);
   }, []);
 
+  // ----- Composer attachments (PR C2) ----------------------------------
+  //
+  // Drag-drop an image (or click the paperclip button) into the composer
+  // to attach it. The image is read as a base64 data: URL and passed
+  // through to Claude as an AI SDK `file` part on the next sendMessage.
+  // `convertToModelMessages` server-side maps it to Claude's vision
+  // input automatically — no /api/ai/chat change required.
+  //
+  // Constraints:
+  //   - Only image/* mime types accepted (Claude vision supports PNG,
+  //     JPEG, GIF, WebP). PDFs deferred to a future PR.
+  //   - 5 MB per file (Claude's vision limit is 5 MB per image).
+  //   - 4 attachments per message (Claude allows up to 100 images in a
+  //     single request, but a chat composer rarely needs more than a
+  //     handful and the UI gets cramped beyond 4).
+  //   - Attachments are NOT persisted to localStorage — see the persist
+  //     effect above. On reload, the data URLs would balloon the v3
+  //     conv key past the 5 MB quota fast. Acceptable tradeoff: image
+  //     is "in this turn only", which is also how the chat reads.
+  const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+  const MAX_ATTACHMENTS_PER_MESSAGE = 4;
+  const ACCEPTED_MIMES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState(null);
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef(null);
+  const dragCounterRef = useRef(0);
+
+  const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error(`Could not read "${file.name}".`));
+    reader.readAsDataURL(file);
+  });
+
+  const isAcceptedMime = (mime) =>
+    typeof mime === "string" && ACCEPTED_MIMES.includes(mime.toLowerCase());
+
+  const addFiles = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setAttachmentError(null);
+
+    const accepted = [];
+    let firstError = null;
+    for (const f of files) {
+      if (attachments.length + accepted.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+        firstError = firstError || `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message.`;
+        break;
+      }
+      if (!isAcceptedMime(f.type)) {
+        firstError = firstError || `"${f.name}" isn't a supported image type (PNG, JPEG, WebP, GIF).`;
+        continue;
+      }
+      if (f.size > MAX_ATTACHMENT_BYTES) {
+        firstError = firstError || `"${f.name}" exceeds the 5 MB attachment limit.`;
+        continue;
+      }
+      try {
+        const dataUrl = await readAsDataUrl(f);
+        accepted.push({
+          id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          name: f.name,
+          mimeType: f.type,
+          size: f.size,
+          dataUrl,
+        });
+      } catch (e) {
+        firstError = firstError || (e?.message || `Could not read "${f.name}".`);
+      }
+    }
+    if (accepted.length > 0) setAttachments((prev) => [...prev, ...accepted]);
+    if (firstError) setAttachmentError(firstError);
+  }, [attachments.length]);
+
+  const removeAttachment = (id) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setAttachmentError(null);
+  };
+
+  // Drag-and-drop. Track enter/leave on a refcounter so overlapping
+  // child enter/leave events don't flicker the overlay.
+  const onDragEnter = (e) => {
+    e.preventDefault();
+    if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+    dragCounterRef.current += 1;
+    setDragActive(true);
+  };
+  const onDragOver = (e) => {
+    // Required so the browser allows the drop.
+    e.preventDefault();
+  };
+  const onDragLeave = (e) => {
+    e.preventDefault();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setDragActive(false);
+  };
+  const onDrop = (e) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setDragActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) addFiles(files);
+  };
+
+  const onPickClick = () => fileInputRef.current?.click();
+  const onFileInputChange = (e) => {
+    addFiles(e.target.files);
+    // Reset so picking the same file twice in a row fires the change.
+    e.target.value = "";
+  };
+
+  const formatAttachmentSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   // One-time legacy v2 → v3 import (drawer → page rail) per (user, brand).
   // Runs on mount and on brand switch. Idempotent (importLegacyV2ToIndex
   // bails when the v3 index is non-empty).
@@ -599,13 +718,42 @@ const LinkAIPanel = ({
 
   // Persist on every messages change. Page variant also bumps the index
   // entry's updatedAt + back-fills the title if it was still the default.
+  //
+  // Attachment file parts get stripped before persistence (PR C2): a
+  // 5 MB base64 data URL on every saved message would torch the
+  // localStorage 5–10 MB quota in a handful of turns. The chat stays
+  // multimodal in-memory during the session; on reload only the text
+  // (and tool parts) remain. A small placeholder text part flags that
+  // attachments were here, so the conversation still makes narrative
+  // sense after reload.
+  const stripAttachmentsForPersist = (msgs) =>
+    msgs.map((m) => {
+      if (!m || !Array.isArray(m.parts)) return m;
+      let imageCount = 0;
+      const kept = m.parts.filter((p) => {
+        if (p?.type === "file") { imageCount += 1; return false; }
+        return true;
+      });
+      if (imageCount === 0) return m;
+      // Prepend a tiny breadcrumb so the user can see on reload that
+      // their previous turn had images attached, even if the data
+      // itself is gone.
+      const breadcrumb = {
+        type: "text",
+        text: imageCount === 1
+          ? "_[attached 1 image — not retained after reload]_"
+          : `_[attached ${imageCount} images — not retained after reload]_`,
+      };
+      return { ...m, parts: [breadcrumb, ...kept] };
+    });
+
   useEffect(() => {
     if (!isPageVariant) {
-      persistMessages(userId, accountId, messages);
+      persistMessages(userId, accountId, stripAttachmentsForPersist(messages));
       return;
     }
     if (!activeConvId) return; // nothing to persist until the convo exists
-    saveConvMessages(userId, accountId, activeConvId, messages);
+    saveConvMessages(userId, accountId, activeConvId, stripAttachmentsForPersist(messages));
     setConvIndex((prev) => {
       const entry = prev.find((c) => c.id === activeConvId);
       if (!entry) return prev;
@@ -633,13 +781,22 @@ const LinkAIPanel = ({
 
   const handleSend = () => {
     const text = draft.trim();
-    if (!text || isBusy) return;
+    // Allow attachment-only sends (no text). Useful for "look at this
+    // and tell me what you think" — paste/drop an image, hit Send.
+    if ((!text && attachments.length === 0) || isBusy) return;
     // Page variant: if no active conversation, mint one just-in-time so
     // the message can be persisted from the very first token.
     if (isPageVariant && !activeConvId) {
       const id = makeConvId();
       const now = new Date().toISOString();
-      const title = text.length > 50 ? text.slice(0, 47).trimEnd() + "…" : text;
+      // Title prefers the text; falls back to a generic attachments
+      // label if the message is image-only.
+      const titleSeed = text.length > 0
+        ? text
+        : (attachments.length === 1
+            ? `Image: ${attachments[0].name}`
+            : `${attachments.length} images`);
+      const title = titleSeed.length > 50 ? titleSeed.slice(0, 47).trimEnd() + "…" : titleSeed;
       setConvIndex((prev) => {
         const next = [{ id, title, createdAt: now, updatedAt: now }, ...prev];
         saveConvIndex(userId, accountId, next);
@@ -647,8 +804,24 @@ const LinkAIPanel = ({
       });
       setActiveConvId(id);
     }
+    // Build the parts array. AI SDK v6 expects `type: 'file'` for
+    // images/files; the server's convertToModelMessages turns these
+    // into Claude's vision image blocks. Text goes last so the model
+    // sees the attachments first, then the prompt referring to them.
+    const parts = [];
+    for (const a of attachments) {
+      parts.push({
+        type: "file",
+        mediaType: a.mimeType,
+        filename: a.name,
+        url: a.dataUrl,
+      });
+    }
+    if (text) parts.push({ type: "text", text });
     setDraft("");
-    sendMessage({ text });
+    setAttachments([]);
+    setAttachmentError(null);
+    sendMessage({ parts });
   };
 
   const handleKeyDown = (e) => {
@@ -877,13 +1050,61 @@ const LinkAIPanel = ({
           }}
         />
         {isPageVariant ? (
-          /* Page variant: textarea + Send button on a single row
-             (Conversations-style), with a tiny "⌘↩ to send" hint
-             below. Token-count meta is dropped here — it's a
-             developer/debug detail that ate space without earning
-             attention. */
+          /* Page variant: textarea + paperclip + Send button on a
+             single row (Conversations-style), with a tiny "⌘↩ to send"
+             hint below. Attachment chips appear above the row when
+             files are queued. */
           <>
+            {(attachments.length > 0 || attachmentError) && (
+              <div className="link-ai-attach-tray">
+                {attachments.map((a) => (
+                  <div key={a.id} className="link-ai-attach-chip">
+                    {a.mimeType.startsWith("image/") && (
+                      <img className="link-ai-attach-thumb" src={a.dataUrl} alt={a.name} />
+                    )}
+                    <div className="link-ai-attach-meta">
+                      <span className="link-ai-attach-name" title={a.name}>{a.name}</span>
+                      <span className="link-ai-attach-size">{formatAttachmentSize(a.size)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="link-ai-attach-remove"
+                      onClick={() => removeAttachment(a.id)}
+                      aria-label={`Remove ${a.name}`}
+                      title="Remove"
+                    >
+                      <Icon name="x" size={10} />
+                    </button>
+                  </div>
+                ))}
+                {attachmentError && (
+                  <div className="link-ai-attach-error" role="alert">{attachmentError}</div>
+                )}
+              </div>
+            )}
             <div className="link-ai-page-row">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_MIMES.join(",")}
+                multiple
+                hidden
+                onChange={onFileInputChange}
+              />
+              <button
+                type="button"
+                className="link-ai-attach-btn"
+                onClick={onPickClick}
+                disabled={isBusy || attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+                title={
+                  attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE
+                    ? `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`
+                    : "Attach image (PNG, JPEG, WebP, GIF — 5 MB max)"
+                }
+                aria-label="Attach image"
+              >
+                <Icon name="paperclip" size={14} />
+              </button>
               <textarea
                 ref={textareaRef}
                 value={draft}
@@ -899,13 +1120,13 @@ const LinkAIPanel = ({
                 <button
                   className="link-ai-send"
                   onClick={handleSend}
-                  disabled={!draft.trim()}
+                  disabled={!draft.trim() && attachments.length === 0}
                 >
                   Send
                 </button>
               )}
             </div>
-            <div className="link-ai-page-hint">⌘↩ to send</div>
+            <div className="link-ai-page-hint">⌘↩ to send · drop an image to attach</div>
           </>
         ) : (
           <>
@@ -949,7 +1170,13 @@ const LinkAIPanel = ({
 
   // Page variant: history rail + panel content + (optional) artifact pane.
   return (
-    <div className="link-ai-page-wrapper">
+    <div
+      className={"link-ai-page-wrapper" + (dragActive ? " is-drag-active" : "")}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <aside
         className={"link-ai-history" + (railCollapsed ? " link-ai-history--collapsed" : "")}
         aria-label="LinkAI chat history"
@@ -1013,6 +1240,17 @@ const LinkAIPanel = ({
             setArtifact((prev) => (prev ? { ...prev, committedId: planId } : prev))
           }
         />
+      )}
+      {dragActive && (
+        <div className="link-ai-drop-overlay" aria-hidden>
+          <div className="link-ai-drop-overlay-card">
+            <Icon name="paperclip" size={24} />
+            <div className="link-ai-drop-overlay-title">Drop to attach</div>
+            <div className="link-ai-drop-overlay-sub">
+              PNG, JPEG, WebP, or GIF · up to {MAX_ATTACHMENTS_PER_MESSAGE} files, 5 MB each
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1391,6 +1629,32 @@ function renderPart(part, idx, messageId, role, ctx) {
   }
   if (part.type === "step-start" || part.type === "step-end") {
     return null; // SDK-internal step markers; we don't render these.
+  }
+  if (part.type === "file") {
+    // Inline attachment shown on the user's message bubble. Images get
+    // a clickable thumbnail (click → open the full image in a new tab);
+    // anything else (PDFs etc., future) gets a filename chip.
+    const isImage = typeof part.mediaType === "string" && part.mediaType.startsWith("image/");
+    if (isImage) {
+      return (
+        <a
+          key={`${messageId}-f${idx}`}
+          className="link-ai-attachment-img"
+          href={part.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={part.filename || "Attached image"}
+        >
+          <img src={part.url} alt={part.filename || "Attached image"} loading="lazy" />
+        </a>
+      );
+    }
+    return (
+      <div key={`${messageId}-f${idx}`} className="link-ai-attachment-chip">
+        <Icon name="paperclip" size={11} />
+        <span>{part.filename || "attachment"}</span>
+      </div>
+    );
   }
   if (typeof part.type === "string" && part.type.startsWith("tool-")) {
     const toolName = part.type.slice("tool-".length);
