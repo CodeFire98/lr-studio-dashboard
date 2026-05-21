@@ -532,6 +532,14 @@ const LinkAIPanel = ({
   const [convIndex, setConvIndex] = useState(() =>
     isPageVariant ? loadConvIndex(userId, accountId) : []
   );
+  // Ref that lets handleSend tell the hydrate effect "this conv id was
+  // just minted inside handleSend; the SDK's messages array already
+  // holds the user's optimistic first message — don't blow it away by
+  // calling setMessages([])". Without this, the first message of a
+  // brand-new conversation disappeared the moment activeConvId changed
+  // (the hydrate effect read an empty localStorage entry and wiped the
+  // SDK state out from under the in-flight stream).
+  const justMintedConvIdRef = useRef(null);
   const [activeConvId, setActiveConvId] = useState(() => {
     if (!isPageVariant) return null;
     const idx = loadConvIndex(userId, accountId);
@@ -706,8 +714,21 @@ const LinkAIPanel = ({
 
   // Hydrate `useChat` with the active conversation's messages whenever it
   // changes. Drawer variant falls back to the legacy single-conv key.
+  //
+  // BUG GUARD: when handleSend just minted activeConvId for a brand-new
+  // chat, the SDK's messages array already holds the user's optimistic
+  // first message — reading the (empty) localStorage entry and
+  // setMessages([])-ing it would wipe that message out from under the
+  // in-flight stream, leaving the user staring at an assistant reply
+  // with no visible prompt. Skip the hydrate on that specific
+  // transition; the persist effect below will write the message out
+  // as soon as the SDK adds it to the array.
   useEffect(() => {
     if (isPageVariant) {
+      if (activeConvId && justMintedConvIdRef.current === activeConvId) {
+        justMintedConvIdRef.current = null;
+        return;
+      }
       const msgs = activeConvId ? loadConvMessages(userId, accountId, activeConvId) : [];
       setMessages(msgs);
     } else {
@@ -802,6 +823,11 @@ const LinkAIPanel = ({
         saveConvIndex(userId, accountId, next);
         return next;
       });
+      // Tell the hydrate effect to skip its setMessages([]) on this
+      // activeConvId change — the SDK's messages array is about to
+      // hold the user's first message (added by sendMessage below)
+      // and that's the truth, not the empty localStorage entry.
+      justMintedConvIdRef.current = id;
       setActiveConvId(id);
     }
     // Build the parts array. AI SDK v6 expects `type: 'file'` for
