@@ -1100,6 +1100,36 @@ const App = () => {
 
   const isGuest = !auth;
 
+  // AI Co-pilot eligibility — open to every signed-in user (agency or
+  // brand) once a brand is selected. The route itself auth-checks brand
+  // membership + enforces the 50/day brand quota (agency uncapped); the
+  // system prompt branches on caller role. The Bamboo Bear-only
+  // allowlist was dropped 2026-05-19.
+  //
+  // Computed BEFORE the brand-selection early return below so the
+  // copilot-auto-close useEffect below it always runs — otherwise the
+  // hook count changes between renders when `requiresBrandSelection`
+  // flips (login → pick brand, brand-delete → back to picker), tripping
+  // React error #310 "Rendered more hooks than during the previous
+  // render" and surfacing the error boundary's "snag" page.
+  const copilotEligible =
+    !!auth?.id &&
+    !isAllClientsMode &&
+    !!scopeAccountId;
+
+  // Inline AI eligibility — same gate as copilotEligible. Kept as a
+  // separate prop so future tightening (e.g. inline-only for one user
+  // class) can split them again without touching every gate.
+  const aiInlineEligible = copilotEligible;
+
+  // Auto-close the panel if the active brand context disappears
+  // (e.g. user switches to All-clients mode via BrandPicker).
+  // MUST stay above the early return below — see comment on
+  // `copilotEligible`.
+  useEffect(() => {
+    if (!copilotEligible && copilotOpen) setCopilotOpen(false);
+  }, [copilotEligible, copilotOpen]);
+
   // Brand-selection gate: show picker when a signed-in brand user belongs to
   // 2+ brands and hasn't picked one yet. Skip for agency and guests.
   // Note: rendered WITHOUT the `.app` wrapper — that's a grid with a sidebar
@@ -1116,27 +1146,6 @@ const App = () => {
   // Brand "Got ideas?" CTA — quick way to jump to the composer from any
   // brand-side surface. Agency staff see Inbox in the sidebar instead.
   const showGotIdeasCta = !!auth && !auth.isAgency && route.view !== "ideate";
-
-  // AI Co-pilot eligibility — open to every signed-in user (agency or
-  // brand) once a brand is selected. The route itself auth-checks brand
-  // membership + enforces the 50/day brand quota (agency uncapped); the
-  // system prompt branches on caller role. The Bamboo Bear-only
-  // allowlist was dropped 2026-05-19.
-  const copilotEligible =
-    !!auth?.id &&
-    !isAllClientsMode &&
-    !!scopeAccountId;
-
-  // Inline AI eligibility — same gate as copilotEligible. Kept as a
-  // separate prop so future tightening (e.g. inline-only for one user
-  // class) can split them again without touching every gate.
-  const aiInlineEligible = copilotEligible;
-
-  // Auto-close the panel if the active brand context disappears
-  // (e.g. user switches to All-clients mode via BrandPicker).
-  useEffect(() => {
-    if (!copilotEligible && copilotOpen) setCopilotOpen(false);
-  }, [copilotEligible, copilotOpen]);
 
   return (
     <div
