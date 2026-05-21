@@ -2825,12 +2825,15 @@ export function subscribeToAllEmbedCache(onChange) {
 }
 
 // Fires the production /api/engagement/refresh route for a single
-// publication. Server-side gates the call to is_agency=true; this client
-// helper just forwards the JWT and reads the response.
+// publication. Agency users can call freely; brand users get a one-shot
+// first scrape per publication, then the server returns
+// `{ ok: true, skipped: 'already_scraped' }` (still 2xx) — see the auth
+// model comment in web/api/engagement/refresh.ts. This client helper
+// just forwards the JWT and reads the response.
 //
 // Returns the parsed JSON body on 2xx. Throws an Error with a useful
-// message on non-2xx (including 403 for brand users hitting "Refresh now"
-// — surface that as a "agency-only for now" toast at the call site).
+// message on non-2xx (e.g. 403 if a brand user calls for a publication
+// in a brand they don't belong to).
 export async function refreshEngagement(publicationId) {
   if (!publicationId) throw new Error('refreshEngagement: publicationId is required');
   const { data: { session } } = await supabase.auth.getSession();
