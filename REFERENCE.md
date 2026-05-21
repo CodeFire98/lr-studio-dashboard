@@ -3,7 +3,19 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-21 (**LinkAI PR C2 — image attachments in the composer (paperclip + drag-drop).** The LinkAI composer now accepts image attachments. Two entry points: a paperclip button at the left of the composer row (opens the native file picker), and drag-and-drop anywhere on the LinkAI page (renders a translucent overlay with a dashed accent border + "Drop to attach" card while a file is dragged over the page).
+**Last updated:** 2026-05-21 (**LinkAI: persistent panel mount so streaming survives SPA route navigation.** Follow-up to PR C2's "stop on switch" change. Half of the user's "keep generating in the background" ask (the rail-switch half) shipped in PR C2 as "disable rail interactions while busy, no modal". This change handles the OTHER half: navigating to a different route while a generation is in flight (e.g. user on `/linkai`, clicks `/calendar`, comes back) used to unmount `LinkAIPanel`, which killed `useChat`'s in-flight fetch — coming back showed only the user's message, no assistant reply.
+
+**Fix:** the page-variant `<LinkAIPanel variant="page">` is now rendered PERSISTENTLY in App.jsx (inside `.main`, always when `auth && calendarAccountId`) wrapped in `<div className="linkai-page is-active?">`. The `is-active` class toggles based on `route.view === 'linkai'`. CSS: `.main:has(.linkai-page.is-active)` gates the 100vh/overflow-hidden layout override (so non-linkai routes aren't affected by the always-mounted panel); `.linkai-page:not(.is-active) { display: none; }` hides the panel when the user is on a different route. React state survives the visibility toggle — `useChat`, conv index, active conv id, attachments, rail scroll all persist. `renderView`'s linkai branch becomes `return null` to avoid double-mounting.
+
+**Effect:** user starts a generation on `/linkai`, navigates to `/calendar` mid-stream, comes back → the stream is still going (or completed and waiting) into the same conv. No more "I lost my response when I checked the calendar."
+
+**Drawer variant unchanged** — still mounted/unmounted via `linkAiOpen` outside `.main`. PR D retires it.
+
+**Known remaining gap (logged to memory `linkai-roadmap-followups`):** hard reload (Cmd+R, tab close) still loses the streaming response — the only way to fix that is server-side resumable streaming, which is a much bigger lift. Out of scope.
+
+Pure client + CSS change (~40 LOC across App.jsx + app.css). No schema/migration/env-var. Sections touched: Recent changes log; `Last updated`.)
+
+**Previous (2026-05-21):** (**LinkAI PR C2 — image attachments in the composer (paperclip + drag-drop).** The LinkAI composer now accepts image attachments. Two entry points: a paperclip button at the left of the composer row (opens the native file picker), and drag-and-drop anywhere on the LinkAI page (renders a translucent overlay with a dashed accent border + "Drop to attach" card while a file is dragged over the page).
 
 **Constraints (client-enforced):**
 - Mime types: `image/png`, `image/jpeg`, `image/webp`, `image/gif` (the four Claude vision supports). PDFs deferred.

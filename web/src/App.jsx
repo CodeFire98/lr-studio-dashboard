@@ -1107,39 +1107,13 @@ const App = () => {
       );
     }
     if (route.view === "linkai") {
-      const linkaiBrandSlug = brandAccounts.find((b) => b.id === calendarAccountId)?.slug
-        || auth?.account?.slug
-        || null;
-      // Render as a direct child of .main (no .view / .view-inner wrapper)
-      // so the LinkAI surface controls its own scroll behaviour. The
-      // `.main:has(.linkai-page)` CSS rule pins .main to 100vh + hides
-      // overflow so only the message list inside `.link-ai-scroll`
-      // scrolls — header + composer stay pinned. Same pattern that
-      // ConversationsView uses with `.conv-wrap`.
-      return (
-        <div className="linkai-page">
-          <Suspense fallback={<div className="linkai-page-fallback" />}>
-            <LinkAIPanel
-              variant="page"
-              accountId={calendarAccountId}
-              brandName={calendarAccountName}
-              brandSlug={linkaiBrandSlug}
-              userId={auth?.id}
-              isAgency={!!auth?.isAgency}
-              onNavigateToPlan={(planId) => setRoute({ view: 'plan', id: planId })}
-              onCommitDraft={async (draft) => {
-                const plan = await commitAiDraftPlan({
-                  accountId: calendarAccountId,
-                  userId: auth?.id,
-                  draft,
-                });
-                upsertPostPlan(plan);
-                return plan;
-              }}
-            />
-          </Suspense>
-        </div>
-      );
+      // The page-variant LinkAI surface is rendered PERSISTENTLY below
+      // (outside renderView) so its useChat / streaming state survives
+      // when the user navigates away to /calendar etc. and back. We
+      // return null here so the persistent mount is the only render
+      // path and there's no double-mounting. See the
+      // `.linkai-page.is-active` toggle in the JSX further down.
+      return null;
     }
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;
     return (
@@ -1281,6 +1255,42 @@ const App = () => {
           </div>
         </div>
         {renderView()}
+        {/* Persistent page-variant LinkAI surface. Mounted as long as
+            the user is signed in AND has a brand context — hidden via
+            CSS when they're not on the /c/:slug/linkai route, but
+            never unmounted. Keeps useChat alive across SPA route
+            navigation so a streaming response survives the user
+            popping over to /calendar (or any other route) and back.
+            Same pattern as keeping a video element mounted across
+            tab swaps so it doesn't reload. */}
+        {!!auth && !!calendarAccountId && (
+          <div className={"linkai-page" + (route.view === "linkai" ? " is-active" : "")}>
+            <Suspense fallback={<div className="linkai-page-fallback" />}>
+              <LinkAIPanel
+                variant="page"
+                accountId={calendarAccountId}
+                brandName={calendarAccountName}
+                brandSlug={
+                  brandAccounts.find((b) => b.id === calendarAccountId)?.slug
+                  || auth?.account?.slug
+                  || null
+                }
+                userId={auth?.id}
+                isAgency={!!auth?.isAgency}
+                onNavigateToPlan={(planId) => setRoute({ view: 'plan', id: planId })}
+                onCommitDraft={async (draft) => {
+                  const plan = await commitAiDraftPlan({
+                    accountId: calendarAccountId,
+                    userId: auth?.id,
+                    draft,
+                  });
+                  upsertPostPlan(plan);
+                  return plan;
+                }}
+              />
+            </Suspense>
+          </div>
+        )}
       </div>
       {linkAiEligible && linkAiOpen && (
         <Suspense fallback={null}>
