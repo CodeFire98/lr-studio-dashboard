@@ -924,15 +924,16 @@ const LinkAIPanel = ({
   // (which renders the hero/empty state). The next sendMessage will
   // mint a fresh conversation in handleSend. The CURRENT conversation
   // stays in the rail and on disk — nothing's deleted.
-  // Drawer variant keeps the original behaviour (wipes the single
-  // persisted conv) — PR D retires the drawer.
+  //
+  // While a generation is in flight, this handler no-ops (UI also
+  // disables the button). The user either waits for the stream to
+  // finish OR clicks the explicit Stop button — we don't want a
+  // surprise modal prompt that aborts their generation.
+  //
+  // Drawer variant keeps its prior "wipe the single persisted conv"
+  // behaviour for now — PR D retires the drawer.
   const startNew = () => {
-    if (isBusy) {
-      if (!window.confirm("Start a new conversation? The current generation will be stopped.")) {
-        return;
-      }
-      stop();
-    }
+    if (isBusy) return; // UI disables the button; defensive no-op.
     if (isPageVariant) {
       setActiveConvId(null);
       setMessages([]);
@@ -945,17 +946,18 @@ const LinkAIPanel = ({
     }
   };
 
-  // Rail handlers (page variant only).
+  // Rail handlers (page variant only). Same no-op-while-busy contract
+  // as startNew — switching/deleting during a generation is disabled
+  // at the UI level; this guards defensively if it ever fires anyway.
+  // The user has to wait or hit Stop explicitly. No modal prompts.
   const switchToConv = (convId) => {
+    if (isBusy) return;
     if (convId === activeConvId) return;
-    if (isBusy) {
-      if (!window.confirm("Switch conversations? The current generation will be stopped.")) return;
-      stop();
-    }
     setActiveConvId(convId);
   };
 
   const deleteConv = (convId) => {
+    if (isBusy) return;
     if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
     removeConvMessages(userId, accountId, convId);
     dropSessionConv(userId, accountId, convId);
@@ -1275,7 +1277,8 @@ const LinkAIPanel = ({
           type="button"
           className={railCollapsed ? "link-ai-history-new-collapsed" : "link-ai-history-new"}
           onClick={startNew}
-          title="Start a new conversation"
+          disabled={isBusy}
+          title={isBusy ? "Wait for the current generation to finish, or click Stop." : "Start a new conversation"}
         >
           <Icon name="plus" size={12} />
           {!railCollapsed && <span>New chat</span>}
@@ -1290,13 +1293,22 @@ const LinkAIPanel = ({
               convIndex.map((c) => (
                 <div
                   key={c.id}
-                  className={"link-ai-history-row" + (c.id === activeConvId ? " is-active" : "")}
+                  className={
+                    "link-ai-history-row" +
+                    (c.id === activeConvId ? " is-active" : "") +
+                    (isBusy && c.id !== activeConvId ? " is-disabled" : "")
+                  }
                 >
                   <button
                     type="button"
                     className="link-ai-history-row-main"
                     onClick={() => switchToConv(c.id)}
-                    title={c.title}
+                    disabled={isBusy && c.id !== activeConvId}
+                    title={
+                      isBusy && c.id !== activeConvId
+                        ? "Wait for the current generation to finish, or click Stop."
+                        : c.title
+                    }
                   >
                     <span className="link-ai-history-row-title">{c.title}</span>
                     <span className="link-ai-history-row-time">
@@ -1307,8 +1319,9 @@ const LinkAIPanel = ({
                     type="button"
                     className="link-ai-history-row-delete"
                     onClick={() => deleteConv(c.id)}
+                    disabled={isBusy}
                     aria-label={`Delete "${c.title}"`}
-                    title="Delete"
+                    title={isBusy ? "Wait for the current generation to finish, or click Stop." : "Delete"}
                   >
                     <Icon name="x" size={11} />
                   </button>

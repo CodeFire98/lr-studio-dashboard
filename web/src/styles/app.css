@@ -5129,6 +5129,26 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--accent);
   background: color-mix(in oklab, var(--accent) 6%, transparent);
 }
+.link-ai-history-new:disabled,
+.link-ai-history-new-collapsed:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+/* Rail rows in disabled (mid-generation) state — grey them out so the
+   user reads "this is unavailable right now"; tooltip on the inner
+   button explains why ("wait or hit Stop"). The currently-active
+   row stays clickable-looking since the user IS already on it. */
+.link-ai-history-row.is-disabled {
+  opacity: 0.5;
+}
+.link-ai-history-row.is-disabled .link-ai-history-row-main {
+  cursor: not-allowed;
+}
+.link-ai-history-row-main:disabled,
+.link-ai-history-row-delete:disabled {
+  cursor: not-allowed;
+}
 /* Mini "+" icon-only button when the rail is collapsed — same action
    as the full "New chat" button. */
 .link-ai-history-new-collapsed {
