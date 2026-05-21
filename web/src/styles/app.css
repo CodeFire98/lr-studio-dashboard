@@ -5014,6 +5014,109 @@ input, textarea { font: inherit; color: inherit; }
 .copilot-cancel { background: var(--ink-3); }
 .copilot-cancel:hover { background: var(--ink-2); }
 
+/* ---------- LinkAI full-page variant ---------------------------------
+   The copilot-panel CSS above assumes a slide-in fixed-position drawer.
+   When CopilotPanel is rendered with variant="page" at /c/:slug/linkai,
+   we strip the fixed positioning + chrome shadow + slide animation so it
+   sits inline in the main content area like Conversations / Calendar.
+   Hero welcome state gets larger serif typography and the suggestion
+   chips lay out in a roomy grid. */
+.linkai-page-inner {
+  /* Match Conversations max-width vibe without forcing center alignment
+     — the inner panel handles its own scroll + composer footer. */
+  max-width: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* Fill the available height of the main column so the composer pins
+     to the bottom of the viewport instead of the bottom of content. */
+  height: calc(100vh - 56px);
+}
+.linkai-page-fallback {
+  flex: 1;
+}
+.copilot-panel--page {
+  position: relative;
+  inset: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  width: 100%;
+  max-width: none;
+  flex: 1;
+  min-height: 0;
+  border-left: 0;
+  border-radius: var(--radius-2xl);
+  box-shadow: none;
+  animation: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.copilot-panel--page .copilot-header {
+  padding: var(--space-5) var(--space-6);
+}
+.copilot-panel--page .copilot-header h4 {
+  font-size: 22px;
+}
+.copilot-panel--page .copilot-scroll {
+  padding: var(--space-6);
+  max-width: 880px;
+  width: 100%;
+  margin: 0 auto;
+}
+.copilot-panel--page .copilot-input {
+  max-width: 880px;
+  width: 100%;
+  margin: 0 auto;
+  border-top: 1px solid var(--line);
+}
+.copilot-welcome--page {
+  background: transparent;
+  padding: var(--space-8) 0 var(--space-4);
+  font-size: 16px;
+  text-align: left;
+}
+.copilot-welcome-hero {
+  font-family: var(--font-serif);
+  font-size: clamp(28px, 3.4vw, 40px);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--ink);
+  margin: 0 0 var(--space-3);
+  text-wrap: balance;
+}
+.copilot-welcome-hero strong {
+  color: var(--accent);
+  font-weight: 400;
+}
+.copilot-welcome--page > p {
+  font-size: 16px;
+  color: var(--ink-3);
+  margin: 0 0 var(--space-6);
+  max-width: 640px;
+}
+.copilot-welcome--page .copilot-suggestions-head {
+  margin-top: var(--space-3);
+}
+.copilot-welcome--page .copilot-suggestions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-2);
+}
+
+/* Sidebar separator divider — sits between the "active surfaces" group
+   (Social Calendar / LinkAI / Conversations / Live posts) and the
+   "reference / setup" group below it (Brand Intelligence / Library /
+   Trends Radar / Brand notes / Idea dump). */
+.nav-sep {
+  height: 1px;
+  background: var(--line);
+  margin: var(--space-2) var(--space-2);
+  opacity: 0.7;
+}
+
 /* AI Draft button next to copy editor */
 .ai-draft-btn {
   background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 14%, var(--surface)), var(--surface));

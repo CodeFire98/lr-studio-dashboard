@@ -110,7 +110,26 @@ const SUGGESTIONS_SCHEMA = z.object({
   suggestions: z.array(z.string()),
 });
 
-const CopilotPanel = ({ accountId, brandName, userId, isAgency = false, onClose, onNavigateToPlan, onCommitDraft, brandSlug }) => {
+// `variant`:
+//   - 'panel' (default): right-side drawer with chrome (header + close
+//     button). Mounted from App.jsx when the topbar "✨ Co-pilot" trigger
+//     is on. Uses `.copilot-panel` styles in app.css.
+//   - 'page': inline full-page render. Used by the new /c/:slug/linkai
+//     route. Drops the close button (the sidebar nav owns route changes),
+//     widens the layout, and renders a bigger empty-state hero. Uses
+//     `.copilot-panel.copilot-panel--page` overrides in app.css.
+const CopilotPanel = ({
+  accountId,
+  brandName,
+  userId,
+  isAgency = false,
+  onClose,
+  onNavigateToPlan,
+  onCommitDraft,
+  brandSlug,
+  variant = 'panel',
+}) => {
+  const isPageVariant = variant === 'page';
   // DefaultChatTransport handles auth header injection per request and
   // appends accountId to the request body. Memoized on accountId so brand
   // switches rebuild the transport (otherwise it closes over stale value).
@@ -418,12 +437,16 @@ const CopilotPanel = ({ accountId, brandName, userId, isAgency = false, onClose,
   }, [messages]);
 
   return (
-    <div className="copilot-panel" role="dialog" aria-label="AI Co-pilot">
+    <div
+      className={"copilot-panel" + (isPageVariant ? " copilot-panel--page" : "")}
+      role={isPageVariant ? undefined : "dialog"}
+      aria-label={isPageVariant ? undefined : "AI Co-pilot"}
+    >
       <header className="copilot-header">
         <div>
           <h4>
             <span className="copilot-spark" aria-hidden>✨</span>
-            <span>Co-pilot</span>
+            <span>{isPageVariant ? "LinkAI" : "Co-pilot"}</span>
           </h4>
           <div className="copilot-sub">{brandName || "Brand"}</div>
         </div>
@@ -437,17 +460,32 @@ const CopilotPanel = ({ accountId, brandName, userId, isAgency = false, onClose,
               Start new
             </button>
           )}
-          <button className="copilot-close" onClick={onClose} aria-label="Close Co-pilot">
-            <Icon name="x" size={14} />
-          </button>
+          {!isPageVariant && (
+            <button className="copilot-close" onClick={onClose} aria-label="Close Co-pilot">
+              <Icon name="x" size={14} />
+            </button>
+          )}
         </div>
       </header>
 
       <div className="copilot-scroll" ref={scrollRef}>
         {messages.length === 0 && (
-          <div className="copilot-welcome">
-            <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
-            <p>Ask me to draft a post, plan next week's content, or brainstorm a campaign — I'll create real drafts in the Social Calendar that you can edit and submit.</p>
+          <div className={"copilot-welcome" + (isPageVariant ? " copilot-welcome--page" : "")}>
+            {isPageVariant ? (
+              <>
+                <h2 className="copilot-welcome-hero">
+                  Tell me what you want to make for <strong>{brandName || "this brand"}</strong>.
+                </h2>
+                <p>
+                  I can ideate, research, draft posts, and plan your calendar — just ask.
+                </p>
+              </>
+            ) : (
+              <>
+                <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
+                <p>Ask me to draft a post, plan next week's content, or brainstorm a campaign — I'll create real drafts in the Social Calendar that you can edit and submit.</p>
+              </>
+            )}
             <div className="copilot-suggestions-head">
               <span className="copilot-suggestions-label">Try one of these</span>
               <button
@@ -547,7 +585,7 @@ const CopilotPanel = ({ accountId, brandName, userId, isAgency = false, onClose,
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isBusy ? "Generating…" : "Message the Co-pilot…  (⌘↩ to send)"}
+          placeholder={isBusy ? "Generating…" : (isPageVariant ? "Message LinkAI…  (⌘↩ to send)" : "Message the Co-pilot…  (⌘↩ to send)")}
           disabled={isBusy}
           rows={2}
         />

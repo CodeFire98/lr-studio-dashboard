@@ -15,7 +15,12 @@ import { cn } from "@/lib/utils";
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+// Mermaid plugin intentionally dropped — marketing chat doesn't render
+// diagrams, and the mermaid bundle was producing a heavy lazy chunk
+// (`mermaid-*.js`) that 404'd whenever a Vercel deploy invalidated
+// the hash between an open SPA tab loading index.html and the panel
+// opening. The 404 surfaced as "Failed to fetch dynamically imported
+// module" → the app's ErrorBoundary "snag" page.
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
@@ -321,7 +326,7 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+const streamdownPlugins = { cjk, code, math };
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
