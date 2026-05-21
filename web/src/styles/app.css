@@ -5102,43 +5102,15 @@ input, textarea { font: inherit; color: inherit; }
   overflow-y: auto;
   transition: flex-basis 160ms var(--ease-out);
 }
-/* Collapsed rail: ~44px strip with just the toggle + a "+" mini button.
-   Triggered manually via the toggle button OR automatically when the
-   artifact pane is open (so three columns fit at sane widths). */
+/* Collapsed rail: ~44px strip with just an icon-only "+" button. Only
+   reached when the artifact pane is open — there's no manual toggle.
+   Closing the pane restores the rail to its default expanded state. */
 .link-ai-history--collapsed {
   flex: 0 0 44px;
   padding: 14px 6px;
   overflow: hidden;
 }
-.link-ai-history-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.link-ai-history--collapsed .link-ai-history-controls {
-  flex-direction: column;
-  align-items: stretch;
-}
-.link-ai-history-toggle {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border: 1px solid transparent;
-  background: transparent;
-  border-radius: 6px;
-  display: grid;
-  place-items: center;
-  color: var(--ink-3);
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
-}
-.link-ai-history-toggle:hover {
-  background: color-mix(in oklab, var(--ink) 5%, transparent);
-  color: var(--ink);
-  border-color: var(--line);
-}
 .link-ai-history-new {
-  flex: 1 1 auto;
   display: inline-flex;
   align-items: center;
   gap: 6px;

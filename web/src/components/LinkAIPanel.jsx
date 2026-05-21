@@ -538,38 +538,21 @@ const LinkAIPanel = ({
     return idx[0]?.id || null;
   });
 
-  // ----- Rail collapse + artifact pane (PR C4) -------------------------
+  // ----- Artifact pane (PR C4) -----------------------------------------
   //
-  // The user can manually collapse the history rail to a thin strip; the
-  // preference persists per-user (not per-brand — collapse intent is
-  // global). Opening an artifact pane *temporarily* forces the rail
-  // collapsed (without touching the persisted preference) so the page
-  // layout stays sane at three columns: rail-44 | chat | artifact-420.
-  // Closing the artifact restores the persisted preference.
-  const RAIL_COLLAPSED_KEY = userId ? `lr_link_ai_rail_collapsed_${userId}` : null;
-  const [railManuallyCollapsed, setRailManuallyCollapsed] = useState(() => {
-    if (!RAIL_COLLAPSED_KEY) return false;
-    try { return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1"; } catch { return false; }
-  });
   // `artifact` is null when nothing's open. Otherwise:
   //   { kind: 'plan-draft', toolCallId, draft, committedId | null }
   // — committedId flips from null to the new post_plans.id after the
   // user clicks "Add to calendar" inside the pane.
+  //
+  // The history rail auto-collapses while the artifact is open (one row
+  // is enough screen real-estate when three columns are competing).
+  // Closing the artifact restores the rail to its default expanded
+  // state. There's no manual collapse toggle — the user's only way to
+  // see a narrow rail is by opening a preview. Closing the preview =
+  // expanded again, deterministic, no localStorage state.
   const [artifact, setArtifact] = useState(null);
-  // Derived: the rail is visually collapsed if EITHER the user pinned it
-  // collapsed OR an artifact is open (one row is enough screen real
-  // estate when three columns are competing).
-  const railCollapsed = railManuallyCollapsed || !!artifact;
-
-  const toggleRail = () => {
-    setRailManuallyCollapsed((prev) => {
-      const next = !prev;
-      if (RAIL_COLLAPSED_KEY) {
-        try { localStorage.setItem(RAIL_COLLAPSED_KEY, next ? "1" : "0"); } catch { /* silent */ }
-      }
-      return next;
-    });
-  };
+  const railCollapsed = !!artifact;
 
   const openArtifact = useCallback((next) => {
     setArtifact(next);
@@ -971,39 +954,15 @@ const LinkAIPanel = ({
         className={"link-ai-history" + (railCollapsed ? " link-ai-history--collapsed" : "")}
         aria-label="LinkAI chat history"
       >
-        <div className="link-ai-history-controls">
-          {railCollapsed ? (
-            <button
-              type="button"
-              className="link-ai-history-toggle"
-              onClick={toggleRail}
-              title={railManuallyCollapsed ? "Expand chat history" : "Expand (currently collapsed because the side panel is open)"}
-              aria-label="Expand chat history"
-              disabled={!!artifact && !railManuallyCollapsed /* can't expand while artifact is open unless user explicitly pins it expanded */ && false}
-            >
-              <Icon name="chevron-right" size={12} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="link-ai-history-toggle"
-              onClick={toggleRail}
-              title="Collapse chat history"
-              aria-label="Collapse chat history"
-            >
-              <Icon name="chevron-left" size={12} />
-            </button>
-          )}
-          <button
-            type="button"
-            className={railCollapsed ? "link-ai-history-new-collapsed" : "link-ai-history-new"}
-            onClick={startNew}
-            title="Start a new conversation"
-          >
-            <Icon name="plus" size={12} />
-            {!railCollapsed && <span>New chat</span>}
-          </button>
-        </div>
+        <button
+          type="button"
+          className={railCollapsed ? "link-ai-history-new-collapsed" : "link-ai-history-new"}
+          onClick={startNew}
+          title="Start a new conversation"
+        >
+          <Icon name="plus" size={12} />
+          {!railCollapsed && <span>New chat</span>}
+        </button>
         {!railCollapsed && (
           <div className="link-ai-history-list">
             {convIndex.length === 0 ? (
@@ -1108,7 +1067,17 @@ function ArtifactPane({ artifact, brandSlug, onClose, onCommitDraft, onNavigateT
     if (committedId) onNavigateToPlan?.(committedId, brandSlug);
   };
 
-  const copyVariants = Array.isArray(draft.copy_variants) ? draft.copy_variants : [];
+  // copy_variants is an OBJECT keyed by platform slug ({ instagram?, linkedin?, x? })
+  // per the create_post_plan_draft tool's Zod schema in web/api/ai/chat.ts.
+  // Iterate the keys, drop empty strings, preserve the natural platform
+  // order (ig → li → x) instead of Object.keys' insertion order so the
+  // pane always reads consistently regardless of which platforms the
+  // model emitted.
+  const variantsObj = draft.copy_variants && typeof draft.copy_variants === "object" ? draft.copy_variants : {};
+  const PLATFORM_ORDER = ["instagram", "linkedin", "x"];
+  const copyVariants = PLATFORM_ORDER
+    .filter((p) => typeof variantsObj[p] === "string" && variantsObj[p].trim().length > 0)
+    .map((p) => ({ platform: p, body: variantsObj[p] }));
 
   return (
     <aside className="link-ai-artifact" aria-label="Plan preview">
