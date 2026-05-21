@@ -155,6 +155,31 @@ function removeConvMessages(userId, accountId, convId) {
   try { localStorage.removeItem(CONV_KEY(userId, accountId, convId)); } catch { /* silent */ }
 }
 
+// In-memory cache of FULL multimodal messages, keyed by
+// (userId, accountId, convId). Survives LinkAIPanel mount/unmount
+// (navigating to /calendar and back doesn't lose the image bubbles
+// in the chat) within the same tab session. Cleared on hard reload,
+// at which point the localStorage-persisted, attachment-stripped
+// breadcrumb takes over — same as before this addition. Bounded only
+// by the per-conv MAX_PERSISTED_MESSAGES cap; convs are short-lived
+// in practice. A future PR (Supabase Storage uploads) can replace
+// this with stable URLs that persist past hard reload too.
+const sessionConvCache = new Map();
+const sessionCacheKey = (userId, accountId, convId) =>
+  `${userId}|${accountId}|${convId}`;
+function cacheSessionConv(userId, accountId, convId, messages) {
+  if (!userId || !accountId || !convId) return;
+  sessionConvCache.set(sessionCacheKey(userId, accountId, convId), messages);
+}
+function readSessionConv(userId, accountId, convId) {
+  if (!userId || !accountId || !convId) return null;
+  return sessionConvCache.get(sessionCacheKey(userId, accountId, convId)) ?? null;
+}
+function dropSessionConv(userId, accountId, convId) {
+  if (!userId || !accountId || !convId) return;
+  sessionConvCache.delete(sessionCacheKey(userId, accountId, convId));
+}
+
 function makeConvId() {
   // Date-prefixed for natural sort/display + a 4-char random suffix to
   // avoid collisions when two new chats land in the same millisecond.
@@ -756,7 +781,15 @@ const LinkAIPanel = ({
     const tupleKey = `page|${userId}|${accountId}|${activeConvId ?? ""}`;
     if (lastHydratedKeyRef.current === tupleKey) return;
     lastHydratedKeyRef.current = tupleKey;
-    const msgs = activeConvId ? loadConvMessages(userId, accountId, activeConvId) : [];
+    // Prefer the in-memory session cache (full multimodal messages with
+    // file parts intact) over localStorage (which has the attachments-
+    // stripped version with the "_[attached … not retained]_"
+    // breadcrumb). The cache survives nav-away/nav-back but not a hard
+    // reload — that's the breadcrumb's job.
+    const cached = readSessionConv(userId, accountId, activeConvId);
+    const msgs = cached !== null
+      ? cached
+      : (activeConvId ? loadConvMessages(userId, accountId, activeConvId) : []);
     setMessages(msgs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, accountId, isPageVariant, activeConvId, setMessages]);
@@ -798,6 +831,12 @@ const LinkAIPanel = ({
       return;
     }
     if (!activeConvId) return; // nothing to persist until the convo exists
+    // Two-track persistence: the in-memory session cache keeps the
+    // FULL multimodal messages (so nav-away → nav-back doesn't lose
+    // the inline image bubbles); localStorage gets the attachments-
+    // stripped version (quota-safe across reloads, breadcrumb shows
+    // the user what was there before).
+    cacheSessionConv(userId, accountId, activeConvId, messages);
     saveConvMessages(userId, accountId, activeConvId, stripAttachmentsForPersist(messages));
     setConvIndex((prev) => {
       const entry = prev.find((c) => c.id === activeConvId);
@@ -919,6 +958,7 @@ const LinkAIPanel = ({
   const deleteConv = (convId) => {
     if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
     removeConvMessages(userId, accountId, convId);
+    dropSessionConv(userId, accountId, convId);
     setConvIndex((prev) => {
       const next = prev.filter((c) => c.id !== convId);
       saveConvIndex(userId, accountId, next);
