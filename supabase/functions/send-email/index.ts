@@ -1151,13 +1151,32 @@ async function handleServiceUsageDaily(body: ServiceUsageDailyRequest): Promise<
   }
 
   const rendered = renderServiceUsageDaily(body);
-  const { ids, failures } = await callResendBatch({
-    recipients: body.recipients,
-    subject: rendered.subject,
-    html: rendered.html,
-    text: rendered.text,
-  });
+
+  // Resend's per-second cap on our plan rejects the /emails/batch call
+  // when N agency recipients land inside the same second (observed: 3
+  // recipients → 429 "2 requests per second"). Send one-at-a-time with
+  // a small spacer so each call stays inside the limit. Total recipients
+  // is small (agency-team-only, <10) so the extra latency is harmless.
+  const ids: string[] = [];
+  const failures: Array<{ to: string; error: string }> = [];
   const total = body.recipients.length;
+  const SPACER_MS = 600;
+  for (let i = 0; i < body.recipients.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, SPACER_MS));
+    const to = body.recipients[i];
+    try {
+      const { id } = await callResend({
+        to,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
+      });
+      ids.push(id);
+    } catch (ex) {
+      failures.push({ to, error: (ex as Error).message });
+    }
+  }
+
   if (ids.length === 0) {
     return jsonResponse({ ok: false, sent: 0, total, failed: failures }, 502);
   }
