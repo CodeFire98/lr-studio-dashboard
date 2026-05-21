@@ -540,6 +540,14 @@ const LinkAIPanel = ({
   // (the hydrate effect read an empty localStorage entry and wiped the
   // SDK state out from under the in-flight stream).
   const justMintedConvIdRef = useRef(null);
+  // Tracks the last (user, brand, conv) tuple we hydrated for, so the
+  // hydrate effect only runs ONCE per real transition. Without this,
+  // the effect re-fires on any render where useChat's setMessages
+  // identity changes (the SDK doesn't memoise it stably across
+  // streaming ticks) and each re-fire re-reads the persisted, file-
+  // parts-stripped messages — turning the live image bubble into a
+  // "_[attached … not retained after reload]_" breadcrumb mid-session.
+  const lastHydratedKeyRef = useRef(null);
   const [activeConvId, setActiveConvId] = useState(() => {
     if (!isPageVariant) return null;
     const idx = loadConvIndex(userId, accountId);
@@ -712,28 +720,44 @@ const LinkAIPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, accountId, isPageVariant]);
 
-  // Hydrate `useChat` with the active conversation's messages whenever it
-  // changes. Drawer variant falls back to the legacy single-conv key.
+  // Hydrate `useChat` with the active conversation's messages whenever
+  // (user, brand, conv) changes. Drawer variant falls back to the
+  // legacy single-conv key.
   //
-  // BUG GUARD: when handleSend just minted activeConvId for a brand-new
-  // chat, the SDK's messages array already holds the user's optimistic
-  // first message — reading the (empty) localStorage entry and
-  // setMessages([])-ing it would wipe that message out from under the
-  // in-flight stream, leaving the user staring at an assistant reply
-  // with no visible prompt. Skip the hydrate on that specific
-  // transition; the persist effect below will write the message out
-  // as soon as the SDK adds it to the array.
+  // GUARD 1 (just-minted conv): handleSend mints a fresh conv id and
+  // calls sendMessage right after. The SDK has already added the
+  // user's optimistic first message to its in-memory array. Reading
+  // the (empty) localStorage entry and setMessages([])-ing it would
+  // wipe that message out from under the in-flight stream. Skip the
+  // hydrate on that specific transition; the persist effect below
+  // writes the message out as soon as the SDK adds it.
+  //
+  // GUARD 2 (one-shot per tuple): hydrate only ONCE per real
+  // (user, brand, conv) transition. The SDK's setMessages identity
+  // isn't stable across streaming renders, so the effect re-fires
+  // on tokens. Without this guard, every re-fire would re-read the
+  // persisted (attachments-stripped) messages and overwrite the live
+  // multimodal in-memory state with the "_[attached … not retained
+  // after reload]_" breadcrumb mid-session.
   useEffect(() => {
-    if (isPageVariant) {
-      if (activeConvId && justMintedConvIdRef.current === activeConvId) {
-        justMintedConvIdRef.current = null;
-        return;
-      }
-      const msgs = activeConvId ? loadConvMessages(userId, accountId, activeConvId) : [];
-      setMessages(msgs);
-    } else {
+    if (!isPageVariant) {
+      // Drawer variant only re-hydrates when (user, brand) change.
+      const drawerKey = `drawer|${userId}|${accountId}`;
+      if (lastHydratedKeyRef.current === drawerKey) return;
+      lastHydratedKeyRef.current = drawerKey;
       setMessages(loadPersistedMessages(userId, accountId));
+      return;
     }
+    if (activeConvId && justMintedConvIdRef.current === activeConvId) {
+      justMintedConvIdRef.current = null;
+      lastHydratedKeyRef.current = `page|${userId}|${accountId}|${activeConvId}`;
+      return;
+    }
+    const tupleKey = `page|${userId}|${accountId}|${activeConvId ?? ""}`;
+    if (lastHydratedKeyRef.current === tupleKey) return;
+    lastHydratedKeyRef.current = tupleKey;
+    const msgs = activeConvId ? loadConvMessages(userId, accountId, activeConvId) : [];
+    setMessages(msgs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, accountId, isPageVariant, activeConvId, setMessages]);
 
