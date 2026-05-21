@@ -5024,7 +5024,12 @@ input, textarea { font: inherit; color: inherit; }
    stay pinned (they're flex-shrink: 0 in the base .link-ai-panel rules).
    The app's .topbar (sticky inside .main) sits above the LinkAI surface
    normally. */
-.main:has(.linkai-page) {
+/* Gated on `.is-active` so the layout override only kicks in when
+   the user is actually viewing /c/:slug/linkai. The LinkAI surface is
+   now mounted PERSISTENTLY (so useChat / streaming state survives
+   route nav), and the inactive copy must NOT pin .main to 100vh
+   while the user is on /calendar etc. */
+.main:has(.linkai-page.is-active) {
   height: 100vh;
   max-height: 100vh;
   min-height: 0;
@@ -5038,6 +5043,14 @@ input, textarea { font: inherit; color: inherit; }
   flex-direction: column;
   background: var(--surface);
   position: relative;
+}
+/* The persistent panel renders into the DOM on every route but is
+   hidden when not on the linkai surface. display:none preserves
+   React state (useChat, messages, attachments, conv index, rail
+   scroll, etc.) while keeping the rest of the page free of layout
+   interference. */
+.linkai-page:not(.is-active) {
+  display: none;
 }
 .linkai-page-fallback {
   flex: 1;
