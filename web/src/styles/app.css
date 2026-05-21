@@ -5100,6 +5100,15 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--bg-panel);
   border-right: 1px solid var(--line);
   overflow-y: auto;
+  transition: flex-basis 160ms var(--ease-out);
+}
+/* Collapsed rail: ~44px strip with just an icon-only "+" button. Only
+   reached when the artifact pane is open — there's no manual toggle.
+   Closing the pane restores the rail to its default expanded state. */
+.link-ai-history--collapsed {
+  flex: 0 0 44px;
+  padding: 14px 6px;
+  overflow: hidden;
 }
 .link-ai-history-new {
   display: inline-flex;
@@ -5110,7 +5119,7 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--ink-2);
   font-size: 12.5px;
   font-weight: 500;
-  padding: 8px 12px;
+  padding: 6px 12px;
   border-radius: 8px;
   cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
@@ -5119,6 +5128,24 @@ input, textarea { font: inherit; color: inherit; }
   border-color: var(--accent);
   color: var(--accent);
   background: color-mix(in oklab, var(--accent) 6%, transparent);
+}
+/* Mini "+" icon-only button when the rail is collapsed — same action
+   as the full "New chat" button. */
+.link-ai-history-new-collapsed {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.link-ai-history-new-collapsed:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .link-ai-history-list {
   display: flex;
@@ -5204,6 +5231,183 @@ input, textarea { font: inherit; color: inherit; }
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
+}
+
+/* ---------- LinkAI artifact pane (PR C4) ----------------------------
+   Right-side pane that previews a tool's output (post plan draft today)
+   without writing it to the database. Opens via the tool card's
+   "Preview" button. The header / body / footer share the same column
+   structure as the chat panel — header pinned top, body scrolls,
+   footer pinned bottom with the "Add to calendar" CTA. */
+.link-ai-artifact {
+  flex: 0 0 420px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+}
+.link-ai-artifact-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.link-ai-artifact-head-titles { flex: 1; min-width: 0; }
+.link-ai-artifact-kicker {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-4);
+  margin-bottom: 2px;
+}
+.link-ai-artifact-title {
+  margin: 0 0 6px;
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  line-height: 1.2;
+  text-wrap: balance;
+}
+.link-ai-artifact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.link-ai-artifact-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.link-ai-artifact-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--ink-4);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.link-ai-artifact-close:hover { background: var(--surface-2); color: var(--ink); }
+
+.link-ai-artifact-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.link-ai-artifact-empty {
+  font-size: 13px;
+  color: var(--ink-4);
+  font-style: italic;
+}
+.link-ai-artifact-variant {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.link-ai-artifact-variant-head {
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.link-ai-artifact-variant-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.link-ai-artifact-footer {
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+}
+.link-ai-artifact-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--accent);
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+.link-ai-artifact-primary:hover { filter: brightness(0.95); }
+.link-ai-artifact-primary:disabled {
+  background: var(--ink-4);
+  cursor: not-allowed;
+}
+.link-ai-artifact-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--good);
+}
+.link-ai-artifact-hint {
+  font-size: 11px;
+  color: var(--ink-4);
+  letter-spacing: 0.01em;
+  text-align: center;
+}
+
+/* Tool-card CTA: "Showing in side panel" subtle pressed state when
+   that draft is the one currently open in the pane. */
+.link-ai-tool-cta.is-active {
+  background: var(--surface-2);
+  color: var(--ink-3);
+  cursor: default;
+}
+
+/* When the artifact pane is open, the chat panel column should still
+   fit comfortably — drop its max-width / centering down a notch so the
+   composer + messages don't stretch awkwardly wide against the pane. */
+.link-ai-page-wrapper:has(.link-ai-artifact) .link-ai-panel--page .link-ai-scroll,
+.link-ai-page-wrapper:has(.link-ai-artifact) .link-ai-panel--page .link-ai-input {
+  max-width: 720px;
+}
+
+@media (max-width: 1100px) {
+  /* Below ~1100px, an artifact pane + chat + rail is too tight. Drop
+     the artifact pane's fixed width and let it share more equally;
+     auto-collapse the rail handles the rest. */
+  .link-ai-artifact { flex: 0 0 360px; }
+}
+@media (max-width: 900px) {
+  /* Very narrow — artifact pane becomes a full-width overlay on top of
+     the chat. Hides the rail entirely (its toggle still re-expands). */
+  .link-ai-page-wrapper:has(.link-ai-artifact) .link-ai-panel--page { display: none; }
+  .link-ai-page-wrapper:has(.link-ai-artifact) .link-ai-history { display: none; }
+  .link-ai-artifact { flex: 1 1 auto; border-left: 0; }
 }
 
 /* Page-variant composer: textarea + Send on one row (no full-width
