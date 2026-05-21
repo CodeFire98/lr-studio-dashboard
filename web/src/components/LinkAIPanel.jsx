@@ -52,17 +52,42 @@ import { formatPlanChipTime } from "./ConversationsView.jsx";
 // if there's a stick-to-bottom UX win that justifies the layout rework.
 import { MessageResponse } from "@/components/ai-elements/message";
 
-// localStorage key is v2-prefixed so v1 conversations (incompatible message
-// shape) don't crash on load. v1 entries become orphaned and the first
-// chat session after this deploy starts fresh — acceptable tradeoff per
-// AI_COPILOT_V2_MIGRATION.md.
+// ----- Storage layer ----------------------------------------------------
+//
+// Two key schemes live side-by-side during the LinkAI history-rail
+// rollout:
+//
+// (1) DRAWER variant (right-side panel from the topbar "✨ LinkAI"
+//     trigger): single conversation per (user, brand), stored at
+//     `lr_copilot_conv_v2_${userId}_${accountId}`. The literal "copilot"
+//     in the key is preserved through the 2026-05-21 rename so existing
+//     users don't lose history. Will be retired in PR D when the drawer
+//     itself goes away.
+//
+// (2) PAGE variant (full-page surface at /c/:slug/linkai): multi-
+//     conversation store. An *index* lists every conversation; each
+//     conversation's message array lives at its own per-conv key.
+//
+//     Index:        lr_link_ai_index_v1_${userId}_${accountId}
+//                   → [{ id, title, createdAt, updatedAt }, …]   (newest first)
+//     Per-conv:     lr_link_ai_conv_v3_${userId}_${accountId}_${convId}
+//                   → UIMessage[]
+//
+//     On first page load for a user with drawer history (i.e. the v2
+//     key exists and the v3 index is empty), we *copy* the v2 messages
+//     into a new v3 entry titled "Previous chat (sidebar)" so the
+//     history rail isn't empty on day one. The v2 key is left in place
+//     so the drawer keeps working until PR D.
 const MAX_PERSISTED_MESSAGES = 60;
-const storageKey = (userId, accountId) => `lr_copilot_conv_v2_${userId}_${accountId}`;
+const LEGACY_V2_KEY = (userId, accountId) => `lr_copilot_conv_v2_${userId}_${accountId}`;
+const INDEX_KEY    = (userId, accountId) => `lr_link_ai_index_v1_${userId}_${accountId}`;
+const CONV_KEY     = (userId, accountId, convId) => `lr_link_ai_conv_v3_${userId}_${accountId}_${convId}`;
 
+// Drawer single-conv helpers (legacy, preserved verbatim — PR D retires).
 function loadPersistedMessages(userId, accountId) {
   if (!userId || !accountId) return [];
   try {
-    const raw = localStorage.getItem(storageKey(userId, accountId));
+    const raw = localStorage.getItem(LEGACY_V2_KEY(userId, accountId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -77,10 +102,119 @@ function persistMessages(userId, accountId, messages) {
     const trimmed = messages.length > MAX_PERSISTED_MESSAGES
       ? messages.slice(messages.length - MAX_PERSISTED_MESSAGES)
       : messages;
-    localStorage.setItem(storageKey(userId, accountId), JSON.stringify(trimmed));
+    localStorage.setItem(LEGACY_V2_KEY(userId, accountId), JSON.stringify(trimmed));
   } catch {
     // localStorage full / unavailable — silent drop. Chat still works in-memory.
   }
+}
+
+// Multi-conv helpers (page variant).
+function loadConvIndex(userId, accountId) {
+  if (!userId || !accountId) return [];
+  try {
+    const raw = localStorage.getItem(INDEX_KEY(userId, accountId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveConvIndex(userId, accountId, index) {
+  if (!userId || !accountId) return;
+  try {
+    localStorage.setItem(INDEX_KEY(userId, accountId), JSON.stringify(index));
+  } catch { /* silent */ }
+}
+
+function loadConvMessages(userId, accountId, convId) {
+  if (!userId || !accountId || !convId) return [];
+  try {
+    const raw = localStorage.getItem(CONV_KEY(userId, accountId, convId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveConvMessages(userId, accountId, convId, messages) {
+  if (!userId || !accountId || !convId) return;
+  try {
+    const trimmed = messages.length > MAX_PERSISTED_MESSAGES
+      ? messages.slice(messages.length - MAX_PERSISTED_MESSAGES)
+      : messages;
+    localStorage.setItem(CONV_KEY(userId, accountId, convId), JSON.stringify(trimmed));
+  } catch { /* silent */ }
+}
+
+function removeConvMessages(userId, accountId, convId) {
+  if (!userId || !accountId || !convId) return;
+  try { localStorage.removeItem(CONV_KEY(userId, accountId, convId)); } catch { /* silent */ }
+}
+
+function makeConvId() {
+  // Date-prefixed for natural sort/display + a 4-char random suffix to
+  // avoid collisions when two new chats land in the same millisecond.
+  return `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// Derive a 50-char title from the first user-text part of the first
+// user message. If we can't find one (e.g. a tool-only message), fall
+// back to "Untitled chat" — the rail row stays readable while the user
+// builds out the conversation.
+function deriveConvTitle(messages) {
+  for (const m of messages) {
+    if (m?.role !== "user") continue;
+    for (const part of (m.parts || [])) {
+      if (part?.type !== "text" || typeof part?.text !== "string") continue;
+      const text = part.text.trim();
+      if (!text) continue;
+      return text.length > 50 ? text.slice(0, 47).trimEnd() + "…" : text;
+    }
+  }
+  return "Untitled chat";
+}
+
+// One-time copy: bring the drawer's old conversation into the page's
+// new multi-conv store as a single entry. Returns true if anything was
+// imported. The v2 key is NOT deleted — the drawer keeps reading from
+// it until PR D retires the drawer entirely.
+function importLegacyV2ToIndex(userId, accountId) {
+  if (!userId || !accountId) return false;
+  // Only import if the v3 index is empty (don't duplicate on every load).
+  const existing = loadConvIndex(userId, accountId);
+  if (existing.length > 0) return false;
+  const legacy = loadPersistedMessages(userId, accountId);
+  if (legacy.length === 0) return false;
+  const convId = makeConvId();
+  saveConvMessages(userId, accountId, convId, legacy);
+  const now = new Date().toISOString();
+  saveConvIndex(userId, accountId, [{
+    id: convId,
+    title: deriveConvTitle(legacy) || "Previous chat (sidebar)",
+    createdAt: now,
+    updatedAt: now,
+  }]);
+  return true;
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const diffMs = Date.now() - t;
+  const mins = Math.round(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d`;
+  const d = new Date(t);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 // Fallback suggestions used while the AI stream hasn't produced its first
@@ -388,21 +522,108 @@ const LinkAIPanel = ({
     el.scrollTop = el.scrollHeight;
   }, []);
 
-  // Hydrate from localStorage on mount and whenever (userId, accountId)
-  // change — switching brands swaps to that brand's persisted thread.
-  useEffect(() => {
-    const persisted = loadPersistedMessages(userId, accountId);
-    setMessages(persisted);
-  }, [userId, accountId, setMessages]);
+  // ----- Multi-conversation state (page variant only) -----------------
+  //
+  // `convIndex` is the rail's data source — newest first. `activeConvId`
+  // is which conversation's messages are loaded into `useChat`. A null
+  // active id means "fresh empty chat, will materialise on first send".
+  // For the drawer variant both stay empty and the single-conv code
+  // below handles persistence — same behaviour as before this PR.
+  const [convIndex, setConvIndex] = useState(() =>
+    isPageVariant ? loadConvIndex(userId, accountId) : []
+  );
+  const [activeConvId, setActiveConvId] = useState(() => {
+    if (!isPageVariant) return null;
+    const idx = loadConvIndex(userId, accountId);
+    return idx[0]?.id || null;
+  });
 
-  // Persist on every messages-array change. Trimmed in persistMessages.
+  // One-time legacy v2 → v3 import (drawer → page rail) per (user, brand).
+  // Runs on mount and on brand switch. Idempotent (importLegacyV2ToIndex
+  // bails when the v3 index is non-empty).
   useEffect(() => {
-    persistMessages(userId, accountId, messages);
-  }, [userId, accountId, messages]);
+    if (!isPageVariant || !userId || !accountId) return;
+    const imported = importLegacyV2ToIndex(userId, accountId);
+    if (imported) {
+      const fresh = loadConvIndex(userId, accountId);
+      setConvIndex(fresh);
+      setActiveConvId((prev) => prev || fresh[0]?.id || null);
+    }
+    // Always re-sync convIndex from storage on brand switch so the rail
+    // reflects the new brand's history (otherwise we'd carry the prior
+    // brand's list across a BrandPicker switch).
+    setConvIndex(loadConvIndex(userId, accountId));
+    setActiveConvId((prev) => {
+      // If the prior activeConvId belongs to a different brand, drop it.
+      const idx = loadConvIndex(userId, accountId);
+      if (prev && idx.some((c) => c.id === prev)) return prev;
+      return idx[0]?.id || null;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, accountId, isPageVariant]);
+
+  // Hydrate `useChat` with the active conversation's messages whenever it
+  // changes. Drawer variant falls back to the legacy single-conv key.
+  useEffect(() => {
+    if (isPageVariant) {
+      const msgs = activeConvId ? loadConvMessages(userId, accountId, activeConvId) : [];
+      setMessages(msgs);
+    } else {
+      setMessages(loadPersistedMessages(userId, accountId));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, accountId, isPageVariant, activeConvId, setMessages]);
+
+  // Persist on every messages change. Page variant also bumps the index
+  // entry's updatedAt + back-fills the title if it was still the default.
+  useEffect(() => {
+    if (!isPageVariant) {
+      persistMessages(userId, accountId, messages);
+      return;
+    }
+    if (!activeConvId) return; // nothing to persist until the convo exists
+    saveConvMessages(userId, accountId, activeConvId, messages);
+    setConvIndex((prev) => {
+      const entry = prev.find((c) => c.id === activeConvId);
+      if (!entry) return prev;
+      const now = new Date().toISOString();
+      // Re-derive the title only when it's still the placeholder OR when
+      // we have a real user message and the stored title is the legacy
+      // import default. Avoids title flapping on every assistant token.
+      const derived = deriveConvTitle(messages);
+      const titleNeedsUpdate =
+        (entry.title === "Untitled chat" || !entry.title) &&
+        derived &&
+        derived !== "Untitled chat";
+      const updated = prev.map((c) =>
+        c.id === activeConvId
+          ? { ...c, updatedAt: now, title: titleNeedsUpdate ? derived : c.title }
+          : c
+      );
+      // Re-sort: most-recently-updated first so the rail order matches
+      // user expectation (latest activity on top).
+      updated.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+      saveConvIndex(userId, accountId, updated);
+      return updated;
+    });
+  }, [isPageVariant, userId, accountId, activeConvId, messages]);
 
   const handleSend = () => {
     const text = draft.trim();
     if (!text || isBusy) return;
+    // Page variant: if no active conversation, mint one just-in-time so
+    // the message can be persisted from the very first token.
+    if (isPageVariant && !activeConvId) {
+      const id = makeConvId();
+      const now = new Date().toISOString();
+      const title = text.length > 50 ? text.slice(0, 47).trimEnd() + "…" : text;
+      setConvIndex((prev) => {
+        const next = [{ id, title, createdAt: now, updatedAt: now }, ...prev];
+        saveConvIndex(userId, accountId, next);
+        return next;
+      });
+      setActiveConvId(id);
+    }
     setDraft("");
     sendMessage({ text });
   };
@@ -414,16 +635,56 @@ const LinkAIPanel = ({
     }
   };
 
+  // "Start new" from the page surface: clear the active conversation
+  // (which renders the hero/empty state). The next sendMessage will
+  // mint a fresh conversation in handleSend. The CURRENT conversation
+  // stays in the rail and on disk — nothing's deleted.
+  // Drawer variant keeps the original behaviour (wipes the single
+  // persisted conv) — PR D retires the drawer.
   const startNew = () => {
-    if (isBusy) stop();
-    if (messages.length > 0 && !window.confirm("Start a new conversation? The current one will be cleared.")) {
-      return;
+    if (isBusy) {
+      if (!window.confirm("Start a new conversation? The current generation will be stopped.")) {
+        return;
+      }
+      stop();
     }
-    setMessages([]);
-    try {
-      localStorage.removeItem(storageKey(userId, accountId));
-    } catch {
-      // ignore
+    if (isPageVariant) {
+      setActiveConvId(null);
+      setMessages([]);
+    } else {
+      if (messages.length > 0 && !window.confirm("Start a new conversation? The current one will be cleared.")) {
+        return;
+      }
+      setMessages([]);
+      try { localStorage.removeItem(LEGACY_V2_KEY(userId, accountId)); } catch { /* ignore */ }
+    }
+  };
+
+  // Rail handlers (page variant only).
+  const switchToConv = (convId) => {
+    if (convId === activeConvId) return;
+    if (isBusy) {
+      if (!window.confirm("Switch conversations? The current generation will be stopped.")) return;
+      stop();
+    }
+    setActiveConvId(convId);
+  };
+
+  const deleteConv = (convId) => {
+    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+    removeConvMessages(userId, accountId, convId);
+    setConvIndex((prev) => {
+      const next = prev.filter((c) => c.id !== convId);
+      saveConvIndex(userId, accountId, next);
+      return next;
+    });
+    if (activeConvId === convId) {
+      // Drop into the "fresh empty" state; user can pick another or start a new one.
+      setActiveConvId((prev) => {
+        const remaining = convIndex.filter((c) => c.id !== convId);
+        return remaining[0]?.id || null;
+      });
+      setMessages([]);
     }
   };
 
@@ -439,7 +700,7 @@ const LinkAIPanel = ({
     return null;
   }, [messages]);
 
-  return (
+  const panelContent = (
     <div
       className={"link-ai-panel" + (isPageVariant ? " link-ai-panel--page" : "")}
       role={isPageVariant ? undefined : "dialog"}
@@ -477,17 +738,8 @@ const LinkAIPanel = ({
           </div>
         </header>
       )}
-      {isPageVariant && messages.length > 0 && (
-        <button
-          type="button"
-          className="link-ai-page-startnew"
-          onClick={startNew}
-          title="Start a new conversation"
-        >
-          <Icon name="refresh" size={11} />
-          <span>Start new</span>
-        </button>
-      )}
+      {/* The floating "Start new" pill from PR A is gone — the rail's
+          "+ New chat" button is the canonical entrypoint now. */}
 
       <div className="link-ai-scroll" ref={scrollRef}>
         {messages.length === 0 && (
@@ -666,6 +918,62 @@ const LinkAIPanel = ({
           </>
         )}
       </footer>
+    </div>
+  );
+
+  // Drawer variant: just the panel, no rail.
+  if (!isPageVariant) return panelContent;
+
+  // Page variant: history rail + panel content, side by side.
+  return (
+    <div className="link-ai-page-wrapper">
+      <aside className="link-ai-history" aria-label="LinkAI chat history">
+        <button
+          type="button"
+          className="link-ai-history-new"
+          onClick={startNew}
+          title="Start a new conversation"
+        >
+          <Icon name="plus" size={12} />
+          <span>New chat</span>
+        </button>
+        <div className="link-ai-history-list">
+          {convIndex.length === 0 ? (
+            <div className="link-ai-history-empty">
+              Your past chats will appear here.
+            </div>
+          ) : (
+            convIndex.map((c) => (
+              <div
+                key={c.id}
+                className={"link-ai-history-row" + (c.id === activeConvId ? " is-active" : "")}
+              >
+                <button
+                  type="button"
+                  className="link-ai-history-row-main"
+                  onClick={() => switchToConv(c.id)}
+                  title={c.title}
+                >
+                  <span className="link-ai-history-row-title">{c.title}</span>
+                  <span className="link-ai-history-row-time">
+                    {formatRelativeTime(c.updatedAt)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="link-ai-history-row-delete"
+                  onClick={() => deleteConv(c.id)}
+                  aria-label={`Delete "${c.title}"`}
+                  title="Delete"
+                >
+                  <Icon name="x" size={11} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+      {panelContent}
     </div>
   );
 };
