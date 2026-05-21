@@ -3,7 +3,32 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-21 (**LinkAI: persistent panel mount so streaming survives SPA route navigation.** Follow-up to PR C2's "stop on switch" change. Half of the user's "keep generating in the background" ask (the rail-switch half) shipped in PR C2 as "disable rail interactions while busy, no modal". This change handles the OTHER half: navigating to a different route while a generation is in flight (e.g. user on `/linkai`, clicks `/calendar`, comes back) used to unmount `LinkAIPanel`, which killed `useChat`'s in-flight fetch — coming back showed only the user's message, no assistant reply.
+**Last updated:** 2026-05-21 (**LinkAI: rail switching + new-chat + textarea typing all allowed mid-stream.** Completes the user's "keep generating in the background" ask. PR C2 disabled the rail interactions while busy (no modal); the previous PR made `useChat` survive route nav via a persistent panel mount. This change lifts the busy-disables off everything *except* the actual Send button + delete-the-streaming-conv (the only true blockers given the AI SDK's single in-flight stream per `useChat` instance).
+
+**Mechanism — `streamConvId` state in LinkAIPanel.** New piece of state that tracks "the conv the SDK is currently streaming INTO", separately from `activeConvId` (the conv the user is currently VIEWING). Set by `handleSend` the moment we call `sendMessage`; cleared by a post-stream cleanup effect once `isBusy` goes back to false.
+
+When the two match (no stream, or user is on the streaming conv) → render `messages` straight from the SDK.
+
+When they differ → render a static snapshot of `activeConvId` from the session cache / localStorage; the SDK keeps appending stream tokens to `streamConvId` in the background. The persist effect targets `streamConvId || activeConvId` so the tokens land in the right localStorage slot, not the displayed conv's.
+
+**Post-stream cleanup effect.** When `isBusy` flips false with `streamConvId` still set: if the user is now on a different conv, rehydrate the SDK to that conv's messages (so their next `sendMessage` starts from the right baseline). Clear `streamConvId`.
+
+**Hydrate effect** gets a new short-circuit: when `streamConvId && streamConvId !== activeConvId`, skip — touching the SDK's messages array would wipe the in-flight stream's tokens.
+
+**UI changes.**
+- Rail rows: clickable mid-stream, no more `is-disabled` greying. The streaming conv gets a coral pulsing dot + "Generating…" instead of the relative time.
+- "+ New chat" button: enabled mid-stream. Clicking it clears `activeConvId` (but NOT the SDK's messages, which still belong to streamConvId) → hero/empty state on screen. The user can prep an attachment / draft text; Send stays disabled until the current stream ends.
+- Delete: still blocked, but only for the streaming conv (orphaning the in-flight request would be bad). All other rows are deletable freely.
+- Textarea: typing always enabled. Placeholder updates contextually — "Generating… type your next message" when streaming the active conv, "Type while LinkAI finishes the other chat…" when streaming for a background conv, "Message LinkAI…" otherwise.
+- Send button: disabled while `isBusy` (the documented blocker — single useChat can't fork into a parallel stream). Tooltip: "Wait for the current generation to finish, or click Stop."
+- Stop button: only renders when the user is VIEWING the streaming conv (clicking Stop while looking at a different background conv would be confusing).
+- "Generating…" status indicator + error banner: gated on `streamingActiveConv` — only show on the conv they describe.
+
+**Documented blocker.** Sending a new message in any conv while another is streaming is rejected at the UI level (Send button disabled with tooltip). The AI SDK's `useChat` has one messages array per hook instance; supporting truly parallel streams would require lifting useChat into a multi-instance pattern (one per conv) or building a server-side queue. Out of scope.
+
+Pure client + CSS. No schema/migration/env-var. Sections touched: Recent changes log; `Last updated`.)
+
+**Previous (2026-05-21):** (**LinkAI: persistent panel mount so streaming survives SPA route navigation.** Follow-up to PR C2's "stop on switch" change. Half of the user's "keep generating in the background" ask (the rail-switch half) shipped in PR C2 as "disable rail interactions while busy, no modal". This change handles the OTHER half: navigating to a different route while a generation is in flight (e.g. user on `/linkai`, clicks `/calendar`, comes back) used to unmount `LinkAIPanel`, which killed `useChat`'s in-flight fetch — coming back showed only the user's message, no assistant reply.
 
 **Fix:** the page-variant `<LinkAIPanel variant="page">` is now rendered PERSISTENTLY in App.jsx (inside `.main`, always when `auth && calendarAccountId`) wrapped in `<div className="linkai-page is-active?">`. The `is-active` class toggles based on `route.view === 'linkai'`. CSS: `.main:has(.linkai-page.is-active)` gates the 100vh/overflow-hidden layout override (so non-linkai routes aren't affected by the always-mounted panel); `.linkai-page:not(.is-active) { display: none; }` hides the panel when the user is on a different route. React state survives the visibility toggle — `useChat`, conv index, active conv id, attachments, rail scroll all persist. `renderView`'s linkai branch becomes `return null` to avoid double-mounting.
 
