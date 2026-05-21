@@ -9,7 +9,7 @@ import { Icon } from './Icon.jsx';
 import { Modal } from './primitives.jsx';
 import { updateAccountName, loadDailyReminderEnabled, updateDailyReminderEnabled } from '../lib/db.js';
 import { supabase } from '../lib/supabase';
-import { signOut } from '../lib/auth.js';
+import { signOut, setActiveBrand } from '../lib/auth.js';
 
 const SettingsView = ({ auth, mode }) => {
   const account = auth?.account || null;
@@ -91,18 +91,46 @@ const SettingsView = ({ auth, mode }) => {
     if (!account?.id) return;
     setDeleting(true); setDeleteErr('');
     try {
+      // Count remaining memberships BEFORE the delete (RPC will drop
+      // this brand's membership row too). If the user has other brands
+      // attached to this session, we route them back to the picker
+      // instead of signing them out — preserving their session.
+      const remainingMemberships = (auth?.memberships || [])
+        .filter((m) => m?.account?.id && m.account.id !== account.id)
+        .length;
+
       // Use the SECURITY DEFINER RPC — direct deletes hit RLS and silently
       // affect zero rows. The RPC enforces owner + brand-type guards and
       // cascades cleanup of every child row.
       const { error } = await supabase.rpc('delete_brand_account', { p_account_id: account.id });
       if (error) throw error;
+
       // Tell the auth layer to skip its first-time-user auto-create on the
       // next session refresh and show the brand picker instead. Cleared
       // when the user picks or creates a brand from the picker.
       try { localStorage.setItem('lr_brand_just_deleted', '1'); } catch {}
-      await signOut();
-      // Hard reload so nothing stale (tasks, cached auth, routes) hangs around.
-      window.location.reload();
+
+      if (remainingMemberships > 0) {
+        // Other brands present — bounce to the picker, keep the session.
+        // setActiveBrand(null) clears the per-user `lr_brand_<userId>`
+        // localStorage key + rehydrates `_cachedAuth` via loadProfileFor.
+        // With `lr_brand_just_deleted = '1'` set, hydrateProfile resolves
+        // to `requiresBrandSelection = true` and App.jsx renders the
+        // BrandSelectView automatically on next render.
+        await setActiveBrand(null);
+        // Hard reload anyway — per-brand state (tasks, RT subs, cached
+        // post plans, etc.) lives across the whole component tree and is
+        // simpler to drop wholesale than chase every useEffect cleanup.
+        // The reload lands on '/' which the auth-hydrated requiresBrandSelection
+        // gate (App.jsx ~line 1107) intercepts and renders BrandSelectView.
+        window.location.assign('/');
+      } else {
+        // Last brand gone — there's nothing left to operate on, so the
+        // session has no useful context. Sign the user out fully (matches
+        // pre-change behaviour).
+        await signOut();
+        window.location.reload();
+      }
     } catch (e) {
       setDeleteErr(e.message || 'Delete failed.');
       setDeleting(false);
