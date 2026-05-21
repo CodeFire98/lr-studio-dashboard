@@ -1561,7 +1561,7 @@ const PostPlanDetailView = ({
     onPlanSeen?.(plan.id);
     setPostedModalOpen(false);
 
-    // Fire-and-forget engagement refresh for every IG / LinkedIn
+    // Fire-and-forget engagement refresh for every IG / LinkedIn / X
     // publication that has a URL. Apify scrape takes ~6-10s; we don't
     // block the modal close on it. When the snapshot + embed cache
     // write lands, LivePostsView's realtime subscription picks it up
@@ -1569,22 +1569,22 @@ const PostPlanDetailView = ({
     //
     // All three platforms have viable scrapers as of 2026-05-14. X was
     // re-enabled via scrape.badger after the second-pass shootout (see
-    // _shared.ts file header). New platforms get added to this Set as
-    // their dispatch entries land in _shared.ts.
+    // scraper-lib.ts file header). New platforms get added to this Set
+    // as their dispatch entries land in scraper-lib.ts.
     //
-    // The route gates on `profiles.is_agency = true` server-side. If
-    // a brand user marks posted, the call 403s and we swallow the
-    // error — agency can hit "Refresh now" later from the Live Posts
-    // tile. Any other failure (Apify quota out, actor down) gets
-    // captured in the snapshot row's `scrape_status` ('blocked' /
-    // 'failed') so the tile shows the real state next time someone
-    // looks.
+    // Both agency and brand callers can trigger this since 2026-05-21:
+    // brand callers get a one-shot first scrape per publication
+    // (server enforces — see web/api/engagement/refresh.ts auth-model
+    // comment); agency callers can re-scrape repeatedly via the Live
+    // Posts "Refresh now" button. Any failure (Apify quota out, actor
+    // down, etc.) gets captured in the snapshot row's `scrape_status`
+    // ('blocked' / 'failed') so the tile reflects the real state on
+    // the next refresh.
     const AUTO_REFRESH_PLATFORMS = new Set(['instagram', 'linkedin', 'x']);
     for (const r of created) {
       if (!AUTO_REFRESH_PLATFORMS.has(r.platform)) continue;
       if (!r.liveUrl) continue;
       refreshEngagement(r.id).catch((e) => {
-        if (e?.status === 403) return; // brand user, expected
         console.warn('auto-refresh on mark-posted failed', e);
       });
     }

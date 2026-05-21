@@ -10,8 +10,17 @@
 // + persistence logic into `_shared.ts` so the new cron route can
 // reuse it; this file is now just auth + dispatch + write.
 //
-// Auth: JWT → `profiles.is_agency = true`. Brand users 403 — they can
-// still see metrics via SELECT RLS but can't trigger Apify scrapes.
+// Auth model (revised 2026-05-21):
+//   - Agency users (profiles.is_agency = true) can call this freely —
+//     the agency "Refresh now" button uses this for on-demand
+//     re-scrapes.
+//   - Brand users can also call this, but only for publications in a
+//     brand they're a member of, AND only when no successful
+//     snapshot already exists for that publication. This lets the
+//     mark-posted auto-refresh fire the FIRST scrape so the Live Posts
+//     tile populates immediately on a brand-user-driven post — without
+//     opening a brand-user spam vector for repeated Apify-cost spend.
+//     Subsequent updates come from the daily pg_cron at 06:00 IST.
 // =====================================================================
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -71,7 +80,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "publicationId is required" });
   }
 
-  // -------- AUTH: JWT → is_agency → 403 if brand
+  // -------- AUTH: JWT → user → load profile + publication
 
   const authHeader =
     (req.headers["authorization"] as string | undefined) ??
@@ -98,9 +107,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     .select("is_agency")
     .eq("id", user.id)
     .maybeSingle();
-  if (!profile?.is_agency) {
-    return res.status(403).json({ error: "Engagement refresh is agency-only for now." });
-  }
+  const isAgency = !!profile?.is_agency;
 
   // -------- LOAD the publication row
 
@@ -116,6 +123,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({
       error: "Publication has no live_url — paste the live post URL on the plan first.",
     });
+  }
+
+  const planAccount = Array.isArray(pub.post_plans) ? pub.post_plans[0] : pub.post_plans;
+  const brandAccountId = planAccount?.account_id ?? null;
+
+  // -------- BRAND-USER guardrails
+  //
+  // Agency callers skip both checks below and scrape on demand. Brand
+  // callers must:
+  //   1. Be a member of the publication's brand account.
+  //   2. Not have a usable snapshot for this publication yet (the
+  //      "one-shot first scrape" rule — see auth-model comment at the
+  //      top of this file). `ok` / `partial` count as usable; `failed`
+  //      / `blocked` don't, so a brand user can retry after the FIRST
+  //      scrape errored out (e.g. Apify quota was out for a moment).
+
+  if (!isAgency) {
+    if (!brandAccountId) {
+      return res.status(404).json({ error: "Publication is missing brand context." });
+    }
+    const { data: membership } = await serviceClient
+      .from("account_members")
+      .select("user_id")
+      .eq("account_id", brandAccountId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (!membership) {
+      return res.status(403).json({
+        error: "Not a member of this publication's brand.",
+      });
+    }
+    const { data: existing } = await serviceClient
+      .from("post_engagement_snapshots")
+      .select("id")
+      .eq("publication_id", pub.id)
+      .in("scrape_status", ["ok", "partial"])
+      .limit(1)
+      .maybeSingle();
+    if (existing) {
+      // Already have a usable snapshot — let the daily pg_cron handle
+      // updates from here. Return 200 so the client's "refreshing…"
+      // state resolves cleanly (no error toast).
+      return res.status(200).json({
+        ok: true,
+        publication_id: pub.id,
+        skipped: "already_scraped",
+      });
+    }
   }
 
   // -------- PLATFORM dispatch
@@ -144,11 +199,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     result.status === "blocked" ? "blocked"
     : result.status === "failed" ? "failed"
     : "ok";
-  const planAccount = Array.isArray(pub.post_plans) ? pub.post_plans[0] : pub.post_plans;
   void logServiceUsage({
     service: "apify",
     route: "/api/engagement/refresh",
-    accountId: planAccount?.account_id ?? null,
+    accountId: brandAccountId,
     userId: user.id,
     costUsd: estimateApifyCostUsd(result.actorId, 1),
     latencyMs: Date.now() - scrapeStartedAt,
