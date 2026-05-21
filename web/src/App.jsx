@@ -1110,8 +1110,14 @@ const App = () => {
       const linkaiBrandSlug = brandAccounts.find((b) => b.id === calendarAccountId)?.slug
         || auth?.account?.slug
         || null;
+      // Render as a direct child of .main (no .view / .view-inner wrapper)
+      // so the LinkAI surface controls its own scroll behaviour. The
+      // `.main:has(.linkai-page)` CSS rule pins .main to 100vh + hides
+      // overflow so only the message list inside `.copilot-scroll`
+      // scrolls — header + composer stay pinned. Same pattern that
+      // ConversationsView uses with `.conv-wrap`.
       return (
-        <div className="view"><div className="view-inner linkai-page-inner">
+        <div className="linkai-page">
           <Suspense fallback={<div className="linkai-page-fallback" />}>
             <CopilotPanel
               variant="page"
@@ -1132,7 +1138,7 @@ const App = () => {
               }}
             />
           </Suspense>
-        </div></div>
+        </div>
       );
     }
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;

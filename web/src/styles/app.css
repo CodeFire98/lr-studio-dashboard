@@ -5015,23 +5015,29 @@ input, textarea { font: inherit; color: inherit; }
 .copilot-cancel:hover { background: var(--ink-2); }
 
 /* ---------- LinkAI full-page variant ---------------------------------
-   The copilot-panel CSS above assumes a slide-in fixed-position drawer.
+   The .copilot-panel CSS above assumes a slide-in fixed-position drawer.
    When CopilotPanel is rendered with variant="page" at /c/:slug/linkai,
    we strip the fixed positioning + chrome shadow + slide animation so it
-   sits inline in the main content area like Conversations / Calendar.
-   Hero welcome state gets larger serif typography and the suggestion
-   chips lay out in a roomy grid. */
-.linkai-page-inner {
-  /* Match Conversations max-width vibe without forcing center alignment
-     — the inner panel handles its own scroll + composer footer. */
-  max-width: none;
+   fills the .main content area inline. Layout follows the Conversations
+   pattern: pin .main to 100vh + hide overflow so only the message list
+   inside .copilot-scroll scrolls; .copilot-header and .copilot-input
+   stay pinned (they're flex-shrink: 0 in the base .copilot-panel rules).
+   The app's .topbar (sticky inside .main) sits above the LinkAI surface
+   normally. */
+.main:has(.linkai-page) {
+  height: 100vh;
+  max-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   padding: 0;
+}
+.linkai-page {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  /* Fill the available height of the main column so the composer pins
-     to the bottom of the viewport instead of the bottom of content. */
-  height: calc(100vh - 56px);
+  padding: var(--space-5) var(--space-8);
+  background: var(--bg);
 }
 .linkai-page-fallback {
   flex: 1;
@@ -5052,6 +5058,7 @@ input, textarea { font: inherit; color: inherit; }
   animation: none;
   background: var(--surface);
   border: 1px solid var(--line);
+  overflow: hidden;
 }
 .copilot-panel--page .copilot-header {
   padding: var(--space-5) var(--space-6);
@@ -5060,6 +5067,9 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 22px;
 }
 .copilot-panel--page .copilot-scroll {
+  /* The middle .copilot-scroll already has overflow-y: auto + flex: 1
+     in the base rules — that's the actual scroll surface. We just
+     centre the column so messages line up with the composer below. */
   padding: var(--space-6);
   max-width: 880px;
   width: 100%;
@@ -5070,6 +5080,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 100%;
   margin: 0 auto;
   border-top: 1px solid var(--line);
+  flex-shrink: 0;
 }
 .copilot-welcome--page {
   background: transparent;
