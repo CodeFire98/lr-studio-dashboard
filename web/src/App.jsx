@@ -85,7 +85,7 @@ import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 const SIMPLE_VIEWS = new Set([
   'calendar', 'ideate', 'library', 'posts', 'brand', 'team',
   'performance', 'profile', 'settings', 'clients', 'members', 'trends', 'notes',
-  'conversations',
+  'conversations', 'linkai',
 ]);
 
 function parsePathToRoute(pathname) {
@@ -115,6 +115,7 @@ function parsePathToRoute(pathname) {
   if (path === '/trends')  return { view: 'trends' };
   if (path === '/notes')   return { view: 'notes' };
   if (path === '/conversations') return { view: 'conversations' };
+  if (path === '/linkai') return { view: 'linkai' };
   if (path === '/profile') return { view: 'profile' };
   if (path === '/settings') return { view: 'settings' };
   // Unknown path → render the 404 view. We carry the bad pathname so the
@@ -148,7 +149,7 @@ function findFullId(prefix, items) {
 const BRAND_SCOPED_VIEWS = new Set([
   'calendar', 'plan', 'ideate', 'library', 'posts', 'brand',
   'team', 'performance', 'settings', 'trends', 'notes',
-  'conversations',
+  'conversations', 'linkai',
 ]);
 
 function viewToPath(next, brandSlug) {
@@ -609,7 +610,7 @@ const App = () => {
     if (!auth?.isAgency) return;
     const r = route.view;
     const allClientsRoutes = new Set(['profile', 'settings', 'clients', 'members', 'not_found']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'conversations', 'profile', 'settings', 'clients', 'members', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'conversations', 'linkai', 'profile', 'settings', 'clients', 'members', 'not_found']);
     if (isAllClientsMode) {
       if (!allClientsRoutes.has(r)) navigate('/clients');
     } else {
@@ -936,6 +937,7 @@ const App = () => {
     if (route.view === "trends")  return <><strong>Trends Radar</strong></>;
     if (route.view === "notes")   return <><strong>Brand notes</strong></>;
     if (route.view === "conversations") return <><strong>Conversations</strong></>;
+    if (route.view === "linkai") return <><strong>LinkAI</strong></>;
     if (route.view === "team") return <><strong>Team</strong></>;
     if (route.view === "brand") return <><strong>Brand Intelligence</strong></>;
     if (route.view === "settings") return <><strong>Settings</strong></>;
@@ -1102,6 +1104,41 @@ const App = () => {
           brandSlug={convBrandSlug}
           isAgency={!!auth?.isAgency}
         />
+      );
+    }
+    if (route.view === "linkai") {
+      const linkaiBrandSlug = brandAccounts.find((b) => b.id === calendarAccountId)?.slug
+        || auth?.account?.slug
+        || null;
+      // Render as a direct child of .main (no .view / .view-inner wrapper)
+      // so the LinkAI surface controls its own scroll behaviour. The
+      // `.main:has(.linkai-page)` CSS rule pins .main to 100vh + hides
+      // overflow so only the message list inside `.copilot-scroll`
+      // scrolls — header + composer stay pinned. Same pattern that
+      // ConversationsView uses with `.conv-wrap`.
+      return (
+        <div className="linkai-page">
+          <Suspense fallback={<div className="linkai-page-fallback" />}>
+            <CopilotPanel
+              variant="page"
+              accountId={calendarAccountId}
+              brandName={calendarAccountName}
+              brandSlug={linkaiBrandSlug}
+              userId={auth?.id}
+              isAgency={!!auth?.isAgency}
+              onNavigateToPlan={(planId) => setRoute({ view: 'plan', id: planId })}
+              onCommitDraft={async (draft) => {
+                const plan = await commitAiDraftPlan({
+                  accountId: calendarAccountId,
+                  userId: auth?.id,
+                  draft,
+                });
+                upsertPostPlan(plan);
+                return plan;
+              }}
+            />
+          </Suspense>
+        </div>
       );
     }
     if (route.view === "settings") return <SettingsView auth={auth} mode={mode}/>;

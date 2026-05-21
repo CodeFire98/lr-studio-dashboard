@@ -18,36 +18,49 @@ import { BrandPicker } from './BrandPicker.jsx';
 // -------- Nav configurations -------------------------------------------
 
 // Brand-owner / agency-in-a-brand nav.
-//   - Brands see "Got ideas?" (composer) — no badge.
-//   - Agency users in a brand see "Inbox" with a badge counting submitted
-//     ideas waiting to be turned into post plans.
-//   - Tasks is gone from the sidebar in both modes — the product has
-//     moved fully onto post plans.
-//   - Agency users see "Trends Radar" and a "Linkrunner Team" entry.
+// Layout (re-ordered 2026-05-21 — LinkAI surfaced + active-work group on top):
+//   Active surfaces (high-frequency daily use):
+//     - Social Calendar
+//     - LinkAI                  ← new full-page AI surface (also still
+//                                  reachable via the topbar "✨ Co-pilot"
+//                                  trigger as a right-side panel)
+//     - Conversations
+//     - Live posts
+//   ─── separator ────────────────────────────────────────────────────
+//   Reference / setup (lower-frequency):
+//     - Brand Intelligence
+//     - Library
+//     - Trends Radar             ← agency only
+//     - Brand notes              ← long-term memory the AI reads on every
+//                                  call; opened to brand in migration 0052
+//     - Idea dump (Inbox for agency)
+//
+// Sentinel items with `sep: true` render as a thin divider in the loop.
+// Tasks is gone from the sidebar — the product moved fully onto post plans.
 const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, conversationsUnreadCount, isAgency }) => {
   const primary = [
     { key: "calendar", label: "Social Calendar", icon: "calendar", badge: calendarUnreadCount || undefined },
-    isAgency
-      ? { key: "ideate", label: "Inbox", icon: "home", badge: ideaQueueCount || undefined }
-      : { key: "ideate", label: "Idea dump", icon: "send" },
+    { key: "linkai", label: "LinkAI", icon: "sparkles" },
     // One unified chat per brand — replaces the per-plan Conversation
     // tab. Brand sees a single thread with their agency; agency staff
     // see the same thread, scoped via BrandPicker.
     { key: "conversations", label: "Conversations", icon: "chat", badge: conversationsUnreadCount || undefined },
+    { key: "posts", label: "Live posts", icon: "link" },
+    { key: "sep_active", sep: true },
     { key: "brand", label: "Brand Intelligence", icon: "brand" },
     { key: "library", label: "Library", icon: "library" },
-    { key: "posts", label: "Live posts", icon: "link" },
   ];
   if (isAgency) {
     // Agency-only entry — Trends Radar surfaces external signals
     // (added 2026-05-06). Stays agency-only for now.
     primary.push({ key: "trends", label: "Trends Radar", icon: "sparkles" });
   }
-  // Brand notes — long-term memory the AI Co-pilot reads on every
-  // call. Originally agency-only (migration 0040 + sidebar gating);
-  // opened to brand in migration 0052 so brand can curate their own
-  // memory layer.
   primary.push({ key: "notes",  label: "Brand notes",  icon: "comment"  });
+  primary.push(
+    isAgency
+      ? { key: "ideate", label: "Inbox", icon: "home", badge: ideaQueueCount || undefined }
+      : { key: "ideate", label: "Idea dump", icon: "send" }
+  );
   const secondary = [
     { key: "performance", label: "Performance", icon: "chart" },
     { key: "team", label: isAgency ? "Brand team" : "Team", icon: "team" },
@@ -156,17 +169,21 @@ const Sidebar = ({
       )}
 
       <nav className="nav">
-        {primaryItems.map((n) => (
-          <button
-            key={n.key}
-            className={"nav-item " + (route.view === n.key ? "active" : "")}
-            onClick={() => setRoute({ view: n.key })}
-          >
-            <Icon name={n.icon} size={16} />
-            <span>{n.label}</span>
-            {n.badge && <span className="badge-count">{n.badge}</span>}
-          </button>
-        ))}
+        {primaryItems.map((n) =>
+          n.sep ? (
+            <div key={n.key} className="nav-sep" aria-hidden />
+          ) : (
+            <button
+              key={n.key}
+              className={"nav-item " + (route.view === n.key ? "active" : "")}
+              onClick={() => setRoute({ view: n.key })}
+            >
+              <Icon name={n.icon} size={16} />
+              <span>{n.label}</span>
+              {n.badge && <span className="badge-count">{n.badge}</span>}
+            </button>
+          )
+        )}
       </nav>
 
       {/* Guest teaser — features locked behind login */}
