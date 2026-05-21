@@ -1,11 +1,11 @@
 // =====================================================================
-// /api/ai/suggestions — Vercel serverless function — Co-pilot welcome chips
+// /api/ai/suggestions — Vercel serverless function — LinkAI welcome chips
 //
 // Generates 4 short, brand-aware prompt-starter strings the agency admin
-// can click to drop into the Co-pilot chat textarea. Surfaces only on
-// CopilotPanel's empty welcome screen.
+// can click to drop into the LinkAI chat textarea. Surfaces only on
+// LinkAIPanel's empty welcome screen.
 //
-// Why a separate route: the Co-pilot chat / inline copy / image routes
+// Why a separate route: the LinkAI chat / inline copy / image routes
 // are all session-oriented (admin → AI back-and-forth). This route is a
 // single one-shot generation that fires on panel open + on the Refresh
 // chip button. Different shape, different cost profile (one short
@@ -75,7 +75,7 @@ const SUGGESTIONS_SCHEMA = z.object({
         .min(8)
         .max(150)
         .describe(
-          "A short prompt the admin would say to the Co-pilot, in first person. 8-15 words ideal. Specific to THIS brand. No quotes around it.",
+          "A short prompt the admin would say to the LinkAI, in first person. 8-15 words ideal. Specific to THIS brand. No quotes around it.",
         ),
     )
     .length(4)
@@ -84,7 +84,7 @@ const SUGGESTIONS_SCHEMA = z.object({
     ),
 });
 
-const SYSTEM_PROMPT = `You are surfacing 4 short prompt-starters for an agency admin to click in a Co-pilot welcome screen. Each prompt is something the admin would type to the AI to kick off a session — in first person, action-oriented.
+const SYSTEM_PROMPT = `You are surfacing 4 short prompt-starters for an agency admin to click in a LinkAI welcome screen. Each prompt is something the admin would type to the AI to kick off a session — in first person, action-oriented.
 
 Constraints:
 - 8-15 words each. Tappable on mobile.
@@ -188,7 +188,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // amount of per-call entropy (timestamp) so the model isn't repeating
     // itself across refreshes within the same cache window.
     //
-    // streamObject + pipeTextStreamToResponse: the client (CopilotPanel
+    // streamObject + pipeTextStreamToResponse: the client (LinkAIPanel
     // via experimental_useObject) parses partial JSON as it streams,
     // showing chips one-by-one as each idea's title resolves. Same UX
     // pattern as the image-ideas panel.
@@ -238,7 +238,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               ? `\n\nALREADY-SHOWN suggestions the admin has seen in this session (DO NOT repeat or paraphrase any of these — pick genuinely different angles, hooks, and content types):\n${prior.map((s) => `- ${s}`).join("\n")}`
               : "";
 
-            return `Surface 4 fresh prompt-starter suggestions for the Co-pilot welcome screen.
+            return `Surface 4 fresh prompt-starter suggestions for the LinkAI welcome screen.
 
 The admin clicks Refresh to get DIFFERENT angles from previous generations. Explore varied hooks — different post types, different platforms, different campaign frames, different audiences, different seasonal hooks.
 

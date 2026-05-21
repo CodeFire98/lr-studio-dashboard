@@ -2118,7 +2118,7 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
           restructure — notes are an agency-internal memory surface that
           deserved its own workspace rather than being buried inside
           Brand Intelligence. The same data still flows into the AI
-          Co-pilot's brand context on every call. */}
+          LinkAI's brand context on every call. */}
 
       <ReferencesCard accountId={accountId} isAgency={!!auth.isAgency} assets={assets}/>
 

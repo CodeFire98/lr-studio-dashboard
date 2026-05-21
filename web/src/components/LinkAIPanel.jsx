@@ -1,8 +1,8 @@
 // =====================================================================
-// CopilotPanel.jsx — Agency-side AI Co-pilot sidebar drawer
+// LinkAIPanel.jsx — Agency-side LinkAI sidebar drawer
 // =====================================================================
 //
-// AI Co-pilot v2 Phase 2a: rewritten around `useChat` from @ai-sdk/react +
+// LinkAI v2 Phase 2a: rewritten around `useChat` from @ai-sdk/react +
 // selected AI Elements components (Conversation, Message, MessageResponse).
 // The custom SSE parser, manual message state, and abort logic from v1
 // are all replaced by useChat. Wire protocol on /api/ai/chat is now the
@@ -10,18 +10,21 @@
 // server-side change that ships in the same PR.
 //
 // Visual identity: panel chrome (header, footer with textarea/send) stays
-// on the hand-written `.copilot-*` CSS so it integrates with the rest of
+// on the hand-written `.link-ai-*` CSS so it integrates with the rest of
 // the dashboard. The message-rendering area inside the scroll is wrapped
 // in `<div className="ai-elements">` so the shadcn-themed AI Elements
 // components pick up their CSS-variable tokens (scoped block lives in
 // web/src/styles/elements.css).
 //
 // Persistence: messages persist to localStorage keyed by (userId, accountId)
-// under a v2 key (`lr_copilot_conv_v2_*`). v1 entries under the old key
-// are orphaned — admin starts fresh on first open after deploy. By design;
-// v1 message shape was incompatible with the new UIMessage `parts` model.
+// under a v2 key (`lr_copilot_conv_v2_*`). The literal "copilot" in that
+// key string is deliberately preserved through the 2026-05-21 Co-pilot →
+// LinkAI rename so existing users don't lose their chat history. v1 entries
+// under the old (non-v2) key are orphaned — admin starts fresh on first
+// open after deploy. By design; v1 message shape was incompatible with the
+// new UIMessage `parts` model.
 //
-// Triggered from App.jsx topbar "✨ Co-pilot" button. Visibility gated by:
+// Triggered from App.jsx topbar "✨ LinkAI" button. Visibility gated by:
 //   - User is agency staff
 //   - A brand is selected (not All-clients mode)
 //   - The brand is in VITE_AI_COPILOT_BRAND_IDS allowlist
@@ -40,11 +43,11 @@ import { DefaultChatTransport } from "ai";
 import { z } from "zod";
 import { Icon } from "./Icon.jsx";
 import { supabase } from "../lib/supabase.js";
-import { buildTemplatedCopilotSuggestions } from "../lib/db.js";
+import { buildTemplatedLinkAISuggestions } from "../lib/db.js";
 import { formatPlanChipTime } from "./ConversationsView.jsx";
 // AI Elements' `Conversation` was intentionally dropped from Phase 2a —
 // its stick-to-bottom scroll behaviour conflicts with the existing
-// `.copilot-scroll` overflow logic. We keep manual auto-scroll via a
+// `.link-ai-scroll` overflow logic. We keep manual auto-scroll via a
 // scrollRef + useEffect (same pattern as v1). Reconsider in Phase 3
 // if there's a stick-to-bottom UX win that justifies the layout rework.
 import { MessageResponse } from "@/components/ai-elements/message";
@@ -112,13 +115,13 @@ const SUGGESTIONS_SCHEMA = z.object({
 
 // `variant`:
 //   - 'panel' (default): right-side drawer with chrome (header + close
-//     button). Mounted from App.jsx when the topbar "✨ Co-pilot" trigger
-//     is on. Uses `.copilot-panel` styles in app.css.
+//     button). Mounted from App.jsx when the topbar "✨ LinkAI" trigger
+//     is on. Uses `.link-ai-panel` styles in app.css.
 //   - 'page': inline full-page render. Used by the new /c/:slug/linkai
 //     route. Drops the close button (the sidebar nav owns route changes),
 //     widens the layout, and renders a bigger empty-state hero. Uses
-//     `.copilot-panel.copilot-panel--page` overrides in app.css.
-const CopilotPanel = ({
+//     `.link-ai-panel.link-ai-panel--page` overrides in app.css.
+const LinkAIPanel = ({
   accountId,
   brandName,
   userId,
@@ -161,7 +164,7 @@ const CopilotPanel = ({
       // useChat surfaces the error via the `error` state already; log
       // for debugging without spamming the user.
       // eslint-disable-next-line no-console
-      console.error("[Copilot] stream error:", err);
+      console.error("[LinkAI] stream error:", err);
     },
   });
 
@@ -178,7 +181,7 @@ const CopilotPanel = ({
   // as the image-ideas panel. Refresh button re-fires submit().
   //
   // FALLBACK path: when the hook errors (offline, auth, allowlist,
-  // brand-kit missing), we fire `buildTemplatedCopilotSuggestions`
+  // brand-kit missing), we fire `buildTemplatedLinkAISuggestions`
   // for deterministic brand-aware chips from Supabase data alone.
   // No AI cost, no streaming, no spinner — just a graceful safety net.
   //
@@ -197,7 +200,7 @@ const CopilotPanel = ({
     },
     onError: (err) => {
       // eslint-disable-next-line no-console
-      console.error("[Copilot/suggestions] stream error:", err);
+      console.error("[LinkAI/suggestions] stream error:", err);
     },
   });
 
@@ -240,7 +243,7 @@ const CopilotPanel = ({
   useEffect(() => {
     if (!suggestionsHook.error || !accountId) return;
     let cancelled = false;
-    buildTemplatedCopilotSuggestions({ accountId })
+    buildTemplatedLinkAISuggestions({ accountId })
       .then((rows) => {
         if (cancelled) return;
         if (Array.isArray(rows) && rows.length > 0) setTemplatedSuggestions(rows);
@@ -438,37 +441,37 @@ const CopilotPanel = ({
 
   return (
     <div
-      className={"copilot-panel" + (isPageVariant ? " copilot-panel--page" : "")}
+      className={"link-ai-panel" + (isPageVariant ? " link-ai-panel--page" : "")}
       role={isPageVariant ? undefined : "dialog"}
-      aria-label={isPageVariant ? undefined : "AI Co-pilot"}
+      aria-label={isPageVariant ? undefined : "LinkAI"}
     >
       {/* Page variant deliberately skips the in-panel header — the
           breadcrumb in the app's topbar already says "LinkAI" and the
           BrandPicker shows the brand context, so a second header inside
           the card was redundant and ate ~80px of vertical chat space.
           "Start new" surfaces as a small floating button (rendered below
-          the .copilot-panel--page outer) only when there's a conversation
+          the .link-ai-panel--page outer) only when there's a conversation
           to clear. */}
       {!isPageVariant && (
-        <header className="copilot-header">
+        <header className="link-ai-header">
           <div>
             <h4>
-              <span className="copilot-spark" aria-hidden>✨</span>
-              <span>Co-pilot</span>
+              <span className="link-ai-spark" aria-hidden>✨</span>
+              <span>LinkAI</span>
             </h4>
-            <div className="copilot-sub">{brandName || "Brand"}</div>
+            <div className="link-ai-sub">{brandName || "Brand"}</div>
           </div>
-          <div className="copilot-header-actions">
+          <div className="link-ai-header-actions">
             {messages.length > 0 && (
               <button
-                className="copilot-header-btn"
+                className="link-ai-header-btn"
                 onClick={startNew}
                 title="Start a new conversation"
               >
                 Start new
               </button>
             )}
-            <button className="copilot-close" onClick={onClose} aria-label="Close Co-pilot">
+            <button className="link-ai-close" onClick={onClose} aria-label="Close LinkAI">
               <Icon name="x" size={14} />
             </button>
           </div>
@@ -477,7 +480,7 @@ const CopilotPanel = ({
       {isPageVariant && messages.length > 0 && (
         <button
           type="button"
-          className="copilot-page-startnew"
+          className="link-ai-page-startnew"
           onClick={startNew}
           title="Start a new conversation"
         >
@@ -486,12 +489,12 @@ const CopilotPanel = ({
         </button>
       )}
 
-      <div className="copilot-scroll" ref={scrollRef}>
+      <div className="link-ai-scroll" ref={scrollRef}>
         {messages.length === 0 && (
-          <div className={"copilot-welcome" + (isPageVariant ? " copilot-welcome--page" : "")}>
+          <div className={"link-ai-welcome" + (isPageVariant ? " link-ai-welcome--page" : "")}>
             {isPageVariant ? (
               <>
-                <h2 className="copilot-welcome-hero">
+                <h2 className="link-ai-welcome-hero">
                   Tell me what you want to make for <strong>{brandName || "this brand"}</strong>.
                 </h2>
                 <p>
@@ -500,33 +503,33 @@ const CopilotPanel = ({
               </>
             ) : (
               <>
-                <p>Hi! I'm your Co-pilot for <strong>{brandName || "this brand"}</strong>.</p>
+                <p>Hi! I'm your LinkAI for <strong>{brandName || "this brand"}</strong>.</p>
                 <p>Ask me to draft a post, plan next week's content, or brainstorm a campaign — I'll create real drafts in the Social Calendar that you can edit and submit.</p>
               </>
             )}
-            <div className="copilot-suggestions-head">
-              <span className="copilot-suggestions-label">Try one of these</span>
+            <div className="link-ai-suggestions-head">
+              <span className="link-ai-suggestions-label">Try one of these</span>
               <button
                 type="button"
-                className="copilot-suggestions-refresh"
+                className="link-ai-suggestions-refresh"
                 onClick={refreshSuggestions}
                 disabled={suggestionsLoading || !accountId}
                 title="Generate fresh suggestions"
                 aria-label="Refresh suggestions"
               >
                 {suggestionsLoading ? (
-                  <span className="copilot-suggestions-spinner" aria-hidden />
+                  <span className="link-ai-suggestions-spinner" aria-hidden />
                 ) : (
                   <Icon name="refresh" size={11} />
                 )}
                 <span>Refresh</span>
               </button>
             </div>
-            <div className="copilot-suggestions">
+            <div className="link-ai-suggestions">
               {suggestions.map((s, i) => (
                 <button
                   key={`${i}-${s.slice(0, 16)}`}
-                  className="copilot-suggestion"
+                  className="link-ai-suggestion"
                   onClick={() => {
                     setDraft(s);
                     textareaRef.current?.focus();
@@ -540,13 +543,13 @@ const CopilotPanel = ({
         )}
 
         {messages.map((m) => (
-          <div key={m.id} className={`copilot-msg copilot-msg-${m.role}`}>
+          <div key={m.id} className={`link-ai-msg link-ai-msg-${m.role}`}>
             {m.parts.map((part, idx) => renderPart(part, idx, m.id, m.role, { onNavigateToPlan, onCommitDraft, brandSlug }))}
           </div>
         ))}
 
         {isBusy && messages.length > 0 && (
-          <CopilotStatus status={status} messages={messages} />
+          <LinkAIStatus status={status} messages={messages} />
         )}
 
         {/* Gate the error banner on messages.length > 0 so that
@@ -556,7 +559,7 @@ const CopilotPanel = ({
             way to reset the error UI on conversation reset. The error
             naturally re-renders on the next failed sendMessage anyway. */}
         {error && messages.length > 0 && (
-          <div className="copilot-error">
+          <div className="link-ai-error">
             <Icon name="alert" size={12} /> {error.message || String(error)}
           </div>
         )}
@@ -571,7 +574,7 @@ const CopilotPanel = ({
       {detached && messages.length > 0 && (
         <button
           type="button"
-          className="copilot-jump-latest"
+          className="link-ai-jump-latest"
           onClick={jumpToLatest}
           aria-label="Scroll to latest message"
         >
@@ -580,8 +583,8 @@ const CopilotPanel = ({
         </button>
       )}
 
-      <footer className={"copilot-input" + (isPageVariant ? " copilot-input--page" : "")}>
-        <CopilotFollowUpChips
+      <footer className={"link-ai-input" + (isPageVariant ? " link-ai-input--page" : "")}>
+        <LinkAIFollowUpChips
           messages={messages}
           isBusy={isBusy}
           onPick={(text) => {
@@ -605,7 +608,7 @@ const CopilotPanel = ({
              developer/debug detail that ate space without earning
              attention. */
           <>
-            <div className="copilot-page-row">
+            <div className="link-ai-page-row">
               <textarea
                 ref={textareaRef}
                 value={draft}
@@ -616,10 +619,10 @@ const CopilotPanel = ({
                 rows={1}
               />
               {isBusy ? (
-                <button className="copilot-send copilot-cancel" onClick={stop}>Stop</button>
+                <button className="link-ai-send link-ai-cancel" onClick={stop}>Stop</button>
               ) : (
                 <button
-                  className="copilot-send"
+                  className="link-ai-send"
                   onClick={handleSend}
                   disabled={!draft.trim()}
                 >
@@ -627,7 +630,7 @@ const CopilotPanel = ({
                 </button>
               )}
             </div>
-            <div className="copilot-page-hint">⌘↩ to send</div>
+            <div className="link-ai-page-hint">⌘↩ to send</div>
           </>
         ) : (
           <>
@@ -636,12 +639,12 @@ const CopilotPanel = ({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={isBusy ? "Generating…" : "Message the Co-pilot…  (⌘↩ to send)"}
+              placeholder={isBusy ? "Generating…" : "Message the LinkAI…  (⌘↩ to send)"}
               disabled={isBusy}
               rows={2}
             />
-            <div className="copilot-input-row">
-              <div className="copilot-meta">
+            <div className="link-ai-input-row">
+              <div className="link-ai-meta">
                 {lastUsage && (
                   <span title="input / output tokens (cache reads in parens)">
                     {lastUsage.input_tokens ?? 0} in {lastUsage.cache_read_input_tokens ? `(${lastUsage.cache_read_input_tokens} cached)` : ""} · {lastUsage.output_tokens ?? 0} out
@@ -649,10 +652,10 @@ const CopilotPanel = ({
                 )}
               </div>
               {isBusy ? (
-                <button className="copilot-send copilot-cancel" onClick={stop}>Stop</button>
+                <button className="link-ai-send link-ai-cancel" onClick={stop}>Stop</button>
               ) : (
                 <button
-                  className="copilot-send"
+                  className="link-ai-send"
                   onClick={handleSend}
                   disabled={!draft.trim()}
                 >
@@ -667,7 +670,7 @@ const CopilotPanel = ({
   );
 };
 
-// CopilotFollowUpChips — quick-reply chips above the textarea sourced
+// LinkAIFollowUpChips — quick-reply chips above the textarea sourced
 // from the model's `suggest_follow_ups` tool call on the latest
 // assistant message. Click a chip → prefill the textarea (admin can
 // edit, then send normally via Enter / Send button).
@@ -681,17 +684,17 @@ const CopilotPanel = ({
 //   - Chips disappear while a turn is streaming (isBusy → hidden).
 //   - Chips disappear if there's no follow-up tool call on the latest
 //     reply (model forgot to emit one — graceful degradation).
-function CopilotFollowUpChips({ messages, isBusy, onPick }) {
+function LinkAIFollowUpChips({ messages, isBusy, onPick }) {
   if (isBusy) return null;
   const chips = extractLatestFollowUpChips(messages);
   if (!chips || !chips.length) return null;
   return (
-    <div className="copilot-followups" role="group" aria-label="Suggested follow-ups">
+    <div className="link-ai-followups" role="group" aria-label="Suggested follow-ups">
       {chips.map((chip, i) => (
         <button
           key={i}
           type="button"
-          className="copilot-followup-chip"
+          className="link-ai-followup-chip"
           onClick={() => onPick(chip)}
           title="Click to prefill the message — edit if you want, then send."
         >
@@ -730,8 +733,8 @@ function extractLatestFollowUpChips(messages) {
   return null;
 }
 
-// CopilotStatus — replaces the old 3-dot-only typing indicator with a
-// descriptive label of what the copilot is currently doing. Derived
+// LinkAIStatus — replaces the old 3-dot-only typing indicator with a
+// descriptive label of what the LinkAI is currently doing. Derived
 // entirely from useChat's `status` + the latest assistant message's
 // parts — no extra server channel needed. Updates in real time as the
 // model moves through tool calls / text generation.
@@ -745,14 +748,14 @@ function extractLatestFollowUpChips(messages) {
 //
 // The 3-dot animation stays — it's small, lively, and reinforces "still
 // working". The label sits beside it so the admin always knows WHAT.
-function CopilotStatus({ status, messages }) {
+function LinkAIStatus({ status, messages }) {
   const label = deriveStatusLabel(status, messages);
   return (
-    <div className="copilot-typing">
-      <span className="copilot-dot" />
-      <span className="copilot-dot" />
-      <span className="copilot-dot" />
-      <span className="copilot-status-label">{label}</span>
+    <div className="link-ai-typing">
+      <span className="link-ai-dot" />
+      <span className="link-ai-dot" />
+      <span className="link-ai-dot" />
+      <span className="link-ai-status-label">{label}</span>
     </div>
   );
 }
@@ -807,7 +810,7 @@ function deriveStatusLabel(status, messages) {
 
 // Mirror of ToolCard's running-state headlines. Duplicated rather than
 // extracted because the two components have different ergonomics
-// (ToolCard needs state + input + output; CopilotStatus only sees the
+// (ToolCard needs state + input + output; LinkAIStatus only sees the
 // in-flight tool call) and the headlines themselves are short.
 function runningToolLabel(toolName, input) {
   if (toolName === "create_post_plan_draft") return "Drafting a post plan…";
@@ -852,7 +855,7 @@ const SKILL_SLUG_TITLES = {
 
 // renderPart — dispatches a UIMessage `parts[]` entry to the right component.
 //
-// User messages keep v1's coral-on-white `.copilot-bubble` styling so they
+// User messages keep v1's coral-on-white `.link-ai-bubble` styling so they
 // integrate with the rest of the dashboard's coral palette. Assistant text
 // uses AI Elements MessageResponse (Streamdown-backed markdown — proper
 // support for headers, lists, code blocks, etc., something v1's tiny
@@ -865,13 +868,13 @@ const SKILL_SLUG_TITLES = {
 function renderPart(part, idx, messageId, role, ctx) {
   if (part.type === "text") {
     if (role === "user") {
-      return <div key={`${messageId}-t${idx}`} className="copilot-bubble">{part.text}</div>;
+      return <div key={`${messageId}-t${idx}`} className="link-ai-bubble">{part.text}</div>;
     }
     // `.ai-elements` MUST be tight-scoped to JUST the Streamdown render area.
     // If it covered the scroll surface or the whole message, shadcn's
     // neutral `--accent: 0 0% 96.1%` would override the global coral
     // `--accent: #E8553D` for any descendant using `var(--accent)` —
-    // most importantly `.copilot-bubble` (white text on coral). Same
+    // most importantly `.link-ai-bubble` (white text on coral). Same
     // regression as Phase 0 hotfix; same fix: keep `.ai-elements` only
     // where shadcn-token-aware components actually render.
     //
@@ -880,7 +883,7 @@ function renderPart(part, idx, messageId, role, ctx) {
     // panel context (overflowed below the chat with no backdrop). Copy
     // + download buttons stay (useful when AI returns comparison tables).
     return (
-      <div key={`${messageId}-t${idx}`} className="copilot-prose ai-elements">
+      <div key={`${messageId}-t${idx}`} className="link-ai-prose ai-elements">
         <MessageResponse controls={{ table: { copy: true, download: true, fullscreen: false } }}>
           {part.text}
         </MessageResponse>
@@ -893,7 +896,7 @@ function renderPart(part, idx, messageId, role, ctx) {
   if (typeof part.type === "string" && part.type.startsWith("tool-")) {
     const toolName = part.type.slice("tool-".length);
     // suggest_follow_ups is a UI-only signal — chips render above the
-    // textarea via CopilotFollowUpChips, not as a tile in the message
+    // textarea via LinkAIFollowUpChips, not as a tile in the message
     // thread. Drop the part to avoid a redundant tile.
     if (toolName === "suggest_follow_ups") return null;
     return (
@@ -977,7 +980,7 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
   // devtools when something genuinely goes wrong.
   if (statusKey === "error") {
     if (typeof console !== "undefined" && displayError) {
-      console.warn("[copilot] suppressed tool error tile", { toolName, displayError });
+      console.warn("[LinkAI] suppressed tool error tile", { toolName, displayError });
     }
     return null;
   }
@@ -1032,46 +1035,46 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
   }
 
   return (
-    <div className={`copilot-tool copilot-tool-${statusKey}`}>
-      <div className="copilot-tool-head">
+    <div className={`link-ai-tool link-ai-tool-${statusKey}`}>
+      <div className="link-ai-tool-head">
         <Icon name={statusKey === "running" ? "sparkles" : statusKey === "ok" ? "check" : "alert"} size={12} />
         <span>{headline}</span>
       </div>
       {isPlan && input?.concept && (
-        <div className="copilot-tool-body">
-          <div className="copilot-tool-concept">{input.concept}</div>
+        <div className="link-ai-tool-body">
+          <div className="link-ai-tool-concept">{input.concept}</div>
           {input?.scheduled_at && (
-            <div className="copilot-tool-when">
+            <div className="link-ai-tool-when">
               <Icon name="calendar" size={11} />
               <span>{formatPlanChipTime(input.scheduled_at)}</span>
             </div>
           )}
           {Array.isArray(input.platforms) && (
-            <div className="copilot-tool-platforms">
+            <div className="link-ai-tool-platforms">
               {input.platforms.map((p) => (
-                <span key={p} className="copilot-tool-pill">{p}</span>
+                <span key={p} className="link-ai-tool-pill">{p}</span>
               ))}
             </div>
           )}
         </div>
       )}
       {isNote && input?.body && (
-        <div className="copilot-tool-body">
-          <div className="copilot-tool-note-body">"{input.body}"</div>
+        <div className="link-ai-tool-body">
+          <div className="link-ai-tool-note-body">"{input.body}"</div>
           {input.is_pinned && (
-            <div className="copilot-tool-note-pinned">
+            <div className="link-ai-tool-note-pinned">
               <Icon name="check" size={10} /> Pinned — rides on every AI call
             </div>
           )}
         </div>
       )}
       {statusKey === "error" && displayError && (
-        <div className="copilot-tool-error">{displayError}</div>
+        <div className="link-ai-tool-error">{displayError}</div>
       )}
       {isPlan && ok && (isProposedPlan || committedId) && (
         <>
           <button
-            className="copilot-tool-cta"
+            className="link-ai-tool-cta"
             disabled={committing}
             onClick={async () => {
               if (committing) return;
@@ -1109,7 +1112,7 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
                 : "Open plan →"}
           </button>
           {commitError && (
-            <div className="copilot-tool-error" role="alert">{commitError}</div>
+            <div className="link-ai-tool-error" role="alert">{commitError}</div>
           )}
         </>
       )}
@@ -1117,8 +1120,8 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
   );
 }
 
-export { CopilotPanel };
+export { LinkAIPanel };
 // Default export so React.lazy() in App.jsx can code-split the entire panel
 // (and its heavy dependency tree — Streamdown, shiki language packs, mermaid)
-// behind admin clicking the topbar Co-pilot trigger.
-export default CopilotPanel;
+// behind admin clicking the topbar LinkAI trigger.
+export default LinkAIPanel;

@@ -15,11 +15,11 @@
 // gate just prevents the empty-state UI from rendering / the loading
 // state from spinning.
 //
-// The notes here are the same `brand_kit_notes` rows the AI Co-pilot
+// The notes here are the same `brand_kit_notes` rows the LinkAI
 // reads as part of its brand context on every call. Two ways notes
 // land in the table:
 //   1) Admin types into this UI's composer and clicks Save
-//   2) Admin tells the chat Co-pilot "remember that…" and the model calls
+//   2) Admin tells the chat LinkAI "remember that…" and the model calls
 //      the `write_brand_note` tool
 //
 // Both paths surface the same way here — pinned notes always at the top,
@@ -29,7 +29,7 @@
 // brandContext.js.
 //
 // Realtime: subscribed via subscribeToBrandKitNotes so a tool-call from
-// the Co-pilot panel shows up in this section without a refresh, and
+// the LinkAI panel shows up in this section without a refresh, and
 // vice-versa.
 // =====================================================================
 
@@ -62,7 +62,7 @@ function formatRelative(iso) {
 // Public component — open to BOTH agency and brand teammates as of
 // migration 0052 (was agency-only via 0040 → "Phase 3 brand-notes
 // restructure"). Brand can read AND write notes for their own brand;
-// the AI Co-pilot pulls the same notes into its context regardless
+// the LinkAI pulls the same notes into its context regardless
 // of who wrote them. The agency/brand distinction is preserved in
 // `isAgency` for downstream UI nuance (none today, but the prop is
 // still threaded for future per-role bits).
@@ -222,7 +222,7 @@ const BrandNotesSectionInner = ({ accountId, isAgency, userId }) => {
             <span className="brand-notes-count">{notes.length}</span>
           </div>
           <div className="card-sub">
-            Free-form facts the AI Co-pilot remembers about this brand — written here or saved automatically when the admin tells chat "remember that…". Pinned notes ride along on every AI call.
+            Free-form facts the LinkAI remembers about this brand — written here or saved automatically when the admin tells chat "remember that…". Pinned notes ride along on every AI call.
           </div>
         </div>
         {isAgency && !composeOpen && (
@@ -292,7 +292,7 @@ const BrandNotesSectionInner = ({ accountId, isAgency, userId }) => {
         <div className="brand-notes-empty">
           <p>No notes yet.</p>
           <p style={{ fontSize: 12, color: 'var(--ink-4)' }}>
-            Notes accumulate over time — either added here or saved automatically when you tell the Co-pilot chat "remember that…". The more notes you have, the more the AI knows this brand.
+            Notes accumulate over time — either added here or saved automatically when you tell the LinkAI chat "remember that…". The more notes you have, the more the AI knows this brand.
           </p>
         </div>
       ) : (

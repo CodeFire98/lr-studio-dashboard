@@ -1,7 +1,7 @@
 // =====================================================================
 // /api/ai/copy — Vercel serverless function — AI inline copy generation
 //
-// AI Co-pilot v2 Phase 2b: wire protocol switched to the AI SDK's
+// LinkAI v2 Phase 2b: wire protocol switched to the AI SDK's
 // text-stream protocol (raw text/plain chunks). AICopyPreview.jsx in
 // the same PR is rewritten around `useCompletion({ streamProtocol: 'text' })`
 // and consumes the stream natively. The legacy SSE event names

@@ -2,7 +2,7 @@
 // AIImagePromptPanel — AI-driven image direction → prompt flow
 // =====================================================================
 //
-// AI Co-pilot v2 Phase 2c: rewritten around two AI SDK hooks —
+// LinkAI v2 Phase 2c: rewritten around two AI SDK hooks —
 // `experimental_useObject` for the schema-driven ideas pass and
 // `useCompletion` for the freeform prompt expansion. The v1 implementation
 // kept a 7-phase state machine ('idle' → 'ideas_compose' → 'ideas_streaming'
@@ -70,7 +70,7 @@ const IDEAS_SCHEMA = z.object({
 // Custom fetch wrapper that resolves the Supabase session token at
 // request time and adds it as Authorization. Same pattern as
 // AICopyPreview.jsx (Phase 2b) and the DefaultChatTransport in
-// CopilotPanel.jsx (Phase 2a).
+// LinkAIPanel.jsx (Phase 2a).
 async function fetchWithAuth(url, init) {
   const { data: { session } } = await supabase.auth.getSession();
   const headers = new Headers(init?.headers);
@@ -392,9 +392,9 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
         {section === 'ideas' && subPhase === 'streaming' && (
           <div className="ai-image-section">
             <div className="ai-image-streaming-row">
-              <span className="copilot-dot"/>
-              <span className="copilot-dot"/>
-              <span className="copilot-dot"/>
+              <span className="link-ai-dot"/>
+              <span className="link-ai-dot"/>
+              <span className="link-ai-dot"/>
               <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--ink-4)' }}>
                 Generating direction ideas…
               </span>
@@ -528,9 +528,9 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
             <div className="ai-image-prompt-box">
               {promptHook.completion ? <pre>{promptHook.completion}</pre> : (
                 <div className="ai-image-streaming-row">
-                  <span className="copilot-dot"/>
-                  <span className="copilot-dot"/>
-                  <span className="copilot-dot"/>
+                  <span className="link-ai-dot"/>
+                  <span className="link-ai-dot"/>
+                  <span className="link-ai-dot"/>
                 </div>
               )}
             </div>

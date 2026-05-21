@@ -934,7 +934,7 @@ const PostPlanDetailView = ({
   onPlanChanged,  // (plan) => void — optimistic upsert into App's postPlans
   onPlanDeleted,  // (planId) => void
   onPlanSeen,     // (planId) => void — clear unread badge in App-level map
-  copilotEligible = false,    // ✨ Co-pilot button in topbar (Phase 1: still agency-only)
+  linkAiEligible = false,    // ✨ LinkAI button in topbar (Phase 1: still agency-only)
   aiInlineEligible = false,   // ✨ AI draft / AI image prompt — open to brand on own brand_draft in Phase 1
 }) => {
   const isAdmin = role === 'admin';
@@ -2029,7 +2029,7 @@ const PostPlanDetailView = ({
             {plan?.aiGenerated && (
               <span
                 className="ai-draft-pill"
-                title="Created by the AI Co-pilot. Edit, then submit for review through the normal workflow."
+                title="Created by the LinkAI. Edit, then submit for review through the normal workflow."
               >
                 <span aria-hidden style={{ marginRight: 4 }}>✨</span>
                 AI draft

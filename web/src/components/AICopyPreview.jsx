@@ -2,7 +2,7 @@
 // AICopyPreview — instruction-driven inline AI copy generation
 // =====================================================================
 //
-// AI Co-pilot v2 Phase 2b: rewritten around `useCompletion` from
+// LinkAI v2 Phase 2b: rewritten around `useCompletion` from
 // @ai-sdk/react. The v1 implementation kept an explicit
 // 'compose' | 'streaming' | 'done' | 'error' state machine, a hand-rolled
 // SSE parser (parseSse async generator), a manual AbortController, and
@@ -47,7 +47,7 @@ const PLATFORM_LABEL = { instagram: 'Instagram', linkedin: 'LinkedIn', x: 'X' };
 
 // Custom fetch wrapper that resolves the Supabase session token at
 // request time and adds it as Authorization. Mirrors the
-// DefaultChatTransport headers() async pattern used in CopilotPanel.
+// DefaultChatTransport headers() async pattern used in LinkAIPanel.
 async function fetchWithAuth(url, init) {
   const { data: { session } } = await supabase.auth.getSession();
   const headers = new Headers(init?.headers);

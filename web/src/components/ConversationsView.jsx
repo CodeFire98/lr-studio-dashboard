@@ -52,7 +52,7 @@ function formatPlanRowTime(iso) {
 }
 // Humanized variant used on the inline plan chip. Reuses formatPlanRowTime
 // for anything outside the today/yesterday/tomorrow window so wording stays
-// consistent with the tag-picker dropdown. Exported so the Co-pilot
+// consistent with the tag-picker dropdown. Exported so the LinkAI
 // proposal card can render the same humanized label.
 export function formatPlanChipTime(iso) {
   if (!iso) return '';

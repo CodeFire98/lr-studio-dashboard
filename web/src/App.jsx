@@ -8,11 +8,11 @@ import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { Icon } from './components/Icon.jsx';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TweaksPanel } from './components/TweaksPanel.jsx';
-// CopilotPanel is code-split: it pulls in @ai-sdk/react + AI Elements
+// LinkAIPanel is code-split: it pulls in @ai-sdk/react + AI Elements
 // + Streamdown + shiki language packs (~1.5MB gzipped). Loading those
 // on every page would tank the dashboard's first-paint perf. Lazy import
-// defers the download until admin clicks the topbar Co-pilot trigger.
-const CopilotPanel = lazy(() => import('./components/CopilotPanel.jsx'));
+// defers the download until admin clicks the topbar LinkAI trigger.
+const LinkAIPanel = lazy(() => import('./components/LinkAIPanel.jsx'));
 import { LoginModal } from './components/LoginModal.jsx';
 import { IdeateView } from './components/IdeateView.jsx';
 import { IdeateInboxView } from './components/IdeateInboxView.jsx';
@@ -182,7 +182,7 @@ function useTweaks() {
 const App = () => {
   const [tweaks, setTweaks] = useTweaks();
   const [tweaksOpen, setTweaksOpen] = useState(false);
-  const [copilotOpen, setCopilotOpen] = useState(false);
+  const [linkAiOpen, setLinkAiOpen] = useState(false);
   const [auth, setAuth] = useState(() => readAuth());
   const [mode, setMode] = useState(() => localStorage.getItem("lr_mode") || "customer");
   // Agency users navigate via a brand picker that scopes every surface to
@@ -1044,7 +1044,7 @@ const App = () => {
         onPlanChanged={upsertPostPlan}
         onPlanDeleted={removePostPlanLocal}
         onPlanSeen={clearUnreadForPlan}
-        copilotEligible={copilotEligible}
+        linkAiEligible={linkAiEligible}
         aiInlineEligible={aiInlineEligible}
       />
     );
@@ -1113,13 +1113,13 @@ const App = () => {
       // Render as a direct child of .main (no .view / .view-inner wrapper)
       // so the LinkAI surface controls its own scroll behaviour. The
       // `.main:has(.linkai-page)` CSS rule pins .main to 100vh + hides
-      // overflow so only the message list inside `.copilot-scroll`
+      // overflow so only the message list inside `.link-ai-scroll`
       // scrolls — header + composer stay pinned. Same pattern that
       // ConversationsView uses with `.conv-wrap`.
       return (
         <div className="linkai-page">
           <Suspense fallback={<div className="linkai-page-fallback" />}>
-            <CopilotPanel
+            <LinkAIPanel
               variant="page"
               accountId={calendarAccountId}
               brandName={calendarAccountName}
@@ -1159,35 +1159,35 @@ const App = () => {
 
   const isGuest = !auth;
 
-  // AI Co-pilot eligibility — open to every signed-in user (agency or
+  // LinkAI eligibility — open to every signed-in user (agency or
   // brand) once a brand is selected. The route itself auth-checks brand
   // membership + enforces the 50/day brand quota (agency uncapped); the
   // system prompt branches on caller role. The Bamboo Bear-only
   // allowlist was dropped 2026-05-19.
   //
   // Computed BEFORE the brand-selection early return below so the
-  // copilot-auto-close useEffect below it always runs — otherwise the
+  // link-ai-auto-close useEffect below it always runs — otherwise the
   // hook count changes between renders when `requiresBrandSelection`
   // flips (login → pick brand, brand-delete → back to picker), tripping
   // React error #310 "Rendered more hooks than during the previous
   // render" and surfacing the error boundary's "snag" page.
-  const copilotEligible =
+  const linkAiEligible =
     !!auth?.id &&
     !isAllClientsMode &&
     !!scopeAccountId;
 
-  // Inline AI eligibility — same gate as copilotEligible. Kept as a
+  // Inline AI eligibility — same gate as linkAiEligible. Kept as a
   // separate prop so future tightening (e.g. inline-only for one user
   // class) can split them again without touching every gate.
-  const aiInlineEligible = copilotEligible;
+  const aiInlineEligible = linkAiEligible;
 
   // Auto-close the panel if the active brand context disappears
   // (e.g. user switches to All-clients mode via BrandPicker).
   // MUST stay above the early return below — see comment on
-  // `copilotEligible`.
+  // `linkAiEligible`.
   useEffect(() => {
-    if (!copilotEligible && copilotOpen) setCopilotOpen(false);
-  }, [copilotEligible, copilotOpen]);
+    if (!linkAiEligible && linkAiOpen) setLinkAiOpen(false);
+  }, [linkAiEligible, linkAiOpen]);
 
   // Brand-selection gate: show picker when a signed-in brand user belongs to
   // 2+ brands and hasn't picked one yet. Skip for agency and guests.
@@ -1262,15 +1262,15 @@ const App = () => {
                 <Icon name="send" size={13}/>Submit idea
               </button>
             )}
-            {copilotEligible && (
+            {linkAiEligible && (
               <button
-                className={"btn btn-sm copilot-trigger " + (copilotOpen ? "is-open" : "")}
-                onClick={() => setCopilotOpen((v) => !v)}
-                title={copilotOpen ? "Hide Co-pilot" : "Open Co-pilot"}
-                aria-pressed={copilotOpen}
+                className={"btn btn-sm link-ai-trigger " + (linkAiOpen ? "is-open" : "")}
+                onClick={() => setLinkAiOpen((v) => !v)}
+                title={linkAiOpen ? "Hide LinkAI" : "Open LinkAI"}
+                aria-pressed={linkAiOpen}
               >
-                <span className="copilot-trigger-spark" aria-hidden>✨</span>
-                <span>Co-pilot</span>
+                <span className="link-ai-trigger-spark" aria-hidden>✨</span>
+                <span>LinkAI</span>
               </button>
             )}
             {isGuest && (
@@ -1282,18 +1282,18 @@ const App = () => {
         </div>
         {renderView()}
       </div>
-      {copilotEligible && copilotOpen && (
+      {linkAiEligible && linkAiOpen && (
         <Suspense fallback={null}>
-          <CopilotPanel
+          <LinkAIPanel
             accountId={scopeAccountId}
             brandName={calendarAccountName}
             brandSlug={brandAccounts.find((b) => b.id === scopeAccountId)?.slug || auth?.account?.slug || null}
             userId={auth?.id}
             isAgency={!!auth?.isAgency}
-            onClose={() => setCopilotOpen(false)}
-            onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setCopilotOpen(false); }}
+            onClose={() => setLinkAiOpen(false)}
+            onNavigateToPlan={(planId) => { setRoute({ view: 'plan', id: planId }); setLinkAiOpen(false); }}
             onCommitDraft={async (draft) => {
-              // The AI Co-pilot proposes plans inline but doesn't write
+              // The LinkAI proposes plans inline but doesn't write
               // them to the calendar — only the admin clicking "Open plan"
               // commits the row. Here we INSERT and seed App-level state
               // so the calendar reflects the new plan immediately instead
