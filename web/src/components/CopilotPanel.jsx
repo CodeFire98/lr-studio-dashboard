@@ -442,31 +442,49 @@ const CopilotPanel = ({
       role={isPageVariant ? undefined : "dialog"}
       aria-label={isPageVariant ? undefined : "AI Co-pilot"}
     >
-      <header className="copilot-header">
-        <div>
-          <h4>
-            <span className="copilot-spark" aria-hidden>✨</span>
-            <span>{isPageVariant ? "LinkAI" : "Co-pilot"}</span>
-          </h4>
-          <div className="copilot-sub">{brandName || "Brand"}</div>
-        </div>
-        <div className="copilot-header-actions">
-          {messages.length > 0 && (
-            <button
-              className="copilot-header-btn"
-              onClick={startNew}
-              title="Start a new conversation"
-            >
-              Start new
-            </button>
-          )}
-          {!isPageVariant && (
+      {/* Page variant deliberately skips the in-panel header — the
+          breadcrumb in the app's topbar already says "LinkAI" and the
+          BrandPicker shows the brand context, so a second header inside
+          the card was redundant and ate ~80px of vertical chat space.
+          "Start new" surfaces as a small floating button (rendered below
+          the .copilot-panel--page outer) only when there's a conversation
+          to clear. */}
+      {!isPageVariant && (
+        <header className="copilot-header">
+          <div>
+            <h4>
+              <span className="copilot-spark" aria-hidden>✨</span>
+              <span>Co-pilot</span>
+            </h4>
+            <div className="copilot-sub">{brandName || "Brand"}</div>
+          </div>
+          <div className="copilot-header-actions">
+            {messages.length > 0 && (
+              <button
+                className="copilot-header-btn"
+                onClick={startNew}
+                title="Start a new conversation"
+              >
+                Start new
+              </button>
+            )}
             <button className="copilot-close" onClick={onClose} aria-label="Close Co-pilot">
               <Icon name="x" size={14} />
             </button>
-          )}
-        </div>
-      </header>
+          </div>
+        </header>
+      )}
+      {isPageVariant && messages.length > 0 && (
+        <button
+          type="button"
+          className="copilot-page-startnew"
+          onClick={startNew}
+          title="Start a new conversation"
+        >
+          <Icon name="refresh" size={11} />
+          <span>Start new</span>
+        </button>
+      )}
 
       <div className="copilot-scroll" ref={scrollRef}>
         {messages.length === 0 && (
@@ -562,7 +580,7 @@ const CopilotPanel = ({
         </button>
       )}
 
-      <footer className="copilot-input">
+      <footer className={"copilot-input" + (isPageVariant ? " copilot-input--page" : "")}>
         <CopilotFollowUpChips
           messages={messages}
           isBusy={isBusy}
@@ -580,35 +598,70 @@ const CopilotPanel = ({
             });
           }}
         />
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isBusy ? "Generating…" : (isPageVariant ? "Message LinkAI…  (⌘↩ to send)" : "Message the Co-pilot…  (⌘↩ to send)")}
-          disabled={isBusy}
-          rows={2}
-        />
-        <div className="copilot-input-row">
-          <div className="copilot-meta">
-            {lastUsage && (
-              <span title="input / output tokens (cache reads in parens)">
-                {lastUsage.input_tokens ?? 0} in {lastUsage.cache_read_input_tokens ? `(${lastUsage.cache_read_input_tokens} cached)` : ""} · {lastUsage.output_tokens ?? 0} out
-              </span>
-            )}
-          </div>
-          {isBusy ? (
-            <button className="copilot-send copilot-cancel" onClick={stop}>Stop</button>
-          ) : (
-            <button
-              className="copilot-send"
-              onClick={handleSend}
-              disabled={!draft.trim()}
-            >
-              Send
-            </button>
-          )}
-        </div>
+        {isPageVariant ? (
+          /* Page variant: textarea + Send button on a single row
+             (Conversations-style), with a tiny "⌘↩ to send" hint
+             below. Token-count meta is dropped here — it's a
+             developer/debug detail that ate space without earning
+             attention. */
+          <>
+            <div className="copilot-page-row">
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={isBusy ? "Generating…" : "Message LinkAI…"}
+                disabled={isBusy}
+                rows={1}
+              />
+              {isBusy ? (
+                <button className="copilot-send copilot-cancel" onClick={stop}>Stop</button>
+              ) : (
+                <button
+                  className="copilot-send"
+                  onClick={handleSend}
+                  disabled={!draft.trim()}
+                >
+                  Send
+                </button>
+              )}
+            </div>
+            <div className="copilot-page-hint">⌘↩ to send</div>
+          </>
+        ) : (
+          <>
+            <textarea
+              ref={textareaRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={isBusy ? "Generating…" : "Message the Co-pilot…  (⌘↩ to send)"}
+              disabled={isBusy}
+              rows={2}
+            />
+            <div className="copilot-input-row">
+              <div className="copilot-meta">
+                {lastUsage && (
+                  <span title="input / output tokens (cache reads in parens)">
+                    {lastUsage.input_tokens ?? 0} in {lastUsage.cache_read_input_tokens ? `(${lastUsage.cache_read_input_tokens} cached)` : ""} · {lastUsage.output_tokens ?? 0} out
+                  </span>
+                )}
+              </div>
+              {isBusy ? (
+                <button className="copilot-send copilot-cancel" onClick={stop}>Stop</button>
+              ) : (
+                <button
+                  className="copilot-send"
+                  onClick={handleSend}
+                  disabled={!draft.trim()}
+                >
+                  Send
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </footer>
     </div>
   );

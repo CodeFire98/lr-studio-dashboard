@@ -5036,13 +5036,16 @@ input, textarea { font: inherit; color: inherit; }
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: var(--space-5) var(--space-8);
-  background: var(--bg);
+  background: var(--surface);
+  position: relative;
 }
 .linkai-page-fallback {
   flex: 1;
 }
 .copilot-panel--page {
+  /* Strip every bit of the slide-in drawer chrome: no border, no
+     rounded corners, no shadow, no animation. Reads as an open page
+     matching the Conversations surface. */
   position: relative;
   inset: auto;
   right: auto;
@@ -5052,25 +5055,18 @@ input, textarea { font: inherit; color: inherit; }
   max-width: none;
   flex: 1;
   min-height: 0;
-  border-left: 0;
-  border-radius: var(--radius-2xl);
+  border: 0;
+  border-radius: 0;
   box-shadow: none;
   animation: none;
   background: var(--surface);
-  border: 1px solid var(--line);
   overflow: hidden;
-}
-.copilot-panel--page .copilot-header {
-  padding: var(--space-5) var(--space-6);
-}
-.copilot-panel--page .copilot-header h4 {
-  font-size: 22px;
 }
 .copilot-panel--page .copilot-scroll {
   /* The middle .copilot-scroll already has overflow-y: auto + flex: 1
      in the base rules — that's the actual scroll surface. We just
      centre the column so messages line up with the composer below. */
-  padding: var(--space-6);
+  padding: var(--space-6) var(--space-8);
   max-width: 880px;
   width: 100%;
   margin: 0 auto;
@@ -5079,8 +5075,76 @@ input, textarea { font: inherit; color: inherit; }
   max-width: 880px;
   width: 100%;
   margin: 0 auto;
+  padding: 12px var(--space-8) 16px;
   border-top: 1px solid var(--line);
   flex-shrink: 0;
+}
+
+/* Floating "Start new" button — appears top-right of the LinkAI page
+   only when there's a conversation to clear. Replaces the in-panel
+   header strip which was redundant with the app's topbar breadcrumb. */
+.copilot-page-startnew {
+  position: absolute;
+  top: 14px;
+  right: var(--space-6);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.copilot-page-startnew:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Page-variant composer: textarea + Send on one row (no full-width
+   send button below the textarea like the panel variant), tiny hint
+   underneath. Matches the Conversations composer pattern. */
+.copilot-input--page .copilot-page-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.copilot-input--page .copilot-page-row textarea {
+  flex: 1 1 auto;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  font-family: inherit;
+  line-height: 1.5;
+  background: var(--surface);
+  color: var(--ink-1);
+  outline: none;
+  field-sizing: content;
+  min-height: 40px;
+  max-height: 132px;
+  overflow-y: auto;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.copilot-input--page .copilot-page-row textarea:focus {
+  border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 12%, transparent);
+}
+.copilot-input--page .copilot-page-row .copilot-send {
+  height: 40px;
+  flex-shrink: 0;
+}
+.copilot-page-hint {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--ink-4);
+  letter-spacing: 0.02em;
 }
 .copilot-welcome--page {
   background: transparent;
