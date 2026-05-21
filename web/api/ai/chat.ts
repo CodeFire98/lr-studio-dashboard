@@ -1,9 +1,9 @@
 // =====================================================================
-// /api/ai/chat — Vercel serverless function — AI Co-pilot streaming chat
+// /api/ai/chat — Vercel serverless function — LinkAI streaming chat
 //
-// AI Co-pilot v2 Phase 2a: switched the wire protocol from the v1 custom
+// LinkAI v2 Phase 2a: switched the wire protocol from the v1 custom
 // SSE event names (text / tool_call / tool_result / usage / done / error)
-// to the AI SDK's native UIMessage stream protocol. CopilotPanel.jsx is
+// to the AI SDK's native UIMessage stream protocol. LinkAIPanel.jsx is
 // rewritten in the same PR around `useChat` from @ai-sdk/react and
 // consumes the new stream natively. Server reads UIMessage[] from the
 // request body and converts them to ModelMessages for streamText.
@@ -222,7 +222,7 @@ function sanitizeBrokenToolCalls(messages: UIMessage[]): UIMessage[] {
   });
 }
 
-const SYSTEM_PROMPT = `You are the AI Co-pilot for Linkrunner Media — a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
+const SYSTEM_PROMPT = `You are the LinkAI for Linkrunner Media — a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
 
 ## How to behave
 
@@ -601,7 +601,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }),
     write_brand_note: tool({
       description:
-        "Persist a fact about this brand to the brand_kit_notes table — the AI Co-pilot's long-term memory layer for this brand. Use this when the admin tells you to remember something: 'remember that…', 'from now on…', 'make a note that…', 'the founder hates the word X', 'no holiday content before Oct 15'. The note becomes part of the brand context on every future AI call (chat + inline copy generation). Set is_pinned=true for ALWAYS-true facts that should ride along on every call regardless of recency; leave is_pinned=false for time-bound or campaign-specific facts that decay out of the window over time. After calling, confirm to the admin in one short sentence what you wrote down.",
+        "Persist a fact about this brand to the brand_kit_notes table — the LinkAI's long-term memory layer for this brand. Use this when the admin tells you to remember something: 'remember that…', 'from now on…', 'make a note that…', 'the founder hates the word X', 'no holiday content before Oct 15'. The note becomes part of the brand context on every future AI call (chat + inline copy generation). Set is_pinned=true for ALWAYS-true facts that should ride along on every call regardless of recency; leave is_pinned=false for time-bound or campaign-specific facts that decay out of the window over time. After calling, confirm to the admin in one short sentence what you wrote down.",
       inputSchema: writeBrandNoteInput,
       execute: async (input): Promise<ToolExecResult> => {
         const noteBody = input.body.trim();
@@ -661,7 +661,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "Emit 2-4 quick-reply chips the admin can click to send as their next message. These chips render ABOVE the textarea in the chat panel — clicking one prefills the textarea (admin can edit before sending). Call this once near the END of every turn, AFTER your text reply and any other tool calls. Make chips CONTEXTUAL to what just happened (the post plans you drafted, the playbook you loaded, the trend articles you surfaced) and ACTIONABLE (each chip is a complete message the admin would plausibly want to send next). The tool just echoes the chips back as the UI hook — there's no side-effect; the only purpose is to surface the chips in the panel.",
       inputSchema: suggestFollowUpsInput,
       execute: async (input): Promise<ToolExecResult> => {
-        // No side effect — the chips are the result. CopilotPanel reads
+        // No side effect — the chips are the result. LinkAIPanel reads
         // them out of the latest assistant message's tool-call output
         // and renders them above the textarea.
         return { ok: true, result: { chips: input.chips } };
@@ -804,7 +804,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         {
           role: "system",
           content: callerIsAgency
-            ? `\n\n---\n\nThe person chatting with you is on the AGENCY team. You're the agency's co-pilot — helping plan and draft content for their client brand (the "brand context" block below). Tools that create plans land in 'drafting' status, which the agency owns end-to-end before sending the plan to the brand for review.`
+            ? `\n\n---\n\nThe person chatting with you is on the AGENCY team. You're the agency's LinkAI — helping plan and draft content for their client brand (the "brand context" block below). Tools that create plans land in 'drafting' status, which the agency owns end-to-end before sending the plan to the brand for review.`
             : `\n\n---\n\nThe person chatting with you is on the BRAND team — the client of the agency. You're helping them collaborate with their agency on social plans for their own brand (the "brand context" block below). Frame your replies as helping the BRAND, not the agency. When you call create_post_plan_draft, the resulting plan lands in 'brand_draft' status — a private draft state. The brand will then click "Propose plan" on the detail view to submit it to the agency for review and acceptance. Do NOT promise the post will go live immediately; the agency reviews proposals first.`,
           providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
         },

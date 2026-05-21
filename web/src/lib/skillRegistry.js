@@ -2,7 +2,7 @@
 // Linkrunner Media — Marketing skills registry
 // =====================================================================
 //
-// Static list of marketing playbooks the AI Co-pilot can load on demand
+// Static list of marketing playbooks the LinkAI can load on demand
 // via the `load_skill` and `load_skill_reference` tools. Each skill is a
 // markdown playbook covering one craft area — social content, copywriting,
 // launch strategy, etc. — plus optional reference docs for deeper material

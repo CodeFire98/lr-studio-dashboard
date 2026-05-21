@@ -1,7 +1,7 @@
 // =====================================================================
 // /api/ai/image — Vercel serverless function — image-ideation pipeline
 //
-// AI Co-pilot v2 Phase 2c: wire protocol switched to the AI SDK's
+// LinkAI v2 Phase 2c: wire protocol switched to the AI SDK's
 // text-stream protocol for BOTH modes — `streamObject(...).pipeTextStreamToResponse(res)`
 // for ideas (JSON deltas) and `streamText(...).pipeTextStreamToResponse(res)`
 // for prompt (text deltas). The custom SSE event names

@@ -4566,10 +4566,10 @@ input, textarea { font: inherit; color: inherit; }
   background: linear-gradient(to right, var(--accent), transparent);
 }
 
-/* ========== AI Co-pilot ========== */
+/* ========== LinkAI ========== */
 
 /* Topbar trigger button */
-.copilot-trigger {
+.link-ai-trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -4578,21 +4578,21 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--accent);
   font-weight: 500;
 }
-.copilot-trigger:hover {
+.link-ai-trigger:hover {
   background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 22%, var(--surface)), color-mix(in oklab, var(--accent) 6%, var(--surface)));
 }
-.copilot-trigger.is-open {
+.link-ai-trigger.is-open {
   background: var(--accent);
   color: white;
   border-color: var(--accent);
 }
-.copilot-trigger-spark {
+.link-ai-trigger-spark {
   font-size: 13px;
   line-height: 1;
 }
 
 /* Slide-in side panel */
-.copilot-panel {
+.link-ai-panel {
   position: fixed;
   right: 0;
   top: 0;
@@ -4605,13 +4605,13 @@ input, textarea { font: inherit; color: inherit; }
   z-index: 70;
   display: flex;
   flex-direction: column;
-  animation: copilotSlideIn 220ms var(--ease-out);
+  animation: linkAiSlideIn 220ms var(--ease-out);
 }
-@keyframes copilotSlideIn {
+@keyframes linkAiSlideIn {
   from { transform: translateX(40px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
-.copilot-header {
+.link-ai-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4619,7 +4619,7 @@ input, textarea { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
-.copilot-header h4 {
+.link-ai-header h4 {
   margin: 0;
   font-family: var(--font-serif);
   font-size: 20px;
@@ -4629,16 +4629,16 @@ input, textarea { font: inherit; color: inherit; }
   align-items: center;
   gap: 8px;
 }
-.copilot-spark {
+.link-ai-spark {
   font-size: 16px;
   filter: drop-shadow(0 0 6px color-mix(in oklab, var(--accent) 40%, transparent));
 }
-.copilot-sub {
+.link-ai-sub {
   margin-top: 2px;
   font-size: 12px;
   color: var(--ink-4);
 }
-.copilot-close {
+.link-ai-close {
   width: 28px;
   height: 28px;
   border: 0;
@@ -4649,13 +4649,13 @@ input, textarea { font: inherit; color: inherit; }
   display: grid;
   place-items: center;
 }
-.copilot-close:hover { background: var(--surface-2); color: var(--ink); }
-.copilot-header-actions {
+.link-ai-close:hover { background: var(--surface-2); color: var(--ink); }
+.link-ai-header-actions {
   display: flex;
   align-items: center;
   gap: 6px;
 }
-.copilot-header-btn {
+.link-ai-header-btn {
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--ink-3);
@@ -4665,12 +4665,12 @@ input, textarea { font: inherit; color: inherit; }
   cursor: pointer;
   font-weight: 500;
 }
-.copilot-header-btn:hover {
+.link-ai-header-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.copilot-scroll {
+.link-ai-scroll {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-4);
@@ -4679,7 +4679,7 @@ input, textarea { font: inherit; color: inherit; }
   gap: var(--space-3);
 }
 
-.copilot-welcome {
+.link-ai-welcome {
   color: var(--ink-3);
   font-size: 14px;
   line-height: 1.5;
@@ -4687,23 +4687,23 @@ input, textarea { font: inherit; color: inherit; }
   padding: var(--space-3);
   border-radius: var(--radius);
 }
-.copilot-welcome p { margin: 0 0 8px; }
-.copilot-welcome strong { color: var(--ink-2); font-weight: 500; }
-.copilot-suggestions-head {
+.link-ai-welcome p { margin: 0 0 8px; }
+.link-ai-welcome strong { color: var(--ink-2); font-weight: 500; }
+.link-ai-suggestions-head {
   margin-top: var(--space-3);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
-.copilot-suggestions-label {
+.link-ai-suggestions-label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--ink-4);
   font-weight: 500;
 }
-.copilot-suggestions-refresh {
+.link-ai-suggestions-refresh {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -4716,36 +4716,36 @@ input, textarea { font: inherit; color: inherit; }
   cursor: pointer;
   line-height: 1;
 }
-.copilot-suggestions-refresh:hover:not(:disabled) {
+.link-ai-suggestions-refresh:hover:not(:disabled) {
   border-color: var(--line);
   color: var(--accent);
 }
-.copilot-suggestions-refresh:disabled {
+.link-ai-suggestions-refresh:disabled {
   opacity: 0.6;
   cursor: progress;
 }
-.copilot-suggestions-spinner {
+.link-ai-suggestions-spinner {
   width: 11px;
   height: 11px;
   border: 1.5px solid var(--ink-5, rgba(0,0,0,0.15));
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: copilot-suggestions-spin 0.8s linear infinite;
+  animation: link-ai-suggestions-spin 0.8s linear infinite;
 }
-@keyframes copilot-suggestions-spin {
+@keyframes link-ai-suggestions-spin {
   to { transform: rotate(360deg); }
 }
-.copilot-suggestions {
+.link-ai-suggestions {
   margin-top: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   transition: opacity 150ms ease;
 }
-.copilot-suggestions.is-loading {
+.link-ai-suggestions.is-loading {
   opacity: 0.55;
 }
-.copilot-suggestion {
+.link-ai-suggestion {
   text-align: left;
   font-size: 13px;
   padding: 8px 10px;
@@ -4756,18 +4756,18 @@ input, textarea { font: inherit; color: inherit; }
   cursor: pointer;
   line-height: 1.35;
 }
-.copilot-suggestion:disabled {
+.link-ai-suggestion:disabled {
   cursor: progress;
 }
-.copilot-suggestion:hover:not(:disabled) {
+.link-ai-suggestion:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.copilot-msg { display: flex; flex-direction: column; }
-.copilot-msg-user { align-items: flex-end; }
-.copilot-msg-assistant { align-items: flex-start; }
-.copilot-bubble {
+.link-ai-msg { display: flex; flex-direction: column; }
+.link-ai-msg-user { align-items: flex-end; }
+.link-ai-msg-assistant { align-items: flex-start; }
+.link-ai-bubble {
   background: var(--accent);
   color: white;
   padding: 10px 14px;
@@ -4778,43 +4778,43 @@ input, textarea { font: inherit; color: inherit; }
   white-space: pre-wrap;
   word-wrap: break-word;
 }
-.copilot-prose {
+.link-ai-prose {
   font-size: 14px;
   line-height: 1.55;
   color: var(--ink-2);
   max-width: 100%;
 }
-.copilot-prose p { margin: 0 0 8px; }
-.copilot-prose p:last-child { margin-bottom: 0; }
-.copilot-prose code {
+.link-ai-prose p { margin: 0 0 8px; }
+.link-ai-prose p:last-child { margin-bottom: 0; }
+.link-ai-prose code {
   background: var(--surface-2);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 12.5px;
   font-family: var(--font-mono, ui-monospace, monospace);
 }
-.copilot-prose strong { font-weight: 600; color: var(--ink); }
+.link-ai-prose strong { font-weight: 600; color: var(--ink); }
 
-.copilot-typing {
+.link-ai-typing {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 2px;
 }
-.copilot-dot {
+.link-ai-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--ink-4);
-  animation: copilotPulse 1.2s infinite ease-in-out;
+  animation: linkAiPulse 1.2s infinite ease-in-out;
 }
-.copilot-dot:nth-child(2) { animation-delay: 0.15s; }
-.copilot-dot:nth-child(3) { animation-delay: 0.3s; }
-@keyframes copilotPulse {
+.link-ai-dot:nth-child(2) { animation-delay: 0.15s; }
+.link-ai-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes linkAiPulse {
   0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
   40% { opacity: 1; transform: scale(1); }
 }
-.copilot-status-label {
+.link-ai-status-label {
   margin-left: 4px;
   font-size: 12px;
   color: var(--ink-3, var(--ink-4));
@@ -4825,7 +4825,7 @@ input, textarea { font: inherit; color: inherit; }
   max-width: 320px;
 }
 
-.copilot-error {
+.link-ai-error {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4836,7 +4836,7 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 12.5px;
 }
 
-.copilot-tool {
+.link-ai-tool {
   margin-top: 8px;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -4845,10 +4845,10 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 13px;
   max-width: 100%;
 }
-.copilot-tool-running { border-color: color-mix(in oklab, var(--accent) 30%, var(--line)); }
-.copilot-tool-ok { border-color: color-mix(in oklab, var(--good, #15803D) 30%, var(--line)); }
-.copilot-tool-error { border-color: color-mix(in oklab, #b91c1c 30%, var(--line)); }
-.copilot-tool-head {
+.link-ai-tool-running { border-color: color-mix(in oklab, var(--accent) 30%, var(--line)); }
+.link-ai-tool-ok { border-color: color-mix(in oklab, var(--good, #15803D) 30%, var(--line)); }
+.link-ai-tool-error { border-color: color-mix(in oklab, #b91c1c 30%, var(--line)); }
+.link-ai-tool-head {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4857,16 +4857,16 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 12px;
   margin-bottom: 6px;
 }
-.copilot-tool-body {
+.link-ai-tool-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.copilot-tool-concept {
+.link-ai-tool-concept {
   color: var(--ink-2);
   line-height: 1.4;
 }
-.copilot-tool-when {
+.link-ai-tool-when {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -4874,12 +4874,12 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.copilot-tool-platforms {
+.link-ai-tool-platforms {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
 }
-.copilot-tool-pill {
+.link-ai-tool-pill {
   font-size: 11px;
   text-transform: capitalize;
   padding: 2px 8px;
@@ -4887,12 +4887,12 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--surface-2);
   color: var(--ink-3);
 }
-.copilot-tool-error {
+.link-ai-tool-error {
   margin-top: 6px;
   color: #b91c1c;
   font-size: 12px;
 }
-.copilot-tool-cta {
+.link-ai-tool-cta {
   margin-top: 8px;
   border: 0;
   background: var(--accent);
@@ -4903,12 +4903,12 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
   cursor: pointer;
 }
-.copilot-tool-cta:hover { filter: brightness(0.95); }
+.link-ai-tool-cta:hover { filter: brightness(0.95); }
 
 /* "Jump to latest" pill — appears when the user has scrolled up away
    from the bottom of the message feed. Positioned just above the
    composer, centered. Click re-engages auto-scroll. */
-.copilot-jump-latest {
+.link-ai-jump-latest {
   align-self: center;
   display: inline-flex;
   align-items: center;
@@ -4925,13 +4925,13 @@ input, textarea { font: inherit; color: inherit; }
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   transition: background 120ms, color 120ms, transform 120ms;
 }
-.copilot-jump-latest:hover {
+.link-ai-jump-latest:hover {
   background: var(--surface-2);
   color: var(--ink-1);
   transform: translateY(-1px);
 }
 
-.copilot-input {
+.link-ai-input {
   border-top: 1px solid var(--line);
   padding: var(--space-3);
   display: flex;
@@ -4940,13 +4940,13 @@ input, textarea { font: inherit; color: inherit; }
   flex-shrink: 0;
 }
 
-.copilot-followups {
+.link-ai-followups {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 2px;
 }
-.copilot-followup-chip {
+.link-ai-followup-chip {
   appearance: none;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -4962,16 +4962,16 @@ input, textarea { font: inherit; color: inherit; }
   white-space: normal;
   transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
-.copilot-followup-chip:hover {
+.link-ai-followup-chip:hover {
   border-color: var(--accent, currentColor);
   background: var(--bg-2, var(--bg));
   color: var(--ink);
 }
-.copilot-followup-chip:focus-visible {
+.link-ai-followup-chip:focus-visible {
   outline: 2px solid var(--accent, currentColor);
   outline-offset: 1px;
 }
-.copilot-input textarea {
+.link-ai-input textarea {
   width: 100%;
   resize: none;
   border: 1px solid var(--line);
@@ -4984,19 +4984,19 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--surface);
   color: var(--ink-2);
 }
-.copilot-input textarea:focus { border-color: var(--accent); }
-.copilot-input-row {
+.link-ai-input textarea:focus { border-color: var(--accent); }
+.link-ai-input-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
-.copilot-meta {
+.link-ai-meta {
   font-size: 11px;
   color: var(--ink-5);
   font-variant-numeric: tabular-nums;
 }
-.copilot-send {
+.link-ai-send {
   border: 0;
   background: var(--accent);
   color: white;
@@ -5006,22 +5006,22 @@ input, textarea { font: inherit; color: inherit; }
   font-weight: 500;
   cursor: pointer;
 }
-.copilot-send:disabled {
+.link-ai-send:disabled {
   background: var(--surface-2);
   color: var(--ink-5);
   cursor: not-allowed;
 }
-.copilot-cancel { background: var(--ink-3); }
-.copilot-cancel:hover { background: var(--ink-2); }
+.link-ai-cancel { background: var(--ink-3); }
+.link-ai-cancel:hover { background: var(--ink-2); }
 
 /* ---------- LinkAI full-page variant ---------------------------------
-   The .copilot-panel CSS above assumes a slide-in fixed-position drawer.
-   When CopilotPanel is rendered with variant="page" at /c/:slug/linkai,
+   The .link-ai-panel CSS above assumes a slide-in fixed-position drawer.
+   When LinkAIPanel is rendered with variant="page" at /c/:slug/linkai,
    we strip the fixed positioning + chrome shadow + slide animation so it
    fills the .main content area inline. Layout follows the Conversations
    pattern: pin .main to 100vh + hide overflow so only the message list
-   inside .copilot-scroll scrolls; .copilot-header and .copilot-input
-   stay pinned (they're flex-shrink: 0 in the base .copilot-panel rules).
+   inside .link-ai-scroll scrolls; .link-ai-header and .link-ai-input
+   stay pinned (they're flex-shrink: 0 in the base .link-ai-panel rules).
    The app's .topbar (sticky inside .main) sits above the LinkAI surface
    normally. */
 .main:has(.linkai-page) {
@@ -5042,7 +5042,7 @@ input, textarea { font: inherit; color: inherit; }
 .linkai-page-fallback {
   flex: 1;
 }
-.copilot-panel--page {
+.link-ai-panel--page {
   /* Strip every bit of the slide-in drawer chrome: no border, no
      rounded corners, no shadow, no animation. Reads as an open page
      matching the Conversations surface. */
@@ -5062,8 +5062,8 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--surface);
   overflow: hidden;
 }
-.copilot-panel--page .copilot-scroll {
-  /* The middle .copilot-scroll already has overflow-y: auto + flex: 1
+.link-ai-panel--page .link-ai-scroll {
+  /* The middle .link-ai-scroll already has overflow-y: auto + flex: 1
      in the base rules — that's the actual scroll surface. We just
      centre the column so messages line up with the composer below. */
   padding: var(--space-6) var(--space-8);
@@ -5071,7 +5071,7 @@ input, textarea { font: inherit; color: inherit; }
   width: 100%;
   margin: 0 auto;
 }
-.copilot-panel--page .copilot-input {
+.link-ai-panel--page .link-ai-input {
   max-width: 880px;
   width: 100%;
   margin: 0 auto;
@@ -5083,7 +5083,7 @@ input, textarea { font: inherit; color: inherit; }
 /* Floating "Start new" button — appears top-right of the LinkAI page
    only when there's a conversation to clear. Replaces the in-panel
    header strip which was redundant with the app's topbar breadcrumb. */
-.copilot-page-startnew {
+.link-ai-page-startnew {
   position: absolute;
   top: 14px;
   right: var(--space-6);
@@ -5101,7 +5101,7 @@ input, textarea { font: inherit; color: inherit; }
   cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
-.copilot-page-startnew:hover {
+.link-ai-page-startnew:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -5109,12 +5109,12 @@ input, textarea { font: inherit; color: inherit; }
 /* Page-variant composer: textarea + Send on one row (no full-width
    send button below the textarea like the panel variant), tiny hint
    underneath. Matches the Conversations composer pattern. */
-.copilot-input--page .copilot-page-row {
+.link-ai-input--page .link-ai-page-row {
   display: flex;
   align-items: flex-end;
   gap: 8px;
 }
-.copilot-input--page .copilot-page-row textarea {
+.link-ai-input--page .link-ai-page-row textarea {
   flex: 1 1 auto;
   resize: none;
   border: 1px solid var(--line);
@@ -5132,27 +5132,27 @@ input, textarea { font: inherit; color: inherit; }
   overflow-y: auto;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.copilot-input--page .copilot-page-row textarea:focus {
+.link-ai-input--page .link-ai-page-row textarea:focus {
   border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 12%, transparent);
 }
-.copilot-input--page .copilot-page-row .copilot-send {
+.link-ai-input--page .link-ai-page-row .link-ai-send {
   height: 40px;
   flex-shrink: 0;
 }
-.copilot-page-hint {
+.link-ai-page-hint {
   margin-top: 6px;
   font-size: 10.5px;
   color: var(--ink-4);
   letter-spacing: 0.02em;
 }
-.copilot-welcome--page {
+.link-ai-welcome--page {
   background: transparent;
   padding: var(--space-8) 0 var(--space-4);
   font-size: 16px;
   text-align: left;
 }
-.copilot-welcome-hero {
+.link-ai-welcome-hero {
   font-family: var(--font-serif);
   font-size: clamp(28px, 3.4vw, 40px);
   font-weight: 400;
@@ -5162,20 +5162,20 @@ input, textarea { font: inherit; color: inherit; }
   margin: 0 0 var(--space-3);
   text-wrap: balance;
 }
-.copilot-welcome-hero strong {
+.link-ai-welcome-hero strong {
   color: var(--accent);
   font-weight: 400;
 }
-.copilot-welcome--page > p {
+.link-ai-welcome--page > p {
   font-size: 16px;
   color: var(--ink-3);
   margin: 0 0 var(--space-6);
   max-width: 640px;
 }
-.copilot-welcome--page .copilot-suggestions-head {
+.link-ai-welcome--page .link-ai-suggestions-head {
   margin-top: var(--space-3);
 }
-.copilot-welcome--page .copilot-suggestions {
+.link-ai-welcome--page .link-ai-suggestions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: var(--space-2);
@@ -5308,7 +5308,7 @@ input, textarea { font: inherit; color: inherit; }
   height: 6px;
   border-radius: 50%;
   background: var(--ink-4);
-  animation: copilotPulse 1.2s infinite ease-in-out;
+  animation: linkAiPulse 1.2s infinite ease-in-out;
 }
 .ai-copy-dot:nth-child(2) { animation-delay: 0.15s; }
 .ai-copy-dot:nth-child(3) { animation-delay: 0.3s; }
@@ -5516,13 +5516,13 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 /* Note tool-card body (chat panel) */
-.copilot-tool-note-body {
+.link-ai-tool-note-body {
   color: var(--ink-2);
   line-height: 1.5;
   font-style: italic;
   font-size: 13px;
 }
-.copilot-tool-note-pinned {
+.link-ai-tool-note-pinned {
   margin-top: 6px;
   display: inline-flex;
   align-items: center;

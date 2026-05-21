@@ -12,7 +12,7 @@
 // Brand notes are an agency thinking-out-loud surface — raw memory like
 // "the founder hates the word authentic", "Q3 launch is the new bamboo
 // onesie line", "no holiday content before Oct 15". They drive the AI
-// Co-pilot's brand context on every call. Burying them inside the
+// LinkAI's brand context on every call. Burying them inside the
 // otherwise-customer-facing Brand Intelligence page conflated two
 // audiences and two purposes. Giving notes their own page makes the
 // surface easier to find, gives it room to grow (search / filtering /
@@ -55,7 +55,7 @@ const BrandNotesView = ({ accountId, brandName }) => {
       <div className="page-head"><div className="titles">
         <h1>Brand notes</h1>
         <div className="sub">
-          Long-term memory the AI Co-pilot reads on every call for
+          Long-term memory the LinkAI reads on every call for
           <strong>{brandName ? ` ${brandName}` : ' this brand'}</strong>.
           Pin always-true facts so they ride along on every call;
           unpinned notes are time-bound and decay out of the brand-

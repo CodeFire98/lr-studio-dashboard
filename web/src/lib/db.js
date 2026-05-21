@@ -1678,13 +1678,13 @@ export async function createPostPlan({
 }
 
 /**
- * Commit a post plan that the AI Co-pilot PROPOSED in chat (via the
+ * Commit a post plan that the LinkAI PROPOSED in chat (via the
  * create_post_plan_draft tool). Unlike `createPostPlan` (human-initiated
  * "Plan a new post" path), this one stamps `ai_generated=true` + saves
  * the original AI proposal under `ai_draft_payload` so we can compare
  * what the model said vs what the admin shipped later if we ever care.
  *
- * Called from CopilotPanel's ToolCard when the admin clicks "Open plan"
+ * Called from LinkAIPanel's ToolCard when the admin clicks "Open plan"
  * on a proposed-draft tile. The proposed draft lives only in chat-UI
  * state until this is invoked, so until the click happens the calendar
  * is untouched.
@@ -1941,26 +1941,26 @@ export async function acknowledgeProposal(proposalId) {
 }
 
 // =====================================================================
-// AI Co-pilot — dynamic suggestion chips (templated fallback)
+// LinkAI — dynamic suggestion chips (templated fallback)
 // =====================================================================
-// The PRIMARY path for Co-pilot welcome-screen chips is streaming AI
+// The PRIMARY path for LinkAI welcome-screen chips is streaming AI
 // generation via `experimental_useObject` against `/api/ai/suggestions`
-// (mounted directly in CopilotPanel.jsx) — that gives the admin a
+// (mounted directly in LinkAIPanel.jsx) — that gives the admin a
 // Refresh button with progressive chip rendering as the model streams
 // JSON deltas back.
 //
-// THIS helper is the fallback path — called by CopilotPanel ONLY when
+// THIS helper is the fallback path — called by LinkAIPanel ONLY when
 // the useObject hook errors (offline, auth, allowlist, brand-kit
 // missing). It builds chips deterministically from Supabase data:
 // recent approved plans + brand-kit product categories + a date-aware
 // brainstorm starter. No AI, no streaming, no cost — just a graceful
 // degradation so the welcome state isn't empty.
 //
-// Always returns 4 strings (or the COPILOT_GENERIC_SUGGESTIONS hardcoded
+// Always returns 4 strings (or the LINKAI_GENERIC_SUGGESTIONS hardcoded
 // set if even Supabase is unreachable).
 // =====================================================================
-export async function buildTemplatedCopilotSuggestions({ accountId } = {}) {
-  if (!accountId) return COPILOT_GENERIC_SUGGESTIONS.slice();
+export async function buildTemplatedLinkAISuggestions({ accountId } = {}) {
+  if (!accountId) return LINKAI_GENERIC_SUGGESTIONS.slice();
 
   // Pull the last few approved plans + the brand-kit product_categories
   // in parallel. Tight column lists — we don't need the full POST_PLAN_SELECT.
@@ -2011,13 +2011,13 @@ export async function buildTemplatedCopilotSuggestions({ accountId } = {}) {
     if (!deduped.includes(s)) deduped.push(s);
     if (deduped.length >= 4) break;
   }
-  return deduped.length > 0 ? deduped : COPILOT_GENERIC_SUGGESTIONS.slice();
+  return deduped.length > 0 ? deduped : LINKAI_GENERIC_SUGGESTIONS.slice();
 }
 
 // Fallback set — matches v1's EMPTY_SUGGESTIONS exactly so brand-new
 // brands (zero plans, no product_categories) see the same chips they
 // saw pre-Phase-3.
-const COPILOT_GENERIC_SUGGESTIONS = [
+const LINKAI_GENERIC_SUGGESTIONS = [
   'Draft an Instagram post about our newest product for next Tuesday at 10am',
   'Plan three posts for next week across IG and LinkedIn',
   'Brainstorm a campaign concept for the holiday season',
@@ -3997,7 +3997,7 @@ export function subscribeToPostPlanIdeas(onChange, { accountId } = {}) {
 }
 
 // ============================================================
-// Brand-kit notes (free-form admin "memory" the AI Co-pilot reads
+// Brand-kit notes (free-form admin "memory" the LinkAI reads
 // on every call, written either by the BrandKit UI or by the AI's
 // write_brand_note tool when the admin says "remember that…").
 // ============================================================

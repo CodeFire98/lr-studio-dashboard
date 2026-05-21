@@ -22,7 +22,7 @@ import { BrandPicker } from './BrandPicker.jsx';
 //   Active surfaces (high-frequency daily use):
 //     - Social Calendar
 //     - LinkAI                  ← new full-page AI surface (also still
-//                                  reachable via the topbar "✨ Co-pilot"
+//                                  reachable via the topbar "✨ LinkAI"
 //                                  trigger as a right-side panel)
 //     - Conversations
 //     - Live posts

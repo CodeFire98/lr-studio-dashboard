@@ -7,7 +7,7 @@
 // it hits Firecrawl /search with two queries and writes the top
 // results into `brand_trend_snapshots`. The brand-context compiler
 // reads the latest snapshots per brand into the system prompt as
-// `## Industry signals (last 24h)` so the AI Co-pilot can lead with
+// `## Industry signals (last 24h)` so the LinkAI can lead with
 // what's trending without paying per-call for a Firecrawl search.
 //
 // Two queries per brand (kept narrow so Firecrawl spend is predictable):
@@ -26,10 +26,10 @@
 //
 // On the brand-allowlist boundary: we scope the cron to brands in
 // AI_COPILOT_BRAND_IDS specifically (not "all brands") because:
-//   - Snapshots only get USED by the AI Co-pilot
+//   - Snapshots only get USED by the LinkAI
 //   - Allowlisted brands are the ones that pay Firecrawl in proportion
 //     to the value they get
-// When the Co-pilot rolls out to all brands, drop the allowlist filter.
+// When the LinkAI rolls out to all brands, drop the allowlist filter.
 //
 // Failures: a per-brand error is logged but doesn't abort the run —
 // the loop continues to the next brand. Snapshot rows always get

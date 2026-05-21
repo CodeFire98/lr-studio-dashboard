@@ -3,7 +3,7 @@
 // =====================================================================
 //
 // Curated list of holidays, festivals, and culturally-relevant observances
-// the AI Co-pilot uses to surface proactive post ideas. Tried `date-holidays`
+// the LinkAI uses to surface proactive post ideas. Tried `date-holidays`
 // (npm) first — its IN dataset only ships 6 public holidays and misses
 // Diwali, Holi, Eid, Raksha Bandhan, etc., which are exactly the moments
 // social-content brands care about. Curated list is more accurate for the

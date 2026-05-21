@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 //
-// Scoped Tailwind config for the AI Co-pilot v2 migration.
+// Scoped Tailwind config for the LinkAI v2 migration.
 //
 // IMPORTANT — coexistence with hand-written CSS:
 //   1. `content` is restricted to the new ai-elements/ directory ONLY,
