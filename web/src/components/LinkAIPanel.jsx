@@ -538,6 +538,46 @@ const LinkAIPanel = ({
     return idx[0]?.id || null;
   });
 
+  // ----- Rail collapse + artifact pane (PR C4) -------------------------
+  //
+  // The user can manually collapse the history rail to a thin strip; the
+  // preference persists per-user (not per-brand — collapse intent is
+  // global). Opening an artifact pane *temporarily* forces the rail
+  // collapsed (without touching the persisted preference) so the page
+  // layout stays sane at three columns: rail-44 | chat | artifact-420.
+  // Closing the artifact restores the persisted preference.
+  const RAIL_COLLAPSED_KEY = userId ? `lr_link_ai_rail_collapsed_${userId}` : null;
+  const [railManuallyCollapsed, setRailManuallyCollapsed] = useState(() => {
+    if (!RAIL_COLLAPSED_KEY) return false;
+    try { return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1"; } catch { return false; }
+  });
+  // `artifact` is null when nothing's open. Otherwise:
+  //   { kind: 'plan-draft', toolCallId, draft, committedId | null }
+  // — committedId flips from null to the new post_plans.id after the
+  // user clicks "Add to calendar" inside the pane.
+  const [artifact, setArtifact] = useState(null);
+  // Derived: the rail is visually collapsed if EITHER the user pinned it
+  // collapsed OR an artifact is open (one row is enough screen real
+  // estate when three columns are competing).
+  const railCollapsed = railManuallyCollapsed || !!artifact;
+
+  const toggleRail = () => {
+    setRailManuallyCollapsed((prev) => {
+      const next = !prev;
+      if (RAIL_COLLAPSED_KEY) {
+        try { localStorage.setItem(RAIL_COLLAPSED_KEY, next ? "1" : "0"); } catch { /* silent */ }
+      }
+      return next;
+    });
+  };
+
+  const openArtifact = useCallback((next) => {
+    setArtifact(next);
+  }, []);
+  const closeArtifact = useCallback(() => {
+    setArtifact(null);
+  }, []);
+
   // One-time legacy v2 → v3 import (drawer → page rail) per (user, brand).
   // Runs on mount and on brand switch. Idempotent (importLegacyV2ToIndex
   // bails when the v3 index is non-empty).
@@ -796,7 +836,7 @@ const LinkAIPanel = ({
 
         {messages.map((m) => (
           <div key={m.id} className={`link-ai-msg link-ai-msg-${m.role}`}>
-            {m.parts.map((part, idx) => renderPart(part, idx, m.id, m.role, { onNavigateToPlan, onCommitDraft, brandSlug }))}
+            {m.parts.map((part, idx) => renderPart(part, idx, m.id, m.role, { onNavigateToPlan, onCommitDraft, brandSlug, onPreviewPlan: isPageVariant ? openArtifact : null, openArtifactId: artifact?.toolCallId || null }))}
           </div>
         ))}
 
@@ -924,59 +964,241 @@ const LinkAIPanel = ({
   // Drawer variant: just the panel, no rail.
   if (!isPageVariant) return panelContent;
 
-  // Page variant: history rail + panel content, side by side.
+  // Page variant: history rail + panel content + (optional) artifact pane.
   return (
     <div className="link-ai-page-wrapper">
-      <aside className="link-ai-history" aria-label="LinkAI chat history">
-        <button
-          type="button"
-          className="link-ai-history-new"
-          onClick={startNew}
-          title="Start a new conversation"
-        >
-          <Icon name="plus" size={12} />
-          <span>New chat</span>
-        </button>
-        <div className="link-ai-history-list">
-          {convIndex.length === 0 ? (
-            <div className="link-ai-history-empty">
-              Your past chats will appear here.
-            </div>
+      <aside
+        className={"link-ai-history" + (railCollapsed ? " link-ai-history--collapsed" : "")}
+        aria-label="LinkAI chat history"
+      >
+        <div className="link-ai-history-controls">
+          {railCollapsed ? (
+            <button
+              type="button"
+              className="link-ai-history-toggle"
+              onClick={toggleRail}
+              title={railManuallyCollapsed ? "Expand chat history" : "Expand (currently collapsed because the side panel is open)"}
+              aria-label="Expand chat history"
+              disabled={!!artifact && !railManuallyCollapsed /* can't expand while artifact is open unless user explicitly pins it expanded */ && false}
+            >
+              <Icon name="chevron-right" size={12} />
+            </button>
           ) : (
-            convIndex.map((c) => (
-              <div
-                key={c.id}
-                className={"link-ai-history-row" + (c.id === activeConvId ? " is-active" : "")}
-              >
-                <button
-                  type="button"
-                  className="link-ai-history-row-main"
-                  onClick={() => switchToConv(c.id)}
-                  title={c.title}
-                >
-                  <span className="link-ai-history-row-title">{c.title}</span>
-                  <span className="link-ai-history-row-time">
-                    {formatRelativeTime(c.updatedAt)}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="link-ai-history-row-delete"
-                  onClick={() => deleteConv(c.id)}
-                  aria-label={`Delete "${c.title}"`}
-                  title="Delete"
-                >
-                  <Icon name="x" size={11} />
-                </button>
-              </div>
-            ))
+            <button
+              type="button"
+              className="link-ai-history-toggle"
+              onClick={toggleRail}
+              title="Collapse chat history"
+              aria-label="Collapse chat history"
+            >
+              <Icon name="chevron-left" size={12} />
+            </button>
           )}
+          <button
+            type="button"
+            className={railCollapsed ? "link-ai-history-new-collapsed" : "link-ai-history-new"}
+            onClick={startNew}
+            title="Start a new conversation"
+          >
+            <Icon name="plus" size={12} />
+            {!railCollapsed && <span>New chat</span>}
+          </button>
         </div>
+        {!railCollapsed && (
+          <div className="link-ai-history-list">
+            {convIndex.length === 0 ? (
+              <div className="link-ai-history-empty">
+                Your past chats will appear here.
+              </div>
+            ) : (
+              convIndex.map((c) => (
+                <div
+                  key={c.id}
+                  className={"link-ai-history-row" + (c.id === activeConvId ? " is-active" : "")}
+                >
+                  <button
+                    type="button"
+                    className="link-ai-history-row-main"
+                    onClick={() => switchToConv(c.id)}
+                    title={c.title}
+                  >
+                    <span className="link-ai-history-row-title">{c.title}</span>
+                    <span className="link-ai-history-row-time">
+                      {formatRelativeTime(c.updatedAt)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="link-ai-history-row-delete"
+                    onClick={() => deleteConv(c.id)}
+                    aria-label={`Delete "${c.title}"`}
+                    title="Delete"
+                  >
+                    <Icon name="x" size={11} />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </aside>
       {panelContent}
+      {artifact && (
+        <ArtifactPane
+          artifact={artifact}
+          brandSlug={brandSlug}
+          onClose={closeArtifact}
+          onCommitDraft={onCommitDraft}
+          onNavigateToPlan={onNavigateToPlan}
+          onCommitted={(planId) =>
+            setArtifact((prev) => (prev ? { ...prev, committedId: planId } : prev))
+          }
+        />
+      )}
     </div>
   );
 };
+
+// ----- ArtifactPane (PR C4) ------------------------------------------
+// Right-side pane on the LinkAI page. Renders a preview of a tool's
+// output (currently only `create_post_plan_draft` — future kinds:
+// brand-note edits, web-search result detail, etc.).
+//
+// IMPORTANT contract per the C4 design note (memory:
+// linkai-pr-c4-side-panel-explicit-commit):
+//   - Opening the pane DOES NOT write anything to the database. The
+//     draft lives only in chat memory + this pane's local state until
+//     the user clicks "Add to calendar".
+//   - "Add to calendar" calls onCommitDraft (the same handler the
+//     drawer variant uses) → on success, the pane stays open and
+//     swaps its CTA to "Open in Calendar view" (which navigates).
+//   - The brand_draft status flow downstream (brand must "Propose
+//     plan" from the calendar detail) is unchanged.
+function ArtifactPane({ artifact, brandSlug, onClose, onCommitDraft, onNavigateToPlan, onCommitted }) {
+  const [committing, setCommitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  if (!artifact || artifact.kind !== "plan-draft") return null;
+  const draft = artifact.draft || {};
+  const committedId = artifact.committedId;
+
+  const onAddToCalendar = async () => {
+    if (committing || committedId) return;
+    if (!onCommitDraft) {
+      setError("Commit handler missing — refresh and retry.");
+      return;
+    }
+    setCommitting(true);
+    setError(null);
+    try {
+      const plan = await onCommitDraft(draft);
+      if (plan?.id) {
+        onCommitted(plan.id);
+      } else {
+        setError("Could not add to calendar (no plan id returned).");
+      }
+    } catch (e) {
+      setError(e?.message || "Could not add to calendar.");
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const onOpenInCalendar = () => {
+    if (committedId) onNavigateToPlan?.(committedId, brandSlug);
+  };
+
+  const copyVariants = Array.isArray(draft.copy_variants) ? draft.copy_variants : [];
+
+  return (
+    <aside className="link-ai-artifact" aria-label="Plan preview">
+      <header className="link-ai-artifact-head">
+        <div className="link-ai-artifact-head-titles">
+          <div className="link-ai-artifact-kicker">Post plan preview</div>
+          <h3 className="link-ai-artifact-title">{draft.concept || "Untitled plan"}</h3>
+          {(draft.scheduled_at || (Array.isArray(draft.platforms) && draft.platforms.length > 0)) && (
+            <div className="link-ai-artifact-meta">
+              {draft.scheduled_at && (
+                <span className="link-ai-artifact-meta-item">
+                  <Icon name="calendar" size={11} />
+                  <span>{formatPlanChipTime(draft.scheduled_at)}</span>
+                </span>
+              )}
+              {Array.isArray(draft.platforms) && draft.platforms.map((p) => (
+                <span key={p} className="link-ai-tool-pill">{p}</span>
+              ))}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          className="link-ai-artifact-close"
+          onClick={onClose}
+          aria-label="Close preview"
+          title="Close"
+        >
+          <Icon name="x" size={14} />
+        </button>
+      </header>
+
+      <div className="link-ai-artifact-body">
+        {copyVariants.length === 0 ? (
+          <div className="link-ai-artifact-empty">No copy variants drafted yet.</div>
+        ) : (
+          copyVariants.map((cv, i) => {
+            const platform = cv?.platform || `Variant ${i + 1}`;
+            const body = cv?.body || cv?.copy || "";
+            return (
+              <section key={`${platform}-${i}`} className="link-ai-artifact-variant">
+                <div className="link-ai-artifact-variant-head">
+                  <span className="link-ai-tool-pill">{platform}</span>
+                </div>
+                {body && (
+                  <pre className="link-ai-artifact-variant-body">{body}</pre>
+                )}
+              </section>
+            );
+          })
+        )}
+      </div>
+
+      <footer className="link-ai-artifact-footer">
+        {error && (
+          <div className="link-ai-tool-error" role="alert">{error}</div>
+        )}
+        {committedId ? (
+          <>
+            <div className="link-ai-artifact-status">
+              <Icon name="check" size={12} />
+              <span>Added to calendar</span>
+            </div>
+            <button
+              type="button"
+              className="link-ai-artifact-primary"
+              onClick={onOpenInCalendar}
+            >
+              Open in Calendar view →
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="link-ai-artifact-primary"
+              onClick={onAddToCalendar}
+              disabled={committing}
+            >
+              {committing ? "Adding…" : "Add to calendar"}
+            </button>
+            <div className="link-ai-artifact-hint">
+              The draft lives only in this chat until you add it.
+            </div>
+          </>
+        )}
+      </footer>
+    </aside>
+  );
+}
 
 // LinkAIFollowUpChips — quick-reply chips above the textarea sourced
 // from the model's `suggest_follow_ups` tool call on the latest
@@ -1211,6 +1433,7 @@ function renderPart(part, idx, messageId, role, ctx) {
       <ToolCard
         key={`${messageId}-${part.toolCallId || idx}`}
         toolName={toolName}
+        toolCallId={part.toolCallId}
         state={part.state}
         input={part.input}
         output={part.output}
@@ -1218,6 +1441,8 @@ function renderPart(part, idx, messageId, role, ctx) {
         onNavigateToPlan={ctx.onNavigateToPlan}
         onCommitDraft={ctx.onCommitDraft}
         brandSlug={ctx.brandSlug}
+        onPreviewPlan={ctx.onPreviewPlan}
+        isArtifactOpen={ctx.openArtifactId === part.toolCallId}
       />
     );
   }
@@ -1244,7 +1469,7 @@ function renderPart(part, idx, messageId, role, ctx) {
 // The SYSTEM_PROMPT also instructs the model not to announce internal
 // failures, so the post-recovery text reads as if the first attempt
 // worked.
-function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan, onCommitDraft, brandSlug }) {
+function ToolCard({ toolName, toolCallId, state, input, output, errorText, onNavigateToPlan, onCommitDraft, brandSlug, onPreviewPlan, isArtifactOpen }) {
   const isPlan = toolName === "create_post_plan_draft";
   const isNote = toolName === "write_brand_note";
   const isLoadSkill = toolName === "load_skill";
@@ -1381,44 +1606,61 @@ function ToolCard({ toolName, state, input, output, errorText, onNavigateToPlan,
       )}
       {isPlan && ok && (isProposedPlan || committedId) && (
         <>
-          <button
-            className="link-ai-tool-cta"
-            disabled={committing}
-            onClick={async () => {
-              if (committing) return;
-              // Already committed once — just navigate.
-              if (committedId) {
-                onNavigateToPlan?.(committedId, brandSlug);
-                return;
-              }
-              // First click on a proposed draft → commit, then navigate.
-              if (!onCommitDraft) {
-                setCommitError("Commit handler missing — refresh and retry.");
-                return;
-              }
-              setCommitting(true);
-              setCommitError(null);
-              try {
-                const plan = await onCommitDraft(result);
-                if (plan?.id) {
-                  setCommittedId(plan.id);
-                  onNavigateToPlan?.(plan.id, brandSlug);
-                } else {
-                  setCommitError("Could not add to calendar (no plan id returned).");
+          {onPreviewPlan ? (
+            /* Page variant: "Preview" opens the side-by-side artifact pane
+               (no DB write). Commit happens inside the pane via "Add to
+               calendar". This separation lets the user iterate with LinkAI
+               without every interim draft landing in the calendar. */
+            <button
+              className={"link-ai-tool-cta" + (isArtifactOpen ? " is-active" : "")}
+              onClick={() => {
+                onPreviewPlan({
+                  kind: "plan-draft",
+                  toolCallId,
+                  draft: result,
+                  committedId: committedId || null,
+                });
+              }}
+            >
+              {committedId ? "Open" : (isArtifactOpen ? "Showing in side panel" : "Preview")}
+            </button>
+          ) : (
+            /* Drawer variant (no side panel — there's no room for a third
+               column inside the 420px drawer). Same legacy commit+navigate
+               behaviour as before C4. */
+            <button
+              className="link-ai-tool-cta"
+              disabled={committing}
+              onClick={async () => {
+                if (committing) return;
+                if (committedId) {
+                  onNavigateToPlan?.(committedId, brandSlug);
+                  return;
                 }
-              } catch (e) {
-                setCommitError(e?.message || "Could not add to calendar.");
-              } finally {
-                setCommitting(false);
-              }
-            }}
-          >
-            {committing
-              ? "Adding to calendar…"
-              : committedId
-                ? "Open plan →"
-                : "Open plan →"}
-          </button>
+                if (!onCommitDraft) {
+                  setCommitError("Commit handler missing — refresh and retry.");
+                  return;
+                }
+                setCommitting(true);
+                setCommitError(null);
+                try {
+                  const plan = await onCommitDraft(result);
+                  if (plan?.id) {
+                    setCommittedId(plan.id);
+                    onNavigateToPlan?.(plan.id, brandSlug);
+                  } else {
+                    setCommitError("Could not add to calendar (no plan id returned).");
+                  }
+                } catch (e) {
+                  setCommitError(e?.message || "Could not add to calendar.");
+                } finally {
+                  setCommitting(false);
+                }
+              }}
+            >
+              {committing ? "Adding to calendar…" : "Open plan →"}
+            </button>
+          )}
           {commitError && (
             <div className="link-ai-tool-error" role="alert">{commitError}</div>
           )}
