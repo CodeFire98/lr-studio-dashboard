@@ -851,12 +851,35 @@ const App = () => {
     try {
       const newId = await promptCreateBrand();
       if (!newId) return null;
-      // Agency: refresh the picker list so the new brand shows up.
+      // This function owns post-create navigation for BOTH paths (agency
+      // and brand). The previous "create then onSelectBrand(newId)" call
+      // pattern from BrandPicker lost to a stale-closure race: the picker
+      // ran handleSelectBrand against the pre-create brandAccounts /
+      // auth.memberships, never found the new brand, never navigated —
+      // and the URL-sync effect (App.jsx ~265) then snapped activeAdminBrandId
+      // back to whatever brand the still-old URL slug pointed at.
       if (auth?.isAgency) {
         try {
           const rows = await loadBrandAccounts();
           setBrandAccounts(rows);
+          const created = rows.find((b) => b.id === newId);
+          if (created?.slug) {
+            setActiveAdminBrandId(newId);
+            navigate(`/c/${created.slug}/calendar`);
+          }
         } catch (e) { console.warn('refresh brand list failed', e); }
+      } else {
+        // Brand user added a new brand workspace via "Create new brand"
+        // in the picker. setActiveBrand rehydrates auth (new account +
+        // memberships); read it fresh for the slug so we navigate to the
+        // newly-created brand, not whatever was active before.
+        try {
+          await setActiveBrand(newId);
+          const freshAuth = readAuth();
+          if (freshAuth?.account?.slug) {
+            navigate(`/c/${freshAuth.account.slug}/calendar`);
+          }
+        } catch (e) { console.warn('switch to new brand failed', e); }
       }
       return newId;
     } catch (e) {
