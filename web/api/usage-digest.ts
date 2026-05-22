@@ -493,7 +493,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }),
   });
   const sendBody = await sendRes.text();
-  let parsed: { ok?: boolean; sent?: number; error?: string; detail?: string } | null = null;
+  let parsed: {
+    ok?: boolean;
+    sent?: number;
+    total?: number;
+    failed?: Array<{ to: string; error: string }>;
+    error?: string;
+    detail?: string;
+  } | null = null;
   try {
     parsed = sendBody ? JSON.parse(sendBody) : null;
   } catch {
@@ -504,14 +511,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       ok: false,
       error: parsed?.error ?? sendBody.slice(0, 240),
       detail: parsed?.detail ?? null,
+      failed: parsed?.failed ?? [],
       payload,
     });
     return;
   }
 
+  // Surface partial failures explicitly. The cron HTTP log only sees the
+  // top-level `ok` field — if we swallow `failed[]` here, a 2-of-3-recipients
+  // failure looks identical to a 3-of-3 success and we can't tell from SQL
+  // why the natural fire silently lost emails (this exact gap masked the
+  // 2026-05-22 rate-limit regression for a full day).
+  const sent = parsed?.sent ?? 0;
+  const failed = parsed?.failed ?? [];
+  const fullySent = sent === recipients.length && failed.length === 0;
   res.status(200).json({
-    ok: true,
-    sent: parsed?.sent ?? recipients.length,
+    ok: fullySent,
+    sent,
+    total: recipients.length,
+    failed,
     payload,
   });
 }

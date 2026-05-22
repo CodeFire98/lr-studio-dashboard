@@ -260,22 +260,36 @@ async function callResend(args: {
   };
   if (args.replyTo) payload.reply_to = args.replyTo;
 
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  const text = await res.text();
-  let data: unknown = null;
-  try { data = text ? JSON.parse(text) : null; } catch { /* leave as raw text */ }
-  if (!res.ok) {
+  // 1-shot retry on Resend 429. Our plan caps at 2 req/sec sliding-window;
+  // the digest spacer alone isn't always enough because Resend's window
+  // boundary timing isn't strictly aligned with our setTimeout deltas
+  // (network jitter, function cold-start, Deno timer skew all contribute).
+  // We give it one extra try with a 1500ms cool-off — total worst case
+  // ~2s per recipient, still well inside the 90s timeout.
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    let data: unknown = null;
+    try { data = text ? JSON.parse(text) : null; } catch { /* leave as raw text */ }
+    if (res.ok) {
+      return (data as { id: string });
+    }
     const msg = (data as { message?: string } | null)?.message || text || res.statusText;
-    throw new Error(`Resend ${res.status}: ${msg}`);
+    lastErr = new Error(`Resend ${res.status}: ${msg}`);
+    // Only retry on 429 (rate limit). 4xx-other and 5xx aren't retryable
+    // from our side — bubble up.
+    if (res.status !== 429) break;
   }
-  return (data as { id: string });
+  throw lastErr ?? new Error("Resend call failed with no captured error");
 }
 
 function renderTeamInvite(args: {
@@ -1155,12 +1169,20 @@ async function handleServiceUsageDaily(body: ServiceUsageDailyRequest): Promise<
   // Resend's per-second cap on our plan rejects the /emails/batch call
   // when N agency recipients land inside the same second (observed: 3
   // recipients → 429 "2 requests per second"). Send one-at-a-time with
-  // a small spacer so each call stays inside the limit. Total recipients
-  // is small (agency-team-only, <10) so the extra latency is harmless.
+  // a spacer so each call stays inside the limit. Total recipients is
+  // small (agency-team-only, <10) so the extra latency is harmless.
+  //
+  // SPACER_MS history:
+  //   600ms (PR #115, 2026-05-21) was wrong — Resend uses a sliding
+  //   1-second window and the boundary timing isn't strictly aligned
+  //   with our setTimeout deltas, so 600ms still saw 2/3 sends 429 on
+  //   the natural 07:30 IST fire 2026-05-22. Bumped to 1100ms so any
+  //   1-second window strictly contains at most one of our calls;
+  //   callResend additionally retries once on 429 as a safety net.
   const ids: string[] = [];
   const failures: Array<{ to: string; error: string }> = [];
   const total = body.recipients.length;
-  const SPACER_MS = 600;
+  const SPACER_MS = 1100;
   for (let i = 0; i < body.recipients.length; i++) {
     if (i > 0) await new Promise((r) => setTimeout(r, SPACER_MS));
     const to = body.recipients[i];
