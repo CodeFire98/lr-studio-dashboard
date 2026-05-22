@@ -1035,7 +1035,13 @@ const PostPlanDetailView = ({
   // "pending" notice on their own proposal.
   const [proposals, setProposals] = useState([]);
   const [resolvingProposalId, setResolvingProposalId] = useState(null);
-  const [proposeCopyOpen, setProposeCopyOpen] = useState(false);
+  // The old ProposeCopyChangesModal mount has been retired in favor of
+  // the inline Edit pill on the copy textbox (brand sees the same pill
+  // the agency uses; on submit it routes to createProposal instead of
+  // direct save). The modal component definition is still in this file
+  // (`ProposeCopyChangesModal`) — kept on disk for low-effort revival
+  // if we ever want a "More options / add a note" deeper flow — but
+  // it's no longer mounted, so no proposeCopyOpen state is needed.
 
   const refreshProposals = useCallback(() => {
     if (!postPlanId) return;
@@ -1346,6 +1352,57 @@ const PostPlanDetailView = ({
     }
   };
 
+  // Brand-side equivalent of saveCopyForKey: instead of writing the
+  // change directly to the plan (which brand isn't allowed to do
+  // anyway — RLS would block it), package the change as a copy_change
+  // PROPOSAL via the existing createProposal RPC. Submits only the
+  // active platform's diff — each "Propose change" click yields one
+  // proposal, so a brand wanting to suggest tweaks on IG + LinkedIn
+  // submits twice. Cleaner audit trail than the old modal's "submit
+  // all dirty platforms in one go" pattern, at the cost of a couple
+  // extra clicks.
+  //
+  // The existing emit_plan_proposal_created_message trigger from
+  // migration 0047 emits the "X proposed copy changes for this plan."
+  // system message in the Conversations log automatically — no
+  // explicit log call needed here.
+  const [submittingProposal, setSubmittingProposal] = useState(false);
+  const [proposalError, setProposalError] = useState(null);
+
+  const submitBrandCopyProposal = async (key) => {
+    if (submittingProposal) return;
+    const draft = copyDrafts[key] ?? '';
+    const saved = (plan?.copyVariants || {})[key] ?? '';
+    if (draft === saved) return; // nothing to propose
+    if (!plan?.id || !plan?.accountId || !userId) return;
+    setSubmittingProposal(true);
+    setProposalError(null);
+    try {
+      await createProposal({
+        planId: plan.id,
+        accountId: plan.accountId,
+        kind: 'copy_change',
+        payload: { copy_variants: { [key]: draft } },
+        note: null, // inline flow doesn't expose a note field by design
+        userId,
+      });
+      // Reset the local draft back to the saved value so the textarea
+      // re-renders the unchanged copy if they re-enter edit mode.
+      // (The proposal is pending — plan.copyVariants stays untouched
+      // until agency accepts.) Exit edit mode, refresh proposals so
+      // the pending banner + pill-suppression both react.
+      setCopyDrafts((prev) => ({ ...prev, [key]: saved }));
+      exitEditMode(key);
+      refreshProposals();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('createProposal copy_change (inline) failed', err);
+      setProposalError(err?.message || 'Could not send proposal.');
+    } finally {
+      setSubmittingProposal(false);
+    }
+  };
+
   // Revert an auto-filled title. Restores the previous concept value
   // (typically empty) and clears the notice.
   const undoAutoTitle = async () => {
@@ -1359,22 +1416,38 @@ const PostPlanDetailView = ({
   // Auto-save fallback when the textarea loses focus — preserves the
   // existing on-blur-persist behaviour so users who don't click Save
   // still get their text saved.
+  //
+  // Agency only. Brand uses the same textarea via the inline Edit pill
+  // but submits a copy_change PROPOSAL (not a direct save) via an
+  // explicit "Propose change" button — blur shouldn't fire-and-forget
+  // a proposal RPC.
   const handleCopyBlur = (key) => {
+    if (!isEditor) return;
     saveCopyForKey(key);
   };
 
   // Whether the active platform's editor is in 'edit' (textarea) mode for
-  // the current viewer. Brand is always 'read'. Agency defaults to 'edit'
-  // when there's no saved copy yet, otherwise 'read' (so links render).
+  // the current viewer.
+  //   - Agency: defaults to 'edit' when there's no saved copy yet (so
+  //     they can type immediately on a fresh plan), otherwise 'read'.
+  //   - Brand: ALWAYS defaults to 'read'. Brand opts into edit mode by
+  //     clicking the inline "Edit" pill (only shown when proposal flow
+  //     is eligible — needs_review / approved-not-yet-posted, no
+  //     pending copy proposal already in flight).
   const isCopyEditing = (key) => {
-    if (!isEditor || !key) return false;
+    if (!key) return false;
     if (copyMode[key]) return copyMode[key] === 'edit';
+    if (!isEditor) return false;
     const saved = (plan?.copyVariants || {})[key] ?? '';
-    return !saved.trim(); // empty → start in edit mode
+    return !saved.trim(); // empty → start in edit mode (agency only)
   };
 
+  // Drop the `!isEditor` gate — brand needs to enter edit mode too,
+  // so they can type into the textarea before clicking "Propose
+  // change". The pill that calls this is already gated on
+  // brandCanProposeCopy below, so we don't open it for non-eligible
+  // viewers.
   const enterEditMode = (key) => {
-    if (!isEditor) return;
     setCopyMode((p) => ({ ...p, [key]: 'edit' }));
   };
 
@@ -1725,22 +1798,32 @@ const PostPlanDetailView = ({
         out.push({ label: 'Propose plan', tone: 'primary', next: 'proposed' });
       } else if (statusBucket === 'needs_review') {
         out.push({ label: 'Approve', tone: 'good', next: 'approved' });
-        // Brand can also request changes instead of approving. Opens the
-        // copy-proposal modal; doesn't change plan status.
-        if (!pendingCopyProposal) {
-          out.push({ label: 'Propose changes', tone: 'primary', action: 'propose-copy' });
-        }
+        // The old "Propose changes" button used to live here, opening
+        // a full-page modal. Replaced by the inline Edit pill on the
+        // copy textbox below — same proposal flow, lighter UX. The
+        // pill is gated on the same conditions (needs_review or
+        // approved-not-yet-posted, no pending copy proposal already
+        // in flight) via the brandCanProposeCopy variable computed
+        // before render.
       } else if (statusBucket === 'approved' && displayStatus !== 'posted') {
-        // On an already-approved (but not yet posted) plan, brand can
-        // still propose copy tweaks. Same modal, same proposal kind.
-        // Once published, the post is live — no more proposing changes.
-        if (!pendingCopyProposal) {
-          out.push({ label: 'Propose changes', tone: 'primary', action: 'propose-copy' });
-        }
+        // Same as above — once a plan reaches approved-not-posted,
+        // brand keeps the inline Edit pill on the copy textbox.
       }
     }
     return out;
   })();
+
+  // Brand-side proposal eligibility, computed once per render.
+  // Mirrors the conditions the old "Propose changes" status button
+  // used (needs_review OR approved-not-yet-posted, no pending copy
+  // proposal already in flight). Drives the inline "Edit" pill that
+  // replaces the modal entry point — both the pill itself and the
+  // click-to-edit on the read view are gated on canEditCopy.
+  const brandCanProposeCopy = !isEditor && !pendingCopyProposal && (
+    statusBucket === 'needs_review' ||
+    (statusBucket === 'approved' && displayStatus !== 'posted')
+  );
+  const canEditCopy = isEditor || brandCanProposeCopy;
 
   // ---- Render ---------------------------------------------------------
 
@@ -2071,8 +2154,6 @@ const PostPlanDetailView = ({
               onClick={() => {
                 if (a.action === 'delete') {
                   handleDelete();
-                } else if (a.action === 'propose-copy') {
-                  setProposeCopyOpen(true);
                 } else {
                   transitionStatus(a.next, { requireComment: a.requireComment });
                 }
@@ -2345,7 +2426,7 @@ const PostPlanDetailView = ({
                               onChange={(e) => handleCopyChange(activeCopyTab, e.target.value)}
                               onBlur={() => handleCopyBlur(activeCopyTab)}
                               placeholder={`Write the ${platLabel} version of this post…`}
-                              disabled={!isEditor || saving}
+                              disabled={saving || submittingProposal}
                               autoFocus={!!saved}
                               style={{
                                 width: '100%',
@@ -2362,6 +2443,8 @@ const PostPlanDetailView = ({
                                 lineHeight: 1.5,
                               }}
                             />
+                            {/* Agency footer — direct save semantics + AI
+                                co-pilot affordances. */}
                             {isEditor && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
                                 <span style={{ fontSize: 11.5, color: isDirty ? 'var(--accent-ink)' : 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -2404,6 +2487,47 @@ const PostPlanDetailView = ({
                                 </button>
                               </div>
                             )}
+                            {/* Brand footer — proposal semantics. Submit
+                                is gated on isDirty (no point proposing
+                                identical copy) and only "Propose change"
+                                surfaces; AI co-pilot affordances stay
+                                agency-only. */}
+                            {!isEditor && brandCanProposeCopy && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                                <span style={{ fontSize: 11.5, color: 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  {submittingProposal
+                                    ? 'Sending…'
+                                    : isDirty
+                                      ? 'Your edits will be sent for approval'
+                                      : 'Make a change to propose'}
+                                </span>
+                                <span style={{ flex: 1 }}/>
+                                {proposalError && (
+                                  <span style={{ fontSize: 11.5, color: 'var(--bad)' }}>
+                                    {proposalError}
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-ghost"
+                                  onClick={() => cancelCopyEdit(activeCopyTab)}
+                                  disabled={submittingProposal}
+                                >
+                                  Cancel
+                                </button>
+                                {isDirty && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-primary"
+                                    onClick={() => submitBrandCopyProposal(activeCopyTab)}
+                                    disabled={submittingProposal}
+                                    title="Send these edits to the agency for review"
+                                  >
+                                    {submittingProposal ? 'Sending…' : 'Propose change'}
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             {aiInlineEligible && aiPreviewPlatform === activeCopyTab && plan?.id && (
                               <AICopyPreview
                                 accountId={plan.accountId}
@@ -2426,12 +2550,18 @@ const PostPlanDetailView = ({
                       // visually styled to match the textarea slot so the
                       // swap is seamless. Click anywhere not-on-a-link to
                       // re-enter edit mode (agency only).
+                      // For brand, the pill is the proposal entry point;
+                      // for agency, it's direct-edit. Same visual, same
+                      // state-machine transition (enterEditMode), different
+                      // submit semantics handled in the edit-view footer
+                      // below.
+                      const editTooltip = isEditor ? 'Click to edit' : 'Click to propose changes';
                       return (
                         <div
-                          role={isEditor ? 'button' : undefined}
-                          tabIndex={isEditor ? 0 : undefined}
+                          role={canEditCopy ? 'button' : undefined}
+                          tabIndex={canEditCopy ? 0 : undefined}
                           onClick={
-                            isEditor
+                            canEditCopy
                               ? (e) => {
                                   // Don't intercept clicks on links — let the
                                   // browser open them in a new tab as the
@@ -2442,7 +2572,7 @@ const PostPlanDetailView = ({
                               : undefined
                           }
                           onKeyDown={
-                            isEditor
+                            canEditCopy
                               ? (e) => {
                                   if (e.key === 'Enter' || e.key === ' ') {
                                     e.preventDefault();
@@ -2463,10 +2593,10 @@ const PostPlanDetailView = ({
                             whiteSpace: 'pre-wrap',
                             wordBreak: 'break-word',
                             lineHeight: 1.5,
-                            cursor: isEditor ? 'text' : 'default',
+                            cursor: canEditCopy ? 'text' : 'default',
                             position: 'relative',
                           }}
-                          title={isEditor ? 'Click to edit' : undefined}
+                          title={canEditCopy ? editTooltip : undefined}
                         >
                           {saved
                             ? linkifySegments(saved)
@@ -2477,11 +2607,11 @@ const PostPlanDetailView = ({
                                   : `No ${platLabel} copy yet.`}
                               </span>
                             )}
-                          {isEditor && saved && (
+                          {canEditCopy && saved && (
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); enterEditMode(activeCopyTab); }}
-                              title="Edit copy"
+                              title={editTooltip}
                               style={{
                                 position: 'absolute',
                                 top: 6,
@@ -2861,18 +2991,10 @@ const PostPlanDetailView = ({
         onCancel={() => setPostedModalOpen(false)}
       />
 
-      {proposeCopyOpen && plan?.id && (
-        <ProposeCopyChangesModal
-          plan={plan}
-          accountId={plan.accountId}
-          userId={userId}
-          onCancel={() => setProposeCopyOpen(false)}
-          onSent={() => {
-            setProposeCopyOpen(false);
-            refreshProposals();
-          }}
-        />
-      )}
+      {/* ProposeCopyChangesModal mount removed — superseded by the
+          inline Edit pill on the copy textbox (PR B, 2026-05-22).
+          The component definition is still in this file in case we
+          want to revive a deeper "Propose with a note" flow later. */}
     </div></div>
   );
 };
