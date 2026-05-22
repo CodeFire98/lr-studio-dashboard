@@ -943,6 +943,23 @@ const LinkAIPanel = ({
       dlog("persist: SKIP (no targetId)", { messagesLen: messages.length, isBusy });
       return;
     }
+    // SAFEGUARD: never clobber a non-empty slot with an empty array.
+    // In the happy path, persist only sees `messages = []` when
+    // `sdkConvIdRef.current` is also null (the early return above
+    // catches it). If we somehow get here with messages=[] AND a
+    // real targetId, some unidentified race set sdkConvIdRef to a
+    // real conv while messages was empty — writing [] would wipe
+    // the user's chat. Skip the write and let the next real update
+    // overwrite cleanly.
+    if (messages.length === 0) {
+      const existingCache = readSessionConv(userId, accountId, targetId);
+      const existingStored = loadConvMessages(userId, accountId, targetId);
+      const existingLen = Math.max(existingCache?.length || 0, existingStored.length);
+      if (existingLen > 0) {
+        dlog("persist: SAFEGUARD skipped empty-overwrite", { targetId, existingLen });
+        return;
+      }
+    }
     dlog("persist: WRITE", {
       targetId,
       messagesLen: messages.length,
