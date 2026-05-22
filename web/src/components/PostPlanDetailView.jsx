@@ -29,6 +29,7 @@ import {
   loadProposalsForPlan,
   createProposal,
   resolveProposal,
+  withdrawProposal,
   acknowledgeProposal,
   addMessageForPostPlan,
   subscribeToMessagesForPostPlan,
@@ -296,7 +297,7 @@ const DiffView = ({ tokens, emptyText }) => {
 // copy change. Shows a per-platform diff inline; only platforms whose
 // copy actually differs are rendered.
 // =====================================================================
-const PendingCopyProposalCard = ({ proposal, plan, isAdmin, busy, onAccept, onReject }) => {
+const PendingCopyProposalCard = ({ proposal, plan, isAdmin, isOwnProposal, busy, onAccept, onReject, onCancel }) => {
   if (!proposal || !plan) return null;
   const proposedVariants = proposal.payload?.copy_variants || {};
   const currentVariants = plan.copyVariants || {};
@@ -308,7 +309,7 @@ const PendingCopyProposalCard = ({ proposal, plan, isAdmin, busy, onAccept, onRe
   return (
     <div
       style={{
-        marginTop: 16,
+        marginTop: 12,
         padding: '12px 14px',
         border: '1px solid color-mix(in oklab, #C44A2C 35%, var(--line))',
         background: 'color-mix(in oklab, #C44A2C 6%, var(--surface))',
@@ -352,8 +353,26 @@ const PendingCopyProposalCard = ({ proposal, plan, isAdmin, busy, onAccept, onRe
           </div>
         )}
         {!isAdmin && (
-          <div style={{ fontSize: 12, color: 'var(--ink-3)', flexShrink: 0, alignSelf: 'center' }}>
-            Awaiting agency review
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+              Awaiting agency review
+            </span>
+            {/* Brand can recall their OWN pending proposal — RLS lets
+                the proposer flip pending → withdrawn (migration 0056).
+                Trigger emits "X withdrew their proposed copy changes."
+                in the Conversations log. Confirmation dialog handled
+                upstream in the parent's onCancel handler. */}
+            {isOwnProposal && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                disabled={busy}
+                onClick={onCancel}
+                title="Cancel this proposed change. You can propose new edits afterwards."
+              >
+                {busy ? 'Cancelling…' : 'Cancel proposal'}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -1055,9 +1074,30 @@ const PostPlanDetailView = ({
   const pendingDateProposal = proposals.find(
     (p) => p.status === 'pending' && p.kind === 'date_change'
   ) || null;
-  const pendingCopyProposal = proposals.find(
+  // All pending copy_change proposals, ordered newest-first by the
+  // server. With per-platform proposal logic (added 2026-05-22), a
+  // single plan can have multiple simultaneous pending copy_change
+  // proposals — one per platform the brand has touched. Each renders
+  // as its own card and each carries its own Accept/Reject (agency)
+  // or Cancel (brand) action. `pendingCopyProposals` is the list;
+  // `pendingCopyProposalByPlatform` is a lookup map for "does this
+  // specific platform have a pending proposal in flight?".
+  const pendingCopyProposals = proposals.filter(
     (p) => p.status === 'pending' && p.kind === 'copy_change'
-  ) || null;
+  );
+  const pendingCopyProposalByPlatform = (() => {
+    const map = {};
+    for (const p of pendingCopyProposals) {
+      const variants = p.payload?.copy_variants || {};
+      for (const platform of Object.keys(variants)) {
+        // First-seen wins (newest-first ordering means the most-recent
+        // pending proposal for the platform — shouldn't have multiple,
+        // but if a race created two we surface the latest).
+        if (!map[platform]) map[platform] = p;
+      }
+    }
+    return map;
+  })();
 
   // When agency opens the plan, mark any unacknowledged pending proposals
   // as acknowledged so the red dot on the calendar card clears. Brand
@@ -1430,23 +1470,31 @@ const PostPlanDetailView = ({
   // the current viewer.
   //   - Agency: defaults to 'edit' when there's no saved copy yet (so
   //     they can type immediately on a fresh plan), otherwise 'read'.
-  //   - Brand: ALWAYS defaults to 'read'. Brand opts into edit mode by
-  //     clicking the inline "Edit" pill (only shown when proposal flow
-  //     is eligible — needs_review / approved-not-yet-posted, no
-  //     pending copy proposal already in flight).
+  //   - Brand on a populated platform: defaults to 'read'. Brand opts
+  //     in via the inline Edit pill on the read view (only shown when
+  //     proposal flow is eligible for that platform — see
+  //     canEditCopyForPlatform).
+  //   - Brand on an EMPTY platform (no saved copy) that they're
+  //     eligible to propose into: defaults to 'edit', so a click on
+  //     the "+ LinkedIn" tab lands the cursor directly in a textarea
+  //     instead of an empty read pane with a pill on it. Mirrors the
+  //     agency-on-empty behavior — symmetric UX.
   const isCopyEditing = (key) => {
     if (!key) return false;
     if (copyMode[key]) return copyMode[key] === 'edit';
-    if (!isEditor) return false;
     const saved = (plan?.copyVariants || {})[key] ?? '';
-    return !saved.trim(); // empty → start in edit mode (agency only)
+    if (saved.trim()) return false; // populated → read by default
+    // Empty default: agency always, brand only when they can propose
+    // a fresh platform addition for this slot.
+    return isEditor || brandCanProposeCopyForPlatform(key);
   };
 
   // Drop the `!isEditor` gate — brand needs to enter edit mode too,
   // so they can type into the textarea before clicking "Propose
   // change". The pill that calls this is already gated on
-  // brandCanProposeCopy below, so we don't open it for non-eligible
-  // viewers.
+  // canEditCopyForPlatform below, so we don't open it for non-
+  // eligible viewers (wrong status, or pending proposal already
+  // sitting in agency's queue for that platform).
   const enterEditMode = (key) => {
     setCopyMode((p) => ({ ...p, [key]: 'edit' }));
   };
@@ -1803,8 +1851,8 @@ const PostPlanDetailView = ({
         // copy textbox below — same proposal flow, lighter UX. The
         // pill is gated on the same conditions (needs_review or
         // approved-not-yet-posted, no pending copy proposal already
-        // in flight) via the brandCanProposeCopy variable computed
-        // before render.
+        // in flight for that platform) via the
+        // brandCanProposeCopyForPlatform variable computed below.
       } else if (statusBucket === 'approved' && displayStatus !== 'posted') {
         // Same as above — once a plan reaches approved-not-posted,
         // brand keeps the inline Edit pill on the copy textbox.
@@ -1813,17 +1861,24 @@ const PostPlanDetailView = ({
     return out;
   })();
 
-  // Brand-side proposal eligibility, computed once per render.
-  // Mirrors the conditions the old "Propose changes" status button
-  // used (needs_review OR approved-not-yet-posted, no pending copy
-  // proposal already in flight). Drives the inline "Edit" pill that
-  // replaces the modal entry point — both the pill itself and the
-  // click-to-edit on the read view are gated on canEditCopy.
-  const brandCanProposeCopy = !isEditor && !pendingCopyProposal && (
+  // Brand-side proposal eligibility, scoped to a specific platform.
+  // The "no pending copy proposal" check is now per-platform — brand
+  // can propose changes to LinkedIn even if Instagram already has a
+  // pending proposal sitting in agency's queue. Status conditions
+  // (needs_review OR approved-not-yet-posted) are still plan-level.
+  //
+  // `brandCanProposeAnyCopy` is a coarser variant for "should the
+  // brand see the extra platform tabs" — used for the all-PLATFORMS
+  // tab rendering below. The per-platform "is this slot eligible
+  // right now?" check still gates the actual pill / footer button.
+  const brandCanProposeAnyCopy = !isEditor && (
     statusBucket === 'needs_review' ||
     (statusBucket === 'approved' && displayStatus !== 'posted')
   );
-  const canEditCopy = isEditor || brandCanProposeCopy;
+  const brandCanProposeCopyForPlatform = (platform) =>
+    brandCanProposeAnyCopy && !pendingCopyProposalByPlatform[platform];
+  const canEditCopyForPlatform = (platform) =>
+    isEditor || brandCanProposeCopyForPlatform(platform);
 
   // ---- Render ---------------------------------------------------------
 
@@ -2053,22 +2108,34 @@ const PostPlanDetailView = ({
               }}
             />
           )}
-          {pendingCopyProposal && (
+          {/* One stacked card per pending copy proposal. Per-platform
+              logic (2026-05-22): brand can have up to one in-flight
+              proposal per platform, so the same plan may show
+              multiple cards simultaneously. Each card has its own
+              Accept/Reject (agency) or Cancel (brand-proposer) action
+              — they resolve independently, so agency can accept the
+              IG proposal while still mulling LinkedIn.
+
+              Spacing between cards relies on each card's own marginTop
+              (12px), giving a clean stack without extra wrapper CSS. */}
+          {pendingCopyProposals.map((proposal) => (
             <PendingCopyProposalCard
-              proposal={pendingCopyProposal}
+              key={proposal.id}
+              proposal={proposal}
               plan={plan}
               isAdmin={isAdmin}
-              busy={resolvingProposalId === pendingCopyProposal.id}
+              isOwnProposal={proposal.proposedBy === userId}
+              busy={resolvingProposalId === proposal.id}
               onAccept={async () => {
                 if (resolvingProposalId) return;
-                setResolvingProposalId(pendingCopyProposal.id);
+                setResolvingProposalId(proposal.id);
                 try {
                   // Merge proposed copy_variants into the plan (only the
                   // keys the brand touched; other platforms untouched).
                   // Also extend plan.platforms with any newly-touched key
                   // so the post-plan editor surfaces it normally instead
                   // of orphaning the new copy.
-                  const proposedVariants = pendingCopyProposal.payload?.copy_variants || {};
+                  const proposedVariants = proposal.payload?.copy_variants || {};
                   const nextVariants = {
                     ...(plan.copyVariants || {}),
                     ...proposedVariants,
@@ -2085,7 +2152,7 @@ const PostPlanDetailView = ({
                   setCopyDrafts(updated.copyVariants || {});
                   setPlatforms(updated.platforms || []);
                   onPlanChanged?.(updated);
-                  await resolveProposal({ proposalId: pendingCopyProposal.id, status: 'approved' });
+                  await resolveProposal({ proposalId: proposal.id, status: 'approved' });
                   refreshProposals();
                 } catch (e) {
                   console.error('accept copy proposal failed', e);
@@ -2095,9 +2162,9 @@ const PostPlanDetailView = ({
               }}
               onReject={async () => {
                 if (resolvingProposalId) return;
-                setResolvingProposalId(pendingCopyProposal.id);
+                setResolvingProposalId(proposal.id);
                 try {
-                  await resolveProposal({ proposalId: pendingCopyProposal.id, status: 'rejected' });
+                  await resolveProposal({ proposalId: proposal.id, status: 'rejected' });
                   refreshProposals();
                 } catch (e) {
                   console.error('reject copy proposal failed', e);
@@ -2105,8 +2172,21 @@ const PostPlanDetailView = ({
                   setResolvingProposalId(null);
                 }
               }}
+              onCancel={async () => {
+                if (resolvingProposalId) return;
+                if (!window.confirm('Cancel this proposed change? You can propose new edits afterwards.')) return;
+                setResolvingProposalId(proposal.id);
+                try {
+                  await withdrawProposal({ proposalId: proposal.id });
+                  refreshProposals();
+                } catch (e) {
+                  console.error('withdraw copy proposal failed', e);
+                } finally {
+                  setResolvingProposalId(null);
+                }
+              }}
             />
-          )}
+          ))}
           <div className="sub" style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
             <StatusPill status={getDisplayStatus({ status }, publications)} size="lg"/>
             {plan?.aiGenerated && (
@@ -2375,32 +2455,56 @@ const PostPlanDetailView = ({
                     </div>
                   </div>
                 </div>
-                {platforms.length > 0 && (
+                {(() => {
+                  // For agency (and brand-not-eligible), the tab strip is
+                  // just the plan's targeted platforms — same as before.
+                  // For brand-in-eligible-status, surface ALL supported
+                  // platforms so they can propose ADDING a new channel
+                  // (e.g. the plan is IG-only, brand wants LinkedIn too).
+                  // Tabs not in plan.platforms get a "+" prefix to cue
+                  // "clicking this would propose adding a new channel"
+                  // instead of "editing an existing one".
+                  const visibleTabs = brandCanProposeAnyCopy
+                    ? PLATFORMS.map((p) => p.key)
+                    : platforms;
+                  if (visibleTabs.length === 0) return null;
+                  return (
                   <div style={{ padding: '0 16px 16px' }}>
                     <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-                      {platforms.map((p) => {
+                      {visibleTabs.map((p) => {
                         const on = activeCopyTab === p;
                         const platCfg = PLATFORM_BY_KEY[p];
+                        const isNewChannel = !platforms.includes(p);
                         return (
                           <button
                             key={p}
                             type="button"
                             onClick={() => setActiveCopyTab(p)}
+                            title={isNewChannel
+                              ? `Propose adding a ${platCfg?.label || p} version of this post`
+                              : undefined}
                             style={{
                               display: 'inline-flex',
                               alignItems: 'center',
                               gap: 6,
                               padding: '6px 12px',
                               borderRadius: 99,
-                              border: on ? '1px solid var(--ink-1)' : '1px solid var(--line)',
+                              border: on ? '1px solid var(--ink-1)' : '1px dashed var(--line)',
                               background: on ? 'var(--surface-2)' : 'transparent',
                               color: on ? 'var(--ink-1)' : 'var(--ink-4)',
                               fontWeight: on ? 600 : 400,
                               cursor: 'pointer',
                               fontSize: 12.5,
                               transition: 'background 120ms, color 120ms, border-color 120ms',
+                              // Dashed border for "would-add" tabs; solid for
+                              // already-on-plan tabs. Subtle visual cue.
+                              borderStyle: isNewChannel && !on ? 'dashed' : 'solid',
+                              opacity: isNewChannel && !on ? 0.85 : 1,
                             }}
                           >
+                            {isNewChannel && (
+                              <Icon name="plus" size={11}/>
+                            )}
                             <PlatformChip platform={p} size="sm"/>
                             {platCfg?.label || p}
                           </button>
@@ -2491,8 +2595,10 @@ const PostPlanDetailView = ({
                                 is gated on isDirty (no point proposing
                                 identical copy) and only "Propose change"
                                 surfaces; AI co-pilot affordances stay
-                                agency-only. */}
-                            {!isEditor && brandCanProposeCopy && (
+                                agency-only. Per-platform eligibility check
+                                so a pending proposal on IG doesn't lock
+                                the LinkedIn footer too. */}
+                            {!isEditor && brandCanProposeCopyForPlatform(activeCopyTab) && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
                                 <span style={{ fontSize: 11.5, color: 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                   {submittingProposal
@@ -2555,13 +2661,18 @@ const PostPlanDetailView = ({
                       // state-machine transition (enterEditMode), different
                       // submit semantics handled in the edit-view footer
                       // below.
+                      const canEditThis = canEditCopyForPlatform(activeCopyTab);
                       const editTooltip = isEditor ? 'Click to edit' : 'Click to propose changes';
+                      // Brand-and-platform-has-a-pending-proposal: surface
+                      // a quiet hint instead of an inert read view, so the
+                      // disappearing pill doesn't look like a bug.
+                      const platformPending = !isEditor && pendingCopyProposalByPlatform[activeCopyTab];
                       return (
                         <div
-                          role={canEditCopy ? 'button' : undefined}
-                          tabIndex={canEditCopy ? 0 : undefined}
+                          role={canEditThis ? 'button' : undefined}
+                          tabIndex={canEditThis ? 0 : undefined}
                           onClick={
-                            canEditCopy
+                            canEditThis
                               ? (e) => {
                                   // Don't intercept clicks on links — let the
                                   // browser open them in a new tab as the
@@ -2572,7 +2683,7 @@ const PostPlanDetailView = ({
                               : undefined
                           }
                           onKeyDown={
-                            canEditCopy
+                            canEditThis
                               ? (e) => {
                                   if (e.key === 'Enter' || e.key === ' ') {
                                     e.preventDefault();
@@ -2593,10 +2704,10 @@ const PostPlanDetailView = ({
                             whiteSpace: 'pre-wrap',
                             wordBreak: 'break-word',
                             lineHeight: 1.5,
-                            cursor: canEditCopy ? 'text' : 'default',
+                            cursor: canEditThis ? 'text' : 'default',
                             position: 'relative',
                           }}
-                          title={canEditCopy ? editTooltip : undefined}
+                          title={canEditThis ? editTooltip : undefined}
                         >
                           {saved
                             ? linkifySegments(saved)
@@ -2607,7 +2718,7 @@ const PostPlanDetailView = ({
                                   : `No ${platLabel} copy yet.`}
                               </span>
                             )}
-                          {canEditCopy && saved && (
+                          {canEditThis && saved && (
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); enterEditMode(activeCopyTab); }}
@@ -2631,11 +2742,30 @@ const PostPlanDetailView = ({
                               <Icon name="edit" size={11}/>Edit
                             </button>
                           )}
+                          {platformPending && (
+                            <span
+                              title="Your proposed change for this platform is awaiting agency review. Cancel it from the proposal banner above to edit again."
+                              style={{
+                                position: 'absolute',
+                                top: 6,
+                                right: 6,
+                                padding: '3px 8px',
+                                borderRadius: 999,
+                                border: '1px solid color-mix(in oklab, #C44A2C 35%, var(--line))',
+                                background: 'color-mix(in oklab, #C44A2C 8%, var(--surface-2))',
+                                color: 'var(--ink-2)',
+                                fontSize: 11,
+                              }}
+                            >
+                              Proposal pending
+                            </span>
+                          )}
                         </div>
                       );
                     })()}
                   </div>
-                )}
+                  );
+                })()}
               </div>
 
               {/* References — inspiration files. Both sides can upload now;
