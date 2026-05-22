@@ -549,35 +549,61 @@ const LinkAIPanel = ({
 
   // ----- Multi-conversation state (page variant only) -----------------
   //
-  // `convIndex` is the rail's data source — newest first. `activeConvId`
-  // is which conversation's messages are loaded into `useChat`. A null
-  // active id means "fresh empty chat, will materialise on first send".
-  // For the drawer variant both stay empty and the single-conv code
-  // below handles persistence — same behaviour as before this PR.
+  // Two ids govern the entire chat-routing machine:
+  //
+  //   - `activeConvId` = which conversation the USER is currently
+  //     VIEWING (drives the rail's highlighted row + the displayed
+  //     messages). Null = "fresh empty chat, will materialise on
+  //     first send".
+  //
+  //   - `sdkConvId` = which conversation the SDK's `messages` array
+  //     currently BELONGS TO. The AI SDK gives us a single messages
+  //     array — at any moment it's "the state of one specific conv".
+  //     We track which one separately so we can let the two diverge
+  //     during a stream.
+  //
+  // The two diverge in exactly two cases:
+  //
+  //   1. During a stream: sdkConvId is the conv being streamed into.
+  //      The user can switch activeConvId freely — the rail click
+  //      doesn't touch the SDK. The display layer routes from the
+  //      session cache for the off-stream active conv; the SDK keeps
+  //      appending tokens to sdkConvId in the background and the
+  //      persist effect routes those tokens to sdkConvId's slot.
+  //
+  //   2. Right after an idle rail click: activeConvId changes
+  //      immediately, sdkConvId stays. The align effect (below) sees
+  //      `!isBusy && active !== sdk`, swaps the SDK's messages array
+  //      over to active's content, and updates sdkConvId.
+  //
+  // Drawer variant: both ids stay null; the drawer's single-conv code
+  // below handles persistence via the legacy v2 key.
+  //
+  // BLOCKER (deliberate, not a bug): the Send button stays disabled
+  // while a stream is in flight. The SDK's single messages array
+  // can only host one in-flight request at a time, so we can't fire
+  // a second sendMessage for a different conv. The user can switch
+  // and draft, but pressing Send waits until the current stream ends.
   const [convIndex, setConvIndex] = useState(() =>
     isPageVariant ? loadConvIndex(userId, accountId) : []
   );
-  // Ref that lets handleSend tell the hydrate effect "this conv id was
-  // just minted inside handleSend; the SDK's messages array already
-  // holds the user's optimistic first message — don't blow it away by
-  // calling setMessages([])". Without this, the first message of a
-  // brand-new conversation disappeared the moment activeConvId changed
-  // (the hydrate effect read an empty localStorage entry and wiped the
-  // SDK state out from under the in-flight stream).
-  const justMintedConvIdRef = useRef(null);
-  // Tracks the last (user, brand, conv) tuple we hydrated for, so the
-  // hydrate effect only runs ONCE per real transition. Without this,
-  // the effect re-fires on any render where useChat's setMessages
-  // identity changes (the SDK doesn't memoise it stably across
-  // streaming ticks) and each re-fire re-reads the persisted, file-
-  // parts-stripped messages — turning the live image bubble into a
-  // "_[attached … not retained after reload]_" breadcrumb mid-session.
-  const lastHydratedKeyRef = useRef(null);
   const [activeConvId, setActiveConvId] = useState(() => {
     if (!isPageVariant) return null;
     const idx = loadConvIndex(userId, accountId);
     return idx[0]?.id || null;
   });
+  const [sdkConvId, setSdkConvId] = useState(null);
+  // Ref mirror of sdkConvId so the persist effect can target the right
+  // slot WITHOUT putting sdkConvId in its dependency array (we want
+  // persist to fire on messages changes only — see the persist effect
+  // comments for the failure mode if these end up in the deps).
+  //
+  // Must be declared AFTER the useState above — the mirror effect
+  // captures sdkConvId by name, and JS's temporal dead zone rejects
+  // reads before the `const [sdkConvId, ...] = useState(...)` line
+  // runs in the render function.
+  const sdkConvIdRef = useRef(null);
+  useEffect(() => { sdkConvIdRef.current = sdkConvId; }, [sdkConvId]);
 
   // ----- Artifact pane (PR C4) -----------------------------------------
   //
@@ -724,75 +750,99 @@ const LinkAIPanel = ({
   // One-time legacy v2 → v3 import (drawer → page rail) per (user, brand).
   // Runs on mount and on brand switch. Idempotent (importLegacyV2ToIndex
   // bails when the v3 index is non-empty).
+  //
+  // Brand switch also has to reset sdkConvId synchronously so the
+  // persist effect — which fires on the userId/accountId dep change
+  // with the OLD messages array still in scope — doesn't write the
+  // prior brand's content into a slot under the new brand keys.
+  // (See the persist effect comments for the full failure mode.)
   useEffect(() => {
     if (!isPageVariant || !userId || !accountId) return;
-    const imported = importLegacyV2ToIndex(userId, accountId);
-    if (imported) {
-      const fresh = loadConvIndex(userId, accountId);
-      setConvIndex(fresh);
-      setActiveConvId((prev) => prev || fresh[0]?.id || null);
-    }
-    // Always re-sync convIndex from storage on brand switch so the rail
-    // reflects the new brand's history (otherwise we'd carry the prior
-    // brand's list across a BrandPicker switch).
-    setConvIndex(loadConvIndex(userId, accountId));
+    importLegacyV2ToIndex(userId, accountId);
+    const fresh = loadConvIndex(userId, accountId);
+    setConvIndex(fresh);
     setActiveConvId((prev) => {
       // If the prior activeConvId belongs to a different brand, drop it.
-      const idx = loadConvIndex(userId, accountId);
-      if (prev && idx.some((c) => c.id === prev)) return prev;
-      return idx[0]?.id || null;
+      if (prev && fresh.some((c) => c.id === prev)) return prev;
+      return fresh[0]?.id || null;
     });
+    // Reset SDK state so persist skips the next fire (no targetId).
+    // The align effect below will then load the new brand's active
+    // conv into the SDK as soon as it sees active !== sdk.
+    sdkConvIdRef.current = null;
+    setSdkConvId(null);
+    setMessages([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, accountId, isPageVariant]);
 
-  // Hydrate `useChat` with the active conversation's messages whenever
-  // (user, brand, conv) changes. Drawer variant falls back to the
-  // legacy single-conv key.
-  //
-  // GUARD 1 (just-minted conv): handleSend mints a fresh conv id and
-  // calls sendMessage right after. The SDK has already added the
-  // user's optimistic first message to its in-memory array. Reading
-  // the (empty) localStorage entry and setMessages([])-ing it would
-  // wipe that message out from under the in-flight stream. Skip the
-  // hydrate on that specific transition; the persist effect below
-  // writes the message out as soon as the SDK adds it.
-  //
-  // GUARD 2 (one-shot per tuple): hydrate only ONCE per real
-  // (user, brand, conv) transition. The SDK's setMessages identity
-  // isn't stable across streaming renders, so the effect re-fires
-  // on tokens. Without this guard, every re-fire would re-read the
-  // persisted (attachments-stripped) messages and overwrite the live
-  // multimodal in-memory state with the "_[attached … not retained
-  // after reload]_" breadcrumb mid-session.
+  // Drawer variant: load the legacy single-conv key once per (user, brand).
+  // The drawer is single-conversation by design — no rail, no multi-id
+  // bookkeeping needed. Page variant uses the align effect below.
   useEffect(() => {
-    if (!isPageVariant) {
-      // Drawer variant only re-hydrates when (user, brand) change.
-      const drawerKey = `drawer|${userId}|${accountId}`;
-      if (lastHydratedKeyRef.current === drawerKey) return;
-      lastHydratedKeyRef.current = drawerKey;
-      setMessages(loadPersistedMessages(userId, accountId));
-      return;
-    }
-    if (activeConvId && justMintedConvIdRef.current === activeConvId) {
-      justMintedConvIdRef.current = null;
-      lastHydratedKeyRef.current = `page|${userId}|${accountId}|${activeConvId}`;
-      return;
-    }
-    const tupleKey = `page|${userId}|${accountId}|${activeConvId ?? ""}`;
-    if (lastHydratedKeyRef.current === tupleKey) return;
-    lastHydratedKeyRef.current = tupleKey;
-    // Prefer the in-memory session cache (full multimodal messages with
-    // file parts intact) over localStorage (which has the attachments-
-    // stripped version with the "_[attached … not retained]_"
-    // breadcrumb). The cache survives nav-away/nav-back but not a hard
-    // reload — that's the breadcrumb's job.
-    const cached = readSessionConv(userId, accountId, activeConvId);
-    const msgs = cached !== null
-      ? cached
-      : (activeConvId ? loadConvMessages(userId, accountId, activeConvId) : []);
-    setMessages(msgs);
+    if (isPageVariant) return;
+    setMessages(loadPersistedMessages(userId, accountId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, accountId, isPageVariant, activeConvId, setMessages]);
+  }, [isPageVariant, userId, accountId]);
+
+  // Align (page variant): whenever the SDK's loaded conv differs from
+  // what the user is viewing AND we're idle, swap the SDK's messages
+  // array over to the active conv's content. This single effect covers
+  // every "the SDK needs to catch up to the rail" scenario:
+  //
+  //   - Initial mount: sdkConvId starts null, active is the latest
+  //     conv from storage → swap loads it.
+  //   - Rail click while idle: active changes → swap loads target.
+  //   - Stream completion after the user navigated away mid-stream:
+  //     isBusy flips false with active still pointed at the conv they
+  //     navigated TO → swap loads that one.
+  //   - "+ New chat" while idle: active goes null → swap empties.
+  //
+  // While `isBusy` is true the SDK array must stay pinned to sdkConvId
+  // (the streaming conv). The display layer routes from cache for the
+  // off-stream conv in the meantime; persist keeps cache + storage
+  // current as tokens land.
+  useEffect(() => {
+    if (!isPageVariant) return;
+    if (isBusy) return;
+    if (activeConvId === sdkConvId) return;
+    // CRITICAL: write sdkConvIdRef.current SYNCHRONOUSLY before
+    // setMessages. The AI SDK's `setMessages` flushes synchronously —
+    // calling it triggers an immediate re-render that fires the
+    // persist effect mid-align, BEFORE `setSdkConvId(activeConvId)`
+    // below can apply. If the ref still points at the OLD conv when
+    // that persist fires, persist writes the NEW conv's `messages`
+    // into the OLD conv's localStorage + cache slot.
+    //
+    // Symptom (discovered 2026-05-22): every rail click silently
+    // corrupted the previous conv's slot with the next conv's
+    // content. After clicking through 3 chats, all 3 slots held the
+    // last-viewed conv's messages — clicking back to any earlier
+    // conv showed the corrupted (latest-viewed) content. Caught
+    // from a `__linkaiDebug()` dump showing every `persist: WRITE`
+    // landing in the prior conv's slot:
+    //   `targetId: OLD, sdkConvId: OLD, activeConvId: NEW`
+    //
+    // The plain `setSdkConvId` setter below queues for the NEXT
+    // render and the mirror effect updates the ref then — too late
+    // for the persist that fires from this effect's `setMessages`
+    // flush. Only the synchronous ref write closes the race.
+    //
+    // See memory: feedback_sdk_setmessages_flush_sync.md
+    sdkConvIdRef.current = activeConvId;
+    if (activeConvId == null) {
+      setMessages([]);
+    } else {
+      // Prefer in-memory session cache (multimodal file parts intact)
+      // over localStorage (stripped to a breadcrumb to fit the quota).
+      const cached = readSessionConv(userId, accountId, activeConvId);
+      const msgs = cached !== null
+        ? cached
+        : loadConvMessages(userId, accountId, activeConvId);
+      setMessages(msgs);
+    }
+    setSdkConvId(activeConvId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPageVariant, isBusy, activeConvId, sdkConvId, userId, accountId, setMessages]);
 
   // Persist on every messages change. Page variant also bumps the index
   // entry's updatedAt + back-fills the title if it was still the default.
@@ -830,16 +880,53 @@ const LinkAIPanel = ({
       persistMessages(userId, accountId, stripAttachmentsForPersist(messages));
       return;
     }
-    if (!activeConvId) return; // nothing to persist until the convo exists
-    // Two-track persistence: the in-memory session cache keeps the
-    // FULL multimodal messages (so nav-away → nav-back doesn't lose
-    // the inline image bubbles); localStorage gets the attachments-
-    // stripped version (quota-safe across reloads, breadcrumb shows
-    // the user what was there before).
-    cacheSessionConv(userId, accountId, activeConvId, messages);
-    saveConvMessages(userId, accountId, activeConvId, stripAttachmentsForPersist(messages));
+    // Always write to the conv the SDK's messages array belongs to —
+    // NEVER to activeConvId. The two diverge during a stream (sdk is
+    // the streaming conv, active is wherever the user clicked) and
+    // briefly right after an idle rail click (active is the new conv,
+    // sdk is the old one until the align effect swaps it). Writing to
+    // active in either case would clobber an unrelated slot:
+    //
+    //   - Click conv A → click conv B (idle): persist would fire with
+    //     A's `messages` (the SDK hasn't swapped yet) but the new
+    //     active = B → A's content gets written into B's slot.
+    //   - Stream into A, click "+ New chat" → tokens for A would land
+    //     in active = null (no target, dropped on the floor).
+    //
+    // sdkConvIdRef is the truth: it tracks which conv the SDK's
+    // `messages` array represents at the moment of the write.
+    //
+    // We read it from a REF (not state) to keep sdkConvId out of this
+    // effect's deps. The effect should only fire when `messages` (or
+    // isBusy, for the bump-gate below) actually changes — not on
+    // every rail click that nudges sdkConvId via the align effect.
+    const targetId = sdkConvIdRef.current;
+    if (!targetId) return;
+    // SAFEGUARD: never clobber a non-empty slot with an empty array.
+    // In the happy path, persist only sees `messages = []` when
+    // `sdkConvIdRef.current` is also null (the early return above
+    // catches it). This guard is belt-and-suspenders for any future
+    // race where messages momentarily flushes to [] while the ref
+    // still points at a real conv — kept after the 2026-05-22
+    // cross-contamination root-cause was fixed in the align effect
+    // (sync ref write before setMessages). Cheap insurance.
+    if (messages.length === 0) {
+      const existingCache = readSessionConv(userId, accountId, targetId);
+      const existingStored = loadConvMessages(userId, accountId, targetId);
+      const existingLen = Math.max(existingCache?.length || 0, existingStored.length);
+      if (existingLen > 0) return;
+    }
+    cacheSessionConv(userId, accountId, targetId, messages);
+    saveConvMessages(userId, accountId, targetId, stripAttachmentsForPersist(messages));
+    // Bump updatedAt + re-sort the rail ONLY when the SDK is actively
+    // streaming — that's the only legitimate cause for "this conv
+    // moved up in the list". The align effect's setMessages also
+    // triggers this persist, but isBusy is false then, so we skip
+    // the bump. Matches Claude / ChatGPT: a conv climbs the list on
+    // real send activity, not on a passive view.
+    if (!isBusy) return;
     setConvIndex((prev) => {
-      const entry = prev.find((c) => c.id === activeConvId);
+      const entry = prev.find((c) => c.id === targetId);
       if (!entry) return prev;
       const now = new Date().toISOString();
       // Re-derive the title only when it's still the placeholder OR when
@@ -851,7 +938,7 @@ const LinkAIPanel = ({
         derived &&
         derived !== "Untitled chat";
       const updated = prev.map((c) =>
-        c.id === activeConvId
+        c.id === targetId
           ? { ...c, updatedAt: now, title: titleNeedsUpdate ? derived : c.title }
           : c
       );
@@ -861,7 +948,7 @@ const LinkAIPanel = ({
       saveConvIndex(userId, accountId, updated);
       return updated;
     });
-  }, [isPageVariant, userId, accountId, activeConvId, messages]);
+  }, [isPageVariant, userId, accountId, messages, isBusy]);
 
   const handleSend = () => {
     const text = draft.trim();
@@ -870,8 +957,10 @@ const LinkAIPanel = ({
     if ((!text && attachments.length === 0) || isBusy) return;
     // Page variant: if no active conversation, mint one just-in-time so
     // the message can be persisted from the very first token.
+    let targetConvId = activeConvId;
     if (isPageVariant && !activeConvId) {
       const id = makeConvId();
+      targetConvId = id;
       const now = new Date().toISOString();
       // Title prefers the text; falls back to a generic attachments
       // label if the message is image-only.
@@ -886,12 +975,19 @@ const LinkAIPanel = ({
         saveConvIndex(userId, accountId, next);
         return next;
       });
-      // Tell the hydrate effect to skip its setMessages([]) on this
-      // activeConvId change — the SDK's messages array is about to
-      // hold the user's first message (added by sendMessage below)
-      // and that's the truth, not the empty localStorage entry.
-      justMintedConvIdRef.current = id;
       setActiveConvId(id);
+    }
+    // Synchronise sdkConvId (and its ref mirror) to the conv we're
+    // sending INTO, BEFORE sendMessage triggers its first setMessages.
+    // The persist effect reads sdkConvIdRef to route tokens to the
+    // right localStorage slot; setting the ref synchronously here
+    // avoids depending on the mirror effect's render-after-render
+    // catch-up. Without this, the very first user message of a fresh
+    // conv could land with sdkConvIdRef still pointing at the prior
+    // (or null) conv and be dropped on the floor.
+    if (isPageVariant) {
+      sdkConvIdRef.current = targetConvId;
+      setSdkConvId(targetConvId);
     }
     // Build the parts array. AI SDK v6 expects `type: 'file'` for
     // images/files; the server's convertToModelMessages turns these
@@ -925,19 +1021,24 @@ const LinkAIPanel = ({
   // mint a fresh conversation in handleSend. The CURRENT conversation
   // stays in the rail and on disk — nothing's deleted.
   //
-  // While a generation is in flight, this handler no-ops (UI also
-  // disables the button). The user either waits for the stream to
-  // finish OR clicks the explicit Stop button — we don't want a
-  // surprise modal prompt that aborts their generation.
+  // Allowed mid-stream: the SDK's messages array stays pinned to
+  // sdkConvId (the streaming conv); clearing the displayed conv
+  // (activeConvId = null) only flips what the display shows. The
+  // align effect will catch up and clear the SDK array AFTER the
+  // stream finishes. The user can't SEND a new message until the
+  // current stream ends — Send button stays disabled while isBusy.
   //
   // Drawer variant keeps its prior "wipe the single persisted conv"
   // behaviour for now — PR D retires the drawer.
   const startNew = () => {
-    if (isBusy) return; // UI disables the button; defensive no-op.
     if (isPageVariant) {
+      if (activeConvId == null) return; // already in fresh state
       setActiveConvId(null);
-      setMessages([]);
+      // Don't touch the SDK's messages here — the align effect handles
+      // the swap once it sees active=null and we're idle. Touching it
+      // mid-stream would corrupt the in-flight conv's array.
     } else {
+      if (isBusy) return;
       if (messages.length > 0 && !window.confirm("Start a new conversation? The current one will be cleared.")) {
         return;
       }
@@ -946,18 +1047,23 @@ const LinkAIPanel = ({
     }
   };
 
-  // Rail handlers (page variant only). Same no-op-while-busy contract
-  // as startNew — switching/deleting during a generation is disabled
-  // at the UI level; this guards defensively if it ever fires anyway.
-  // The user has to wait or hit Stop explicitly. No modal prompts.
+  // Rail handlers (page variant only). Mid-stream switching is
+  // ALLOWED — the SDK keeps streaming for sdkConvId in the
+  // background while the user browses other convs. Display layer
+  // routes from cache for the off-stream active conv; the align
+  // effect catches the SDK up once the stream finishes.
   const switchToConv = (convId) => {
-    if (isBusy) return;
     if (convId === activeConvId) return;
     setActiveConvId(convId);
   };
 
   const deleteConv = (convId) => {
-    if (isBusy) return;
+    // Block deleting the currently-streaming conv — that would
+    // orphan the in-flight request. All other convs (including
+    // the displayed one if idle, or any historical one) are fair
+    // game. The SDK can only stream into one conv at a time, so
+    // sdkConvId + isBusy uniquely identifies the "live" one.
+    if (sdkConvId === convId && isBusy) return;
     if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
     removeConvMessages(userId, accountId, convId);
     dropSessionConv(userId, accountId, convId);
@@ -967,12 +1073,18 @@ const LinkAIPanel = ({
       return next;
     });
     if (activeConvId === convId) {
-      // Drop into the "fresh empty" state; user can pick another or start a new one.
-      setActiveConvId((prev) => {
-        const remaining = convIndex.filter((c) => c.id !== convId);
-        return remaining[0]?.id || null;
-      });
-      setMessages([]);
+      // Switch to the next-most-recent conv (or null = hero state).
+      // Don't call setMessages here — the align effect handles it
+      // once it sees active !== sdk and we're idle.
+      const remaining = convIndex.filter((c) => c.id !== convId);
+      setActiveConvId(remaining[0]?.id || null);
+    }
+    // If we deleted the conv the SDK still holds (only possible when
+    // !isBusy, per the guard above), reset sdkConvId so the align
+    // effect re-loads the new active conv into the SDK array.
+    if (sdkConvId === convId) {
+      sdkConvIdRef.current = null;
+      setSdkConvId(null);
     }
   };
 
@@ -987,6 +1099,28 @@ const LinkAIPanel = ({
     }
     return null;
   }, [messages]);
+
+  // What messages does the UI render?
+  //   - Drawer variant: always the SDK's `messages` (single-conv).
+  //   - Page variant, sdk === active: SDK's `messages` (live, with
+  //     in-flight stream tokens if any).
+  //   - Page variant, sdk !== active: a static snapshot of
+  //     activeConvId from the session cache (full multimodal) or
+  //     localStorage (text + breadcrumb fallback) — the SDK keeps
+  //     streaming for sdkConvId in the background; the align effect
+  //     will swap to active once we go idle.
+  const displayMessages = (() => {
+    if (!isPageVariant) return messages;
+    if (activeConvId === sdkConvId) return messages;
+    if (!activeConvId) return [];
+    const cached = readSessionConv(userId, accountId, activeConvId);
+    return cached !== null ? cached : loadConvMessages(userId, accountId, activeConvId);
+  })();
+  // Is the SDK currently streaming a reply into the conv the user is
+  // VIEWING? (vs streaming for a different background conv.) Used to
+  // gate the "Generating…" indicator + the error banner so they only
+  // surface on the conv they describe.
+  const streamingActiveConv = isBusy && (!isPageVariant || sdkConvId === activeConvId);
 
   const panelContent = (
     <div
@@ -1030,7 +1164,7 @@ const LinkAIPanel = ({
           "+ New chat" button is the canonical entrypoint now. */}
 
       <div className="link-ai-scroll" ref={scrollRef}>
-        {messages.length === 0 && (
+        {displayMessages.length === 0 && (
           <div className={"link-ai-welcome" + (isPageVariant ? " link-ai-welcome--page" : "")}>
             {isPageVariant ? (
               <>
@@ -1082,23 +1216,23 @@ const LinkAIPanel = ({
           </div>
         )}
 
-        {messages.map((m) => (
+        {displayMessages.map((m) => (
           <div key={m.id} className={`link-ai-msg link-ai-msg-${m.role}`}>
             {m.parts.map((part, idx) => renderPart(part, idx, m.id, m.role, { onNavigateToPlan, onCommitDraft, brandSlug, onPreviewPlan: isPageVariant ? openArtifact : null, openArtifactId: artifact?.toolCallId || null }))}
           </div>
         ))}
 
-        {isBusy && messages.length > 0 && (
+        {/* "Generating…" status only when the SDK is streaming INTO the
+            conv currently on screen. If a stream is in flight for a
+            different background conv, the streamingActiveConv flag
+            stays false and the indicator stays hidden on the snapshot. */}
+        {streamingActiveConv && displayMessages.length > 0 && (
           <LinkAIStatus status={status} messages={messages} />
         )}
 
-        {/* Gate the error banner on messages.length > 0 so that
-            clicking "Start new" (which resets messages) doesn't leave a
-            stale error from the previous conversation sitting around.
-            useChat doesn't expose a setError, so this is the cleanest
-            way to reset the error UI on conversation reset. The error
-            naturally re-renders on the next failed sendMessage anyway. */}
-        {error && messages.length > 0 && (
+        {/* Same gating for the error banner — only show on the conv the
+            error describes (the one the SDK was streaming to). */}
+        {error && streamingActiveConv && displayMessages.length > 0 && (
           <div className="link-ai-error">
             <Icon name="alert" size={12} /> {error.message || String(error)}
           </div>
@@ -1125,8 +1259,8 @@ const LinkAIPanel = ({
 
       <footer className={"link-ai-input" + (isPageVariant ? " link-ai-input--page" : "")}>
         <LinkAIFollowUpChips
-          messages={messages}
-          isBusy={isBusy}
+          messages={displayMessages}
+          isBusy={streamingActiveConv}
           onPick={(text) => {
             setDraft(text);
             // Focus on next tick so the textarea has the new value when
@@ -1202,17 +1336,29 @@ const LinkAIPanel = ({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isBusy ? "Generating…" : "Message LinkAI…"}
-                disabled={isBusy}
+                placeholder={
+                  isBusy && streamingActiveConv
+                    ? "Generating… type your next message"
+                    : isBusy
+                      ? "Type while LinkAI finishes the other chat…"
+                      : "Message LinkAI…"
+                }
                 rows={1}
               />
-              {isBusy ? (
+              {/* Stop button shows only when the user is VIEWING the
+                  conv that's currently streaming — clicking Stop while
+                  looking at a different background conv would be
+                  confusing. From the off-stream view, only Send is
+                  available (disabled until the stream ends or they
+                  switch back to the streaming conv to hit Stop). */}
+              {isBusy && streamingActiveConv ? (
                 <button className="link-ai-send link-ai-cancel" onClick={stop}>Stop</button>
               ) : (
                 <button
                   className="link-ai-send"
                   onClick={handleSend}
-                  disabled={!draft.trim() && attachments.length === 0}
+                  disabled={isBusy || (!draft.trim() && attachments.length === 0)}
+                  title={isBusy ? "Wait for the current generation to finish, or click Stop." : undefined}
                 >
                   Send
                 </button>
@@ -1277,8 +1423,7 @@ const LinkAIPanel = ({
           type="button"
           className={railCollapsed ? "link-ai-history-new-collapsed" : "link-ai-history-new"}
           onClick={startNew}
-          disabled={isBusy}
-          title={isBusy ? "Wait for the current generation to finish, or click Stop." : "Start a new conversation"}
+          title="Start a new conversation"
         >
           <Icon name="plus" size={12} />
           {!railCollapsed && <span>New chat</span>}
@@ -1290,43 +1435,48 @@ const LinkAIPanel = ({
                 Your past chats will appear here.
               </div>
             ) : (
-              convIndex.map((c) => (
-                <div
-                  key={c.id}
-                  className={
-                    "link-ai-history-row" +
-                    (c.id === activeConvId ? " is-active" : "") +
-                    (isBusy && c.id !== activeConvId ? " is-disabled" : "")
-                  }
-                >
-                  <button
-                    type="button"
-                    className="link-ai-history-row-main"
-                    onClick={() => switchToConv(c.id)}
-                    disabled={isBusy && c.id !== activeConvId}
-                    title={
-                      isBusy && c.id !== activeConvId
-                        ? "Wait for the current generation to finish, or click Stop."
-                        : c.title
+              convIndex.map((c) => {
+                const isStreamingHere = isBusy && sdkConvId === c.id;
+                return (
+                  <div
+                    key={c.id}
+                    className={
+                      "link-ai-history-row" +
+                      (c.id === activeConvId ? " is-active" : "") +
+                      (isStreamingHere ? " is-streaming" : "")
                     }
                   >
-                    <span className="link-ai-history-row-title">{c.title}</span>
-                    <span className="link-ai-history-row-time">
-                      {formatRelativeTime(c.updatedAt)}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="link-ai-history-row-delete"
-                    onClick={() => deleteConv(c.id)}
-                    disabled={isBusy}
-                    aria-label={`Delete "${c.title}"`}
-                    title={isBusy ? "Wait for the current generation to finish, or click Stop." : "Delete"}
-                  >
-                    <Icon name="x" size={11} />
-                  </button>
-                </div>
-              ))
+                    <button
+                      type="button"
+                      className="link-ai-history-row-main"
+                      onClick={() => switchToConv(c.id)}
+                      title={c.title}
+                    >
+                      <span className="link-ai-history-row-title">{c.title}</span>
+                      <span className="link-ai-history-row-time">
+                        {isStreamingHere ? (
+                          <>
+                            <span className="link-ai-history-row-streaming-dot" aria-hidden />
+                            Generating…
+                          </>
+                        ) : (
+                          formatRelativeTime(c.updatedAt)
+                        )}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="link-ai-history-row-delete"
+                      onClick={() => deleteConv(c.id)}
+                      disabled={isStreamingHere}
+                      aria-label={`Delete "${c.title}"`}
+                      title={isStreamingHere ? "Can't delete a chat that's still generating. Wait or click Stop." : "Delete"}
+                    >
+                      <Icon name="x" size={11} />
+                    </button>
+                  </div>
+                );
+              })
             )}
           </div>
         )}

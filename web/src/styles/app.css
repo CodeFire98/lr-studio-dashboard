@@ -5231,6 +5231,27 @@ input, textarea { font: inherit; color: inherit; }
 .link-ai-history-row-time {
   font-size: 10.5px;
   color: var(--ink-4);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* Small pulsing dot shown next to "Generating…" on the row whose
+   conv is currently being streamed into. Tells the user "this chat
+   is still working in the background" while they browse other convs. */
+.link-ai-history-row.is-streaming .link-ai-history-row-time {
+  color: var(--accent);
+  font-weight: 500;
+}
+.link-ai-history-row-streaming-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: link-ai-pulse 1.2s infinite ease-in-out;
+}
+@keyframes link-ai-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.7); }
 }
 .link-ai-history-row-delete {
   flex-shrink: 0;
