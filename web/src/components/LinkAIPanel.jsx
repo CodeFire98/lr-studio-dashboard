@@ -860,6 +860,17 @@ const LinkAIPanel = ({
     if (!isPageVariant) return;
     if (isBusy) { dlog("align: skip (isBusy)", { activeConvId, sdkConvId }); return; }
     if (activeConvId === sdkConvId) { dlog("align: skip (active===sdk)", { activeConvId }); return; }
+    // CRITICAL: write sdkConvIdRef.current SYNCHRONOUSLY before
+    // setMessages. The AI SDK's `setMessages` flushes synchronously —
+    // calling it triggers an immediate re-render, which fires the
+    // persist effect mid-align (before `setSdkConvId(activeConvId)`
+    // below can apply). If the ref still points at the OLD conv when
+    // persist fires, persist writes the NEW conv's messages into the
+    // OLD conv's slot. Discovered 2026-05-22 from a __linkaiDebug
+    // dump showing every persist WRITE landing in the prior conv's
+    // slot on every rail click → all 3 chats ended up holding the
+    // last-viewed conv's content.
+    sdkConvIdRef.current = activeConvId;
     if (activeConvId == null) {
       dlog("align: setMessages([]) + setSdkConvId(null)", { fromSdk: sdkConvId });
       setMessages([]);
