@@ -605,59 +605,6 @@ const LinkAIPanel = ({
   const sdkConvIdRef = useRef(null);
   useEffect(() => { sdkConvIdRef.current = sdkConvId; }, [sdkConvId]);
 
-  // ----- DIAGNOSTIC LOGGING (temporary, remove before next merge) ------
-  // Tags every state transition + persist write so we can chase the
-  // "chats disappearing" bug from a screen-share of the console. Gated
-  // behind ?linkaiLog=1 to keep prod quiet for everyone else.
-  const debugEnabled = (typeof window !== "undefined") &&
-    new URLSearchParams(window.location.search).get("linkaiLog") === "1";
-  const dlog = (...args) => {
-    if (!debugEnabled) return;
-    // eslint-disable-next-line no-console
-    console.log("[LinkAI]", ...args);
-  };
-  // Expose a one-shot dump helper on window. Paste `__linkaiDebug()`
-  // in the console to see live state + every conv's cache/storage hit.
-  if (typeof window !== "undefined") {
-    window.__linkaiDebug = () => {
-      const idxKey = INDEX_KEY(userId, accountId);
-      const idx = loadConvIndex(userId, accountId);
-      const dump = {
-        userId,
-        accountId,
-        isPageVariant,
-        activeConvId,
-        sdkConvId,
-        sdkConvIdRef_current: sdkConvIdRef.current,
-        isBusy,
-        messagesLength: messages.length,
-        messagesPreview: messages.map((m) => ({
-          role: m.role,
-          partTypes: (m.parts || []).map((p) => p.type),
-        })),
-        indexKey: idxKey,
-        index: idx,
-        convs: idx.map((c) => {
-          const cacheKey = `${userId}|${accountId}|${c.id}`;
-          const cached = sessionConvCache.get(cacheKey);
-          let raw = null;
-          try { raw = localStorage.getItem(CONV_KEY(userId, accountId, c.id)); } catch { /* */ }
-          return {
-            id: c.id,
-            title: c.title,
-            updatedAt: c.updatedAt,
-            cacheLen: cached ? cached.length : null,
-            storageLen: raw ? (JSON.parse(raw)?.length ?? null) : null,
-            storageBytes: raw ? raw.length : 0,
-          };
-        }),
-      };
-      // eslint-disable-next-line no-console
-      console.log("[LinkAI] STATE DUMP", dump);
-      return dump;
-    };
-  }
-
   // ----- Artifact pane (PR C4) -----------------------------------------
   //
   // `artifact` is null when nothing's open. Otherwise:
@@ -811,7 +758,6 @@ const LinkAIPanel = ({
   // (See the persist effect comments for the full failure mode.)
   useEffect(() => {
     if (!isPageVariant || !userId || !accountId) return;
-    dlog("brand-switch effect FIRED", { userId, accountId });
     importLegacyV2ToIndex(userId, accountId);
     const fresh = loadConvIndex(userId, accountId);
     setConvIndex(fresh);
@@ -826,7 +772,6 @@ const LinkAIPanel = ({
     sdkConvIdRef.current = null;
     setSdkConvId(null);
     setMessages([]);
-    dlog("brand-switch effect DONE (reset sdkConvId+messages)");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, accountId, isPageVariant]);
 
@@ -858,35 +803,41 @@ const LinkAIPanel = ({
   // current as tokens land.
   useEffect(() => {
     if (!isPageVariant) return;
-    if (isBusy) { dlog("align: skip (isBusy)", { activeConvId, sdkConvId }); return; }
-    if (activeConvId === sdkConvId) { dlog("align: skip (active===sdk)", { activeConvId }); return; }
+    if (isBusy) return;
+    if (activeConvId === sdkConvId) return;
     // CRITICAL: write sdkConvIdRef.current SYNCHRONOUSLY before
     // setMessages. The AI SDK's `setMessages` flushes synchronously —
-    // calling it triggers an immediate re-render, which fires the
-    // persist effect mid-align (before `setSdkConvId(activeConvId)`
-    // below can apply). If the ref still points at the OLD conv when
-    // persist fires, persist writes the NEW conv's messages into the
-    // OLD conv's slot. Discovered 2026-05-22 from a __linkaiDebug
-    // dump showing every persist WRITE landing in the prior conv's
-    // slot on every rail click → all 3 chats ended up holding the
-    // last-viewed conv's content.
+    // calling it triggers an immediate re-render that fires the
+    // persist effect mid-align, BEFORE `setSdkConvId(activeConvId)`
+    // below can apply. If the ref still points at the OLD conv when
+    // that persist fires, persist writes the NEW conv's `messages`
+    // into the OLD conv's localStorage + cache slot.
+    //
+    // Symptom (discovered 2026-05-22): every rail click silently
+    // corrupted the previous conv's slot with the next conv's
+    // content. After clicking through 3 chats, all 3 slots held the
+    // last-viewed conv's messages — clicking back to any earlier
+    // conv showed the corrupted (latest-viewed) content. Caught
+    // from a `__linkaiDebug()` dump showing every `persist: WRITE`
+    // landing in the prior conv's slot:
+    //   `targetId: OLD, sdkConvId: OLD, activeConvId: NEW`
+    //
+    // The plain `setSdkConvId` setter below queues for the NEXT
+    // render and the mirror effect updates the ref then — too late
+    // for the persist that fires from this effect's `setMessages`
+    // flush. Only the synchronous ref write closes the race.
+    //
+    // See memory: feedback_sdk_setmessages_flush_sync.md
     sdkConvIdRef.current = activeConvId;
     if (activeConvId == null) {
-      dlog("align: setMessages([]) + setSdkConvId(null)", { fromSdk: sdkConvId });
       setMessages([]);
     } else {
       // Prefer in-memory session cache (multimodal file parts intact)
       // over localStorage (stripped to a breadcrumb to fit the quota).
       const cached = readSessionConv(userId, accountId, activeConvId);
-      const stored = cached !== null ? null : loadConvMessages(userId, accountId, activeConvId);
-      const msgs = cached !== null ? cached : stored;
-      dlog("align: setMessages(loaded) + setSdkConvId(active)", {
-        active: activeConvId,
-        fromSdk: sdkConvId,
-        cacheHit: cached !== null,
-        cacheLen: cached?.length ?? null,
-        storageLen: stored?.length ?? null,
-      });
+      const msgs = cached !== null
+        ? cached
+        : loadConvMessages(userId, accountId, activeConvId);
       setMessages(msgs);
     }
     setSdkConvId(activeConvId);
@@ -950,34 +901,21 @@ const LinkAIPanel = ({
     // isBusy, for the bump-gate below) actually changes — not on
     // every rail click that nudges sdkConvId via the align effect.
     const targetId = sdkConvIdRef.current;
-    if (!targetId) {
-      dlog("persist: SKIP (no targetId)", { messagesLen: messages.length, isBusy });
-      return;
-    }
+    if (!targetId) return;
     // SAFEGUARD: never clobber a non-empty slot with an empty array.
     // In the happy path, persist only sees `messages = []` when
     // `sdkConvIdRef.current` is also null (the early return above
-    // catches it). If we somehow get here with messages=[] AND a
-    // real targetId, some unidentified race set sdkConvIdRef to a
-    // real conv while messages was empty — writing [] would wipe
-    // the user's chat. Skip the write and let the next real update
-    // overwrite cleanly.
+    // catches it). This guard is belt-and-suspenders for any future
+    // race where messages momentarily flushes to [] while the ref
+    // still points at a real conv — kept after the 2026-05-22
+    // cross-contamination root-cause was fixed in the align effect
+    // (sync ref write before setMessages). Cheap insurance.
     if (messages.length === 0) {
       const existingCache = readSessionConv(userId, accountId, targetId);
       const existingStored = loadConvMessages(userId, accountId, targetId);
       const existingLen = Math.max(existingCache?.length || 0, existingStored.length);
-      if (existingLen > 0) {
-        dlog("persist: SAFEGUARD skipped empty-overwrite", { targetId, existingLen });
-        return;
-      }
+      if (existingLen > 0) return;
     }
-    dlog("persist: WRITE", {
-      targetId,
-      messagesLen: messages.length,
-      isBusy,
-      sdkConvId,
-      activeConvId,
-    });
     cacheSessionConv(userId, accountId, targetId, messages);
     saveConvMessages(userId, accountId, targetId, stripAttachmentsForPersist(messages));
     // Bump updatedAt + re-sort the rail ONLY when the SDK is actively
@@ -1048,7 +986,6 @@ const LinkAIPanel = ({
     // conv could land with sdkConvIdRef still pointing at the prior
     // (or null) conv and be dropped on the floor.
     if (isPageVariant) {
-      dlog("handleSend: setSdkConvId + ref =", targetConvId, { prevActive: activeConvId, prevSdk: sdkConvId });
       sdkConvIdRef.current = targetConvId;
       setSdkConvId(targetConvId);
     }
@@ -1117,7 +1054,6 @@ const LinkAIPanel = ({
   // effect catches the SDK up once the stream finishes.
   const switchToConv = (convId) => {
     if (convId === activeConvId) return;
-    dlog("switchToConv:", convId, { fromActive: activeConvId, sdk: sdkConvId, isBusy });
     setActiveConvId(convId);
   };
 

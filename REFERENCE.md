@@ -3,7 +3,36 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-22 (**LinkAI: multi-conv state machine refactored to a clean `activeConvId` / `sdkConvId` split.** The previous shape — `streamConvId` + `justMintedConvIdRef` + `lastHydratedKeyRef` + `activeConvIdRef` + `streamConvIdRef` + 3 effects (hydrate, persist, post-stream cleanup) — accumulated through bandaid fixes for: first-message wipe on new chats, breadcrumbs showing mid-session, cross-contamination from rail clicks writing prior-conv content into clicked slots, "lost" chats after switching, and a TDZ from declaration ordering. Every individual fix introduced a new race.
+**Last updated:** 2026-05-22 (**LinkAI: cross-contamination bug fix — sync `sdkConvIdRef` BEFORE `setMessages` in the align effect.** Bug shipped in the multi-conv refactor earlier the same day. Symptom: every rail click silently corrupted the previous conv's localStorage + cache slot with the next conv's content. After clicking through 3 chats, all 3 slots held the last-viewed conv's messages — clicking back to any earlier conv displayed the corrupted (latest-viewed) content under its original title.
+
+**Root cause.** The AI SDK v6 `useChat.setMessages` setter **flushes synchronously** — calling it from inside an effect triggers an immediate re-render that fires other effects' dep-change handlers BEFORE the calling effect's remaining lines execute. The align effect was:
+
+```js
+setMessages(newConvContent);  // ← flushes! persist fires NOW with stale sdkConvIdRef!
+setSdkConvId(newConvId);      // ← runs too late; the mirror effect that updates the ref runs even later
+```
+
+When persist fired mid-align from the synchronous flush, `sdkConvIdRef.current` still pointed at the OLD conv (the mirror effect that updates it from `sdkConvId` state hadn't run yet, because the `setSdkConvId` call below the flush hadn't executed). So persist wrote `newConvContent` into the OLD conv's slot.
+
+**Fix.** Write `sdkConvIdRef.current = activeConvId` synchronously BEFORE `setMessages` in the align effect (matching the pattern already used in `handleSend` and `brand-switch`). The plain `setSdkConvId` state setter is still called for downstream consumers (display logic, JSX), but the ref is the load-bearing field for the persist effect — and refs update synchronously.
+
+**Diagnosis path.** Couldn't be found by code reading — all 5 scenarios traced through cleanly on paper. Caught by instrumenting persist + align + handleSend + switchToConv with `[LinkAI]` tagged console logs gated behind `?linkaiLog=1`, plus a `window.__linkaiDebug()` helper that dumps current state + every conv's cache/storage length. User's dump showed `persist: WRITE {targetId: OLD, sdkConvId: OLD, activeConvId: NEW}` immediately after every `align: setMessages(loaded) + setSdkConvId(active) {active: NEW, fromSdk: OLD}` — the smoking gun.
+
+**Belt-and-suspenders safeguard kept.** Persist still skips writing when `messages.length === 0` AND the slot has existing content (cache or storage). Cheap insurance against any future race that might wipe a populated slot.
+
+**Recovery for users who hit the bug** (before this fix landed): the existing localStorage entries are corrupted. Run in DevTools console:
+
+```js
+Object.keys(localStorage)
+  .filter(k => k.startsWith('lr_link_ai_'))
+  .forEach(k => localStorage.removeItem(k))
+```
+
+…then reload to start fresh.
+
+Files: `web/src/components/LinkAIPanel.jsx` — align effect (sync ref write) + persist effect (empty-slot safeguard kept as defense in depth). Pure client. Sections touched: Recent changes log; `Last updated`.
+
+**Previous (2026-05-22):** (**LinkAI: multi-conv state machine refactored to a clean `activeConvId` / `sdkConvId` split.** The previous shape — `streamConvId` + `justMintedConvIdRef` + `lastHydratedKeyRef` + `activeConvIdRef` + `streamConvIdRef` + 3 effects (hydrate, persist, post-stream cleanup) — accumulated through bandaid fixes for: first-message wipe on new chats, breadcrumbs showing mid-session, cross-contamination from rail clicks writing prior-conv content into clicked slots, "lost" chats after switching, and a TDZ from declaration ordering. Every individual fix introduced a new race.
 
 **New model — two ids, one source of truth per slot.**
 - `activeConvId` = which conv the USER is VIEWING (drives rail + display).
