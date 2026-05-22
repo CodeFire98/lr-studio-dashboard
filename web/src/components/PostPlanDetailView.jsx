@@ -2525,6 +2525,7 @@ const PostPlanDetailView = ({
                         return (
                           <>
                             <textarea
+                              className="copy-edit-textarea"
                               rows={6}
                               value={draft}
                               onChange={(e) => handleCopyChange(activeCopyTab, e.target.value)}

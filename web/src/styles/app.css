@@ -2077,6 +2077,20 @@ input, textarea { font: inherit; color: inherit; }
 /* Focus rings */
 :focus-visible { outline: none; box-shadow: var(--shadow-focus); }
 
+/* Per-platform copy textarea (PostPlanDetailView) — opt out of the
+ * loud coral focus halo above. The post-plan detail view already
+ * uses coral generously for the pending-proposal card; piling a
+ * coral focus halo on the textarea right beside it reads as urgent
+ * / warning. Subtler gray halo here keeps the page calm; the
+ * accent-colored "Propose change" button is the affordance that
+ * should pull attention, not the textarea border. */
+.copy-edit-textarea:focus,
+.copy-edit-textarea:focus-visible {
+  outline: none;
+  border-color: var(--ink-3);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ink-3) 14%, transparent);
+}
+
 /* Responsive-ish (narrow) */
 @media (max-width: 980px) {
   .app { grid-template-columns: 64px 1fr; }
