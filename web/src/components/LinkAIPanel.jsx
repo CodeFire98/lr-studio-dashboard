@@ -602,6 +602,11 @@ const LinkAIPanel = ({
   // another conv, the user either waits for the current stream to
   // finish or clicks Stop.
   const [streamConvId, setStreamConvId] = useState(null);
+  const [activeConvId, setActiveConvId] = useState(() => {
+    if (!isPageVariant) return null;
+    const idx = loadConvIndex(userId, accountId);
+    return idx[0]?.id || null;
+  });
   // Refs that mirror activeConvId / streamConvId so the persist effect
   // can read their CURRENT values WITHOUT having them in its
   // dependency array. Without this indirection the persist effect
@@ -622,15 +627,15 @@ const LinkAIPanel = ({
   // `messages` actually changes — which means it fires from real SDK
   // activity (sendMessage, stream tokens, cleanup's setMessages) but
   // never from a bare rail click.
+  //
+  // Must be declared AFTER the useState calls above — the effects
+  // capture activeConvId / streamConvId by name, and JS's temporal
+  // dead zone rejects reads before the `const [activeConvId, ...] =
+  // useState(...)` declaration runs in the render function.
   const activeConvIdRef = useRef(null);
   const streamConvIdRef = useRef(null);
   useEffect(() => { activeConvIdRef.current = activeConvId; }, [activeConvId]);
   useEffect(() => { streamConvIdRef.current = streamConvId; }, [streamConvId]);
-  const [activeConvId, setActiveConvId] = useState(() => {
-    if (!isPageVariant) return null;
-    const idx = loadConvIndex(userId, accountId);
-    return idx[0]?.id || null;
-  });
 
   // ----- Artifact pane (PR C4) -----------------------------------------
   //
