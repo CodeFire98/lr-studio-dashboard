@@ -602,6 +602,14 @@ const LinkAIPanel = ({
   // another conv, the user either waits for the current stream to
   // finish or clicks Stop.
   const [streamConvId, setStreamConvId] = useState(null);
+  // Tracks the previous `messages` array reference so the persist
+  // effect can distinguish "real message change (token streamed in,
+  // user sent something)" from "effect re-fired because activeConvId
+  // / streamConvId changed but messages stayed the same". Without
+  // this, every rail click would bump the clicked conv's updatedAt
+  // and yank it to the top of the rail (per user feedback — should
+  // only move on actual new-message activity, like Claude/ChatGPT).
+  const previousMessagesRef = useRef(null);
   const [activeConvId, setActiveConvId] = useState(() => {
     if (!isPageVariant) return null;
     const idx = loadConvIndex(userId, accountId);
@@ -816,6 +824,16 @@ const LinkAIPanel = ({
       lastHydratedKeyRef.current = `page|${userId}|${accountId}|${activeConvId ?? ""}|stream-elsewhere`;
       return;
     }
+    // If the stream is for the conv we're now viewing, the SDK already
+    // has the LIVE messages (potentially with tokens that just landed
+    // between the last persist tick and this render). Overwriting with
+    // the cached snapshot would lose those tokens AND yank the conv
+    // back to a stale state. Skip the hydrate — the persist effect
+    // keeps the cache current for post-stream switches.
+    if (streamConvId && streamConvId === activeConvId) {
+      lastHydratedKeyRef.current = `page|${userId}|${accountId}|${activeConvId}`;
+      return;
+    }
     const tupleKey = `page|${userId}|${accountId}|${activeConvId ?? ""}`;
     if (lastHydratedKeyRef.current === tupleKey) return;
     lastHydratedKeyRef.current = tupleKey;
@@ -864,10 +882,20 @@ const LinkAIPanel = ({
     });
 
   useEffect(() => {
+    // Only do persistence work when the `messages` array reference
+    // actually changed — i.e., the SDK appended a token or wrote a
+    // tool result. Effect re-fires from activeConvId / streamConvId
+    // changes (rail click, post-stream cleanup, etc.) shouldn't bump
+    // the rail's updatedAt sort key for the clicked conv.
+    const messagesChanged = previousMessagesRef.current !== messages;
+    previousMessagesRef.current = messages;
     if (!isPageVariant) {
-      persistMessages(userId, accountId, stripAttachmentsForPersist(messages));
+      if (messagesChanged) {
+        persistMessages(userId, accountId, stripAttachmentsForPersist(messages));
+      }
       return;
     }
+    if (!messagesChanged) return;
     // Persist to whichever conv the SDK's messages currently belong to:
     // the streamConvId when a stream is in flight (user may be viewing
     // a different conv in the rail), else the activeConvId. Without
@@ -878,6 +906,14 @@ const LinkAIPanel = ({
     if (!persistTargetId) return;
     cacheSessionConv(userId, accountId, persistTargetId, messages);
     saveConvMessages(userId, accountId, persistTargetId, stripAttachmentsForPersist(messages));
+    // Bump updatedAt + re-sort ONLY when this messages change came from
+    // an active stream (real new content). Without this guard, the
+    // post-stream cleanup effect's setMessages(otherConvSnapshot)
+    // would bump the newly-active conv's updatedAt and yank it to
+    // the top of the rail even though the user hadn't sent anything
+    // there — matching Claude / ChatGPT, the conv only moves on a
+    // real message-send, not on a click.
+    if (!streamConvId) return;
     setConvIndex((prev) => {
       const entry = prev.find((c) => c.id === persistTargetId);
       if (!entry) return prev;
