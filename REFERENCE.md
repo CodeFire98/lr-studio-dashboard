@@ -3,7 +3,26 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-21 (**LinkAI: rail switching + new-chat + textarea typing all allowed mid-stream.** Completes the user's "keep generating in the background" ask. PR C2 disabled the rail interactions while busy (no modal); the previous PR made `useChat` survive route nav via a persistent panel mount. This change lifts the busy-disables off everything *except* the actual Send button + delete-the-streaming-conv (the only true blockers given the AI SDK's single in-flight stream per `useChat` instance).
+**Last updated:** 2026-05-22 (**LinkAI: multi-conv state machine refactored to a clean `activeConvId` / `sdkConvId` split.** The previous shape — `streamConvId` + `justMintedConvIdRef` + `lastHydratedKeyRef` + `activeConvIdRef` + `streamConvIdRef` + 3 effects (hydrate, persist, post-stream cleanup) — accumulated through bandaid fixes for: first-message wipe on new chats, breadcrumbs showing mid-session, cross-contamination from rail clicks writing prior-conv content into clicked slots, "lost" chats after switching, and a TDZ from declaration ordering. Every individual fix introduced a new race.
+
+**New model — two ids, one source of truth per slot.**
+- `activeConvId` = which conv the USER is VIEWING (drives rail + display).
+- `sdkConvId` = which conv the SDK's `messages` array BELONGS TO. The AI SDK gives us one array; we track which conv it represents.
+- They diverge in two cases: mid-stream (sdk = the streaming conv, active wherever the user clicked), and briefly right after an idle rail click (active = new, sdk = old until align catches up).
+
+**One align effect replaces hydrate + cleanup.** Fires when `!isBusy && active !== sdk`. Loads target into SDK via `setMessages`, then `setSdkConvId(active)`. Covers every "SDK needs to catch up to the rail" scenario: initial mount, rail click while idle, stream completion when the user navigated away mid-stream, "+ New chat" while idle. While `isBusy` it skips — the SDK array must stay pinned to the streaming conv.
+
+**Persist effect targets `sdkConvIdRef` ONLY**, never `activeConvId`. This is the key invariant that prevents the cross-contamination class of bug. Reads from a ref (not state) so `sdkConvId` stays out of deps — persist only fires on real `messages` / `isBusy` changes, not on the align effect's `setSdkConvId`. Bump+sort the rail only when `isBusy` (real stream activity); align's setMessages also triggers persist but skips the bump.
+
+**`handleSend`** sets `sdkConvIdRef.current = targetConvId` SYNCHRONOUSLY before `sendMessage`, so the first persist fire for the new conv routes tokens to the right slot without depending on mirror-effect timing.
+
+**Brand switch** synchronously resets `sdkConvIdRef = null` + `setSdkConvId(null)` + `setMessages([])` so the persist effect's dep-driven fire on `(userId, accountId)` change finds no targetId and skips — prevents prior brand's messages from being written into the new brand's slot.
+
+**Net result:** All chat behaviors work as the user demanded (Claude / WhatsApp style): multiple historical chats sorted by activity; switch chats mid-stream and see the right messages; type in a new chat while another generates (Send still disabled while busy — the single useChat array can't fork); switch away mid-stream and back without losing history; first message of a fresh chat never wiped; inline images survive nav-away/nav-back.
+
+Files: `web/src/components/LinkAIPanel.jsx` — state declarations + brand-switch effect + align effect (was hydrate) + persist effect + handleSend + startNew + switchToConv + deleteConv + display derivations + rail rendering. Pure client. No schema/migration/env-var. Sections touched: Recent changes log; `Last updated`.)
+
+**Previous (2026-05-21):** (**LinkAI: rail switching + new-chat + textarea typing all allowed mid-stream.** Completes the user's "keep generating in the background" ask. PR C2 disabled the rail interactions while busy (no modal); the previous PR made `useChat` survive route nav via a persistent panel mount. This change lifts the busy-disables off everything *except* the actual Send button + delete-the-streaming-conv (the only true blockers given the AI SDK's single in-flight stream per `useChat` instance).
 
 **Mechanism — `streamConvId` state in LinkAIPanel.** New piece of state that tracks "the conv the SDK is currently streaming INTO", separately from `activeConvId` (the conv the user is currently VIEWING). Set by `handleSend` the moment we call `sendMessage`; cleared by a post-stream cleanup effect once `isBusy` goes back to false.
 
