@@ -1266,7 +1266,17 @@ const App = () => {
         {!!auth && !!calendarAccountId && (
           <div className={"linkai-page" + (route.view === "linkai" ? " is-active" : "")}>
             <Suspense fallback={<div className="linkai-page-fallback" />}>
+              {/* `key={calendarAccountId}` forces a clean unmount + remount on
+                  brand switch. React tears down the previous instance entirely
+                  — useChat state, conv index, sdkConvIdRef, refs to in-flight
+                  streams, all gone. The brand-switch effect inside the panel
+                  still runs on mount, but with no prior state in scope there's
+                  no class of "stale BB state leaks into Epigamia" bug left to
+                  hit. Cost: in-flight stream addressed to the old brand is
+                  aborted on switch — which is the correct behaviour anyway
+                  (that response was for the old brand, not the new one). */}
               <LinkAIPanel
+                key={calendarAccountId}
                 variant="page"
                 accountId={calendarAccountId}
                 brandName={calendarAccountName}
@@ -1294,7 +1304,11 @@ const App = () => {
       </div>
       {linkAiEligible && linkAiOpen && (
         <Suspense fallback={null}>
+          {/* `key={scopeAccountId}` — same brand-switch-safety reasoning as
+              the page-variant mount above. The drawer is open-on-demand so
+              remount cost is even lower here. */}
           <LinkAIPanel
+            key={scopeAccountId}
             accountId={scopeAccountId}
             brandName={calendarAccountName}
             brandSlug={brandAccounts.find((b) => b.id === scopeAccountId)?.slug || auth?.account?.slug || null}

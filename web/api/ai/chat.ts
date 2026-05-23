@@ -378,7 +378,7 @@ const writeBrandNoteInput = z.object({
     .string()
     .max(1000)
     .describe(
-      "The note text — what to remember. Write it in declarative, action-oriented form (e.g. 'Always tag @sarahbamboo on milestone posts' not 'I should remember to tag @sarahbamboo'). Keep it to 1-3 sentences. Phrase it so a future AI reading it can act on it without further context.",
+      "The note text — what to remember. Write it in declarative, action-oriented form (e.g. 'Always tag @founder_handle on milestone posts' not 'I should remember to tag @founder_handle'). Keep it to 1-3 sentences. Phrase it so a future AI reading it can act on it without further context.",
     ),
   is_pinned: z
     .boolean()
@@ -550,6 +550,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       error: "No brand kit found for this account. Run Brand Intelligence first to populate it.",
     });
   }
+
+  // Audit log: surface the (accountId → resolved brand name) the server
+  // actually loaded into the system prompt. If a future regression has
+  // the client sending the wrong accountId (or any state divergence
+  // makes the model talk about the wrong brand), this line in the
+  // Vercel function logs is how we catch it without UI archaeology.
+  // brandContext starts with `# Brand: ${name}` from brandContext.js.
+  const brandHeaderMatch = brandContext.match(/^# Brand: (.+)$/m);
+  const resolvedBrandName = brandHeaderMatch ? brandHeaderMatch[1] : "<unknown>";
+  console.log(`[chat] brand-resolve account=${body.accountId} name="${resolvedBrandName}" agency=${callerIsAgency}`);
 
   // Disable Vercel's response buffering so deltas reach the browser as
   // they're generated. pipeUIMessageStreamToResponse handles Content-Type
