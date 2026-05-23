@@ -639,11 +639,16 @@ type RunResult = {
 
 async function runCron(client: SupabaseClient): Promise<RunResult> {
   // ----- Load eligible publications -----
+  // Soft-deleted rows (deleted_at IS NOT NULL) are excluded — users can
+  // click "Remove post" in the Live Posts grid to stop tracking a
+  // publication without losing historical engagement snapshots. Filter
+  // added 2026-05-22 alongside migration 0057.
   const { data: pubs, error: pubErr } = await client
     .from("post_plan_publications")
     .select("id, platform, live_url, published_at, post_plan_id, post_plans(account_id)")
     .in("platform", ["instagram", "linkedin", "x"])
-    .not("live_url", "is", null);
+    .not("live_url", "is", null)
+    .is("deleted_at", null);
   if (pubErr) throw new Error(`Load publications failed: ${pubErr.message}`);
   const publications = (pubs as PubRow[]) ?? [];
 

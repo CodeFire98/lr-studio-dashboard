@@ -29,6 +29,7 @@ import {
   subscribeToAllEngagementSnapshots,
   subscribeToAllEmbedCache,
   refreshEngagement,
+  deletePostPlanPublication,
 } from '../lib/db.js';
 
 const PLATFORM_FILTERS = [
@@ -154,11 +155,53 @@ const refreshFooter = ({ snapshot, refreshing, lastError, embed }) => {
   return ts ? `Refreshed ${ts}${note}${stale}` : `Refreshed${note}${stale}`;
 };
 
-const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => {
+const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onRemove, onOpenPlan, focused }) => {
   const platCfg = PLATFORM_BY_KEY[row.platform];
   const [refreshing, setRefreshing] = useState(false);
   const [lastError, setLastError] = useState('');
   const [hovered, setHovered] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  // `highlightUntil` is a timestamp; while > now() the focused tile
+  // pulses a soft accent ring. Set on mount when `focused` is true,
+  // unset by the timeout below. Drives the box-shadow conditionally
+  // without needing CSS keyframes (a single CSS animation would also
+  // work, but we want the ring to fade out gracefully and not loop).
+  const [highlightOn, setHighlightOn] = useState(false);
+  const tileRef = useRef(null);
+  const menuButtonRef = useRef(null);
+
+  // Scroll-to-focus on mount when this tile is the URL ?focus= target.
+  // Runs once when `focused` becomes true. Uses `block: 'center'` so the
+  // tile lands in the middle of the viewport, not flush against the top
+  // sticky header. The brief highlight ring confirms which card the
+  // deep-link landed on, then fades out so it doesn't compete with the
+  // user's reading attention.
+  useEffect(() => {
+    if (!focused || !tileRef.current) return;
+    tileRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightOn(true);
+    const t = setTimeout(() => setHighlightOn(false), 1800);
+    return () => clearTimeout(t);
+  }, [focused]);
+
+  // Close the overflow menu on outside-click or Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e) => {
+      if (menuButtonRef.current?.contains(e.target)) return;
+      setMenuOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
 
   const handleRefresh = useCallback(async (e) => {
     // Don't trigger the tile-level "open live URL" when clicking the
@@ -175,6 +218,28 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
       setRefreshing(false);
     }
   }, [refreshing, onRefresh, row.id]);
+
+  const handleRemove = useCallback(async (e) => {
+    e?.stopPropagation?.();
+    setMenuOpen(false);
+    if (removing) return;
+    const confirmed = window.confirm(
+      "Remove this post from Live Posts?\n\n" +
+      "Future engagement tracking for this post will stop. " +
+      "Historical engagement data captured so far will be preserved " +
+      "for reference (totals on the brand summary won't change). " +
+      "You can re-mark the post as posted later to start tracking again."
+    );
+    if (!confirmed) return;
+    setRemoving(true);
+    try {
+      await onRemove(row.id);
+    } catch (err) {
+      setRemoving(false);
+      // eslint-disable-next-line no-alert
+      window.alert(`Could not remove post: ${err?.message || String(err)}`);
+    }
+  }, [removing, onRemove, row.id]);
 
   // Whole-tile click → open live post URL in a new tab. No-op when
   // there's no live_url on this publication (user marked posted
@@ -195,6 +260,7 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
 
   return (
     <div
+      ref={tileRef}
       onClick={handleTileClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -212,15 +278,23 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
         flexDirection: 'column',
         gap: 10,
         padding: 14,
-        border: '1px solid var(--line)',
+        // Highlight ring while a deep-link focus is fresh — fades out
+        // after 1.8s (see useEffect). Same coral as the accent, light
+        // enough to draw the eye without screaming.
+        border: highlightOn
+          ? '1px solid color-mix(in oklab, var(--accent) 50%, var(--line))'
+          : '1px solid var(--line)',
         borderRadius: 10,
         background: 'var(--surface)',
         minWidth: 0,
         cursor: tileClickable ? 'pointer' : 'default',
         // Subtle hover lift so the user knows the whole card is clickable.
-        boxShadow: hovered && tileClickable ? '0 4px 14px rgba(0,0,0,0.06)' : 'none',
+        boxShadow: highlightOn
+          ? '0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent)'
+          : (hovered && tileClickable ? '0 4px 14px rgba(0,0,0,0.06)' : 'none'),
         transform: hovered && tileClickable ? 'translateY(-1px)' : 'none',
-        transition: 'box-shadow 120ms ease, transform 120ms ease',
+        transition: 'box-shadow 400ms ease, border-color 400ms ease, transform 120ms ease',
+        opacity: removing ? 0.5 : 1,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -228,6 +302,85 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onOpenPlan }) => 
         <strong style={{ fontSize: 13, fontWeight: 600 }}>{platCfg?.label || row.platform}</strong>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{formatDate(row.publishedAt)}</span>
+        {/* Overflow menu — currently only "Remove post". Wrapper has
+            position:relative for the absolute-positioned dropdown.
+            stopPropagation on every click so the surrounding clickable
+            tile doesn't fire its "open live URL" handler. */}
+        <div
+          ref={menuButtonRef}
+          style={{ position: 'relative' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((v) => !v);
+            }}
+            aria-label="Post options"
+            title="More options"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 26,
+              height: 26,
+              borderRadius: 6,
+              border: '1px solid transparent',
+              background: menuOpen || hovered ? 'var(--surface-2)' : 'transparent',
+              color: 'var(--ink-3)',
+              cursor: 'pointer',
+              fontSize: 16,
+              lineHeight: 1,
+              padding: 0,
+            }}
+          >
+            …
+          </button>
+          {menuOpen && (
+            <div
+              role="menu"
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 4px)',
+                right: 0,
+                minWidth: 160,
+                background: 'var(--surface)',
+                border: '1px solid var(--line)',
+                borderRadius: 8,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.08)',
+                padding: 4,
+                zIndex: 10,
+              }}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={handleRemove}
+                disabled={removing}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  width: '100%',
+                  padding: '8px 10px',
+                  border: 0,
+                  background: 'transparent',
+                  color: 'var(--bad, #C44A2C)',
+                  fontSize: 13,
+                  textAlign: 'left',
+                  cursor: removing ? 'default' : 'pointer',
+                  borderRadius: 4,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in oklab, var(--bad, #C44A2C) 8%, var(--surface))'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                <Icon name="x" size={12}/>
+                {removing ? 'Removing…' : 'Remove post'}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <button
@@ -410,6 +563,21 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
   const [err, setErr] = useState('');
   const [platformKey, setPlatformKey] = useState('all');
   const [q, setQ] = useState('');
+  // Deep-link focus from `?focus=<publicationId>` (e.g. set by the
+  // "View in Live posts" button on the post-plan detail view).
+  // Locked in at mount so the highlight only fires for the initial
+  // landing — subsequent state changes don't keep re-pulsing the
+  // same tile. After the user has interacted (scrolled, clicked
+  // another tile), we don't want a re-render to re-snap them back.
+  const focusPublicationId = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return new URLSearchParams(window.location.search).get('focus') || null;
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Sort mode for the tile list. Default = "recent" matches the
   // pre-PR-7 behaviour (latest published first, grouped by month).
   // "likes" + "engagement" sort flat (no month grouping) because
@@ -525,6 +693,26 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
   const handleRefresh = useCallback(async (publicationId) => {
     await refreshEngagement(publicationId);
   }, []);
+
+  // "Remove post" handler from the per-tile overflow menu. Soft-deletes
+  // via deletePostPlanPublication (which since 2026-05-22 issues an
+  // UPDATE deleted_at=now() instead of a true DELETE — see db.js).
+  // Optimistic local remove so the tile vanishes immediately; the
+  // realtime subscriber upstream will catch up with the canonical
+  // refetch (publication still exists in DB, but the loader filters
+  // soft-deleted by default, so the tile stays gone).
+  const handleRemove = useCallback(async (publicationId) => {
+    setRows((prev) => prev.filter((p) => p.id !== publicationId));
+    try {
+      await deletePostPlanPublication(publicationId);
+    } catch (err) {
+      // Roll back the optimistic remove on failure so the user sees the
+      // tile is still there. The LiveTile shows an alert via its own
+      // catch path, so we don't need to re-alert here.
+      loadBrandPublications(accountId).then(setRows).catch(() => {});
+      throw err;
+    }
+  }, [accountId]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -724,7 +912,9 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
                     embed={embedsByPubId.get(row.id) || null}
                     isAgency={!!isAgency}
                     onRefresh={handleRefresh}
+                    onRemove={handleRemove}
                     onOpenPlan={openPlan}
+                    focused={focusPublicationId === row.id}
                   />
                 )}
               />

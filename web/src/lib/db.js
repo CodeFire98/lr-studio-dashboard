@@ -2522,13 +2522,20 @@ export function mapPostPlanPublicationRow(row) {
   };
 }
 
-export async function loadPostPlanPublications(postPlanId) {
+// All publication-list reads default to filtering soft-deleted rows
+// (`deleted_at IS NULL`) — added 2026-05-22 alongside the Live Posts
+// "Remove post" feature. Engagement-aggregation paths that need
+// historical snapshot context for soft-deleted publications pass
+// `{ includeDeleted: true }` to opt back in.
+export async function loadPostPlanPublications(postPlanId, { includeDeleted = false } = {}) {
   if (!postPlanId) return [];
-  const { data, error } = await supabase
+  let q = supabase
     .from('post_plan_publications')
     .select(POST_PLAN_PUBLICATION_SELECT)
     .eq('post_plan_id', postPlanId)
     .order('published_at', { ascending: false });
+  if (!includeDeleted) q = q.is('deleted_at', null);
+  const { data, error } = await q;
   if (error) throw error;
   return (data || []).map(mapPostPlanPublicationRow);
 }
@@ -2536,13 +2543,15 @@ export async function loadPostPlanPublications(postPlanId) {
 // Bulk loader — returns Map<postPlanId, publications[]> for the calendar
 // chip rendering (so each chip can derive its display status). One query
 // for all plan ids, grouped client-side.
-export async function loadPublicationsForPlanIds(postPlanIds) {
+export async function loadPublicationsForPlanIds(postPlanIds, { includeDeleted = false } = {}) {
   if (!Array.isArray(postPlanIds) || postPlanIds.length === 0) return new Map();
-  const { data, error } = await supabase
+  let q = supabase
     .from('post_plan_publications')
     .select(POST_PLAN_PUBLICATION_SELECT)
     .in('post_plan_id', postPlanIds)
     .order('published_at', { ascending: false });
+  if (!includeDeleted) q = q.is('deleted_at', null);
+  const { data, error } = await q;
   if (error) throw error;
   const grouped = new Map();
   for (const r of data || []) {
@@ -2557,9 +2566,14 @@ export async function loadPublicationsForPlanIds(postPlanIds) {
 // Joined loader for the brand-wide Live Posts repository view. Each row
 // carries enough plan context (concept, scheduled_at, platforms) so the
 // repository tile can render without a follow-up plan fetch.
-export async function loadBrandPublications(accountId) {
+//
+// `includeDeleted: true` keeps soft-deleted rows in the result — used by
+// loadEngagementSummaryForBrand so historical aggregates don't drop the
+// moment a user clicks "Remove post". The Live Posts grid pass the
+// default (false) so removed cards disappear from the UI immediately.
+export async function loadBrandPublications(accountId, { includeDeleted = false } = {}) {
   if (!accountId) return [];
-  const { data, error } = await supabase
+  let q = supabase
     .from('post_plan_publications')
     .select(`
       *,
@@ -2569,6 +2583,8 @@ export async function loadBrandPublications(accountId) {
       )
     `)
     .order('published_at', { ascending: false });
+  if (!includeDeleted) q = q.is('deleted_at', null);
+  const { data, error } = await q;
   if (error) throw error;
   // Filter client-side by accountId via the joined post_plan; doing it as
   // a Postgres filter on a joined column requires a foreign-table syntax
@@ -2594,6 +2610,11 @@ export async function loadBrandPublications(accountId) {
 // Insert-or-update a publication row. The DB has a unique constraint on
 // (post_plan_id, platform), so re-marking the same platform updates the
 // existing row's URL/timestamp instead of stacking a duplicate.
+//
+// On upsert the payload explicitly sets `deleted_at: null` so a previously
+// soft-deleted row (user unchecked then re-checked the same platform)
+// reactivates cleanly — without this the ON CONFLICT path would leave
+// deleted_at set and the row would stay invisible to the Live Posts grid.
 export async function upsertPostPlanPublication({ postPlanId, platform, liveUrl, publishedBy }) {
   if (!postPlanId) throw new Error('upsertPostPlanPublication: postPlanId is required');
   if (!platform)   throw new Error('upsertPostPlanPublication: platform is required');
@@ -2604,6 +2625,7 @@ export async function upsertPostPlanPublication({ postPlanId, platform, liveUrl,
     platform,
     live_url: trimmed || null,
     published_by: publishedBy,
+    deleted_at: null, // see comment above — reactivates soft-deleted row
     // Stamp published_at on the way in so the row's "live moment" is the
     // marking moment, not a default-only created_at. On conflict we leave
     // the original published_at alone (the user is editing the URL, not
@@ -2618,9 +2640,19 @@ export async function upsertPostPlanPublication({ postPlanId, platform, liveUrl,
   return mapPostPlanPublicationRow(data);
 }
 
+// SOFT-delete (was hard-delete before 2026-05-22). Function name kept
+// for backward compat — every existing caller (MarkAsPostedModal's
+// uncheck-platform path, the new Live Posts "Remove post" path) gets
+// the safer semantics for free. Engagement snapshots stay intact (the
+// CASCADE on post_engagement_snapshots fires only on real DELETEs).
+// Reactivation happens automatically via upsertPostPlanPublication's
+// `deleted_at: null` payload if the user re-marks the same platform.
 export async function deletePostPlanPublication(id) {
   if (!id) throw new Error('deletePostPlanPublication: id is required');
-  const { error } = await supabase.from('post_plan_publications').delete().eq('id', id);
+  const { error } = await supabase
+    .from('post_plan_publications')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', id);
   if (error) throw error;
 }
 
@@ -2957,10 +2989,12 @@ export async function loadEngagementForBrandRange(accountId, fromISO, toISO) {
   if (!accountId) return [];
   if (!fromISO || !toISO) throw new Error('loadEngagementForBrandRange: fromISO and toISO are required');
 
-  // Step 1 — load the brand's publications. Reuses the existing
-  // loader so the returned `publication` + `plan` shape matches what
-  // LivePostsView already renders, no remapping in the consumer.
-  const publications = await loadBrandPublications(accountId);
+  // Step 1 — load the brand's publications, including soft-deleted ones.
+  // The monthly-report needs historical numbers for posts that have since
+  // been removed from the Live Posts grid; the engagement snapshots they
+  // accumulated before deletion are still part of the brand's truth.
+  // See `loadEngagementSummaryForBrand` for the same rationale.
+  const publications = await loadBrandPublications(accountId, { includeDeleted: true });
   if (publications.length === 0) return [];
 
   // Step 2 — bulk-load snapshots in range for those publications.
@@ -4288,7 +4322,15 @@ function ratePointDiff(a, b) {
 export async function loadEngagementSummaryForBrand(accountId, periodDays = 30) {
   if (!accountId) return null;
 
-  const publications = await loadBrandPublications(accountId);
+  // Include soft-deleted publications so historical totals don't drop
+  // the moment a user clicks "Remove post" in the Live Posts grid.
+  // Per-user spec (2026-05-22): "historic engagement data for that
+  // post till date will still be there, but future engagement data
+  // will not continue to be captured." The scraper-side filter
+  // (engagement-refresh Edge Function) handles the "stop capturing"
+  // half; this `includeDeleted: true` handles the "keep showing
+  // historical numbers in summary" half.
+  const publications = await loadBrandPublications(accountId, { includeDeleted: true });
   if (publications.length === 0) {
     return { isEmpty: true, publications: [] };
   }
