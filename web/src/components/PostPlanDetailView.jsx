@@ -1695,6 +1695,34 @@ const PostPlanDetailView = ({
   // anything new to the post_plans row itself.
   const handleMarkPostedSubmit = async ({ upserts, deletes }) => {
     if (!plan?.id || !userId) return;
+    // If the user unchecked one or more platforms, those publications get
+    // soft-deleted via deletePostPlanPublication — same destructive
+    // operation as the Live Posts grid's "Remove post" menu. Gate it
+    // behind the same confirmation copy so the friction matches the
+    // intent on both surfaces (user direction 2026-05-22). Cancelling
+    // aborts the entire submit (upserts included) so the modal state
+    // stays exactly as the user left it — they can re-check the box(es)
+    // before submitting again.
+    if (deletes.length > 0) {
+      const removedLabels = deletes
+        .map((id) => {
+          const pub = publications.find((p) => p.id === id);
+          return pub ? (PLATFORM_BY_KEY[pub.platform]?.label || pub.platform) : null;
+        })
+        .filter(Boolean);
+      const isOne = removedLabels.length === 1;
+      const headerLine = isOne
+        ? `Remove this ${removedLabels[0]} post from Live Posts?`
+        : `Remove ${removedLabels.length} posts (${removedLabels.join(', ')}) from Live Posts?`;
+      const confirmed = window.confirm(
+        `${headerLine}\n\n` +
+        `Future engagement tracking for ${isOne ? 'this post' : 'these posts'} will stop. ` +
+        `Historical engagement data captured so far will be preserved for reference ` +
+        `(totals on the brand summary won't change). ` +
+        `You can re-mark ${isOne ? 'the post' : 'the posts'} as posted later to start tracking again.`
+      );
+      if (!confirmed) return;
+    }
     const created = [];
     for (const u of upserts) {
       const row = await upsertPostPlanPublication({
