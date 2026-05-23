@@ -1928,6 +1928,25 @@ export async function resolveProposal({ proposalId, status, agencyResponse }) {
   return mapProposalRow(data);
 }
 
+// Proposer-only: recall (withdraw) a pending proposal. Distinct from
+// resolveProposal — different RLS path (proposer instead of agency),
+// different conversations-log verb ("withdrew" vs "rejected"). Added
+// 2026-05-22 in migration 0056 to close the gap left by 0047's
+// "brand can't undo a proposal" v1 limitation, which became user-
+// facing the moment the inline Edit pill (PR B) let brand misclick a
+// proposal into existence.
+export async function withdrawProposal({ proposalId }) {
+  if (!proposalId) throw new Error('withdrawProposal: proposalId is required');
+  const { data, error } = await supabase
+    .from('plan_proposals')
+    .update({ status: 'withdrawn' })
+    .eq('id', proposalId)
+    .select(PROPOSAL_SELECT)
+    .single();
+  if (error) throw error;
+  return mapProposalRow(data);
+}
+
 export async function acknowledgeProposal(proposalId) {
   if (!proposalId) throw new Error('acknowledgeProposal: proposalId is required');
   const { data, error } = await supabase
