@@ -1616,6 +1616,42 @@ const PostPlanDetailView = ({
     }
   };
 
+  // Brand-side "Recall proposal" — symmetric to "Propose plan". Flips
+  // the post_plan status from 'proposed' back to 'brand_draft', which
+  // returns the plan to the brand's private workspace (invisible to
+  // agency once PR D's RLS lands). Migration 0056b allows the
+  // transition + emits "recalled the proposed plan." in the
+  // Conversations log via the existing status-message trigger.
+  //
+  // No plan_proposals row to clean up — per migration 0049, new-plan
+  // proposals don't create a proposal row in the first place ("the
+  // plan IS the proposal"). Differs from copy_change / date_change
+  // which DO have proposal rows and go through withdrawProposal().
+  const handleRecallProposedPlan = async () => {
+    if (!plan?.id) return;
+    const conceptLabel = (plan.concept || '').trim();
+    const ok = await confirmDialog({
+      title: conceptLabel ? `Recall “${conceptLabel}”?` : 'Recall this proposed plan?',
+      body: 'The plan will return to your private drafts. Your agency will no longer see it — you can resume editing and propose again whenever you’re ready.',
+      confirmText: 'Recall proposal',
+      cancelText: 'Keep it proposed',
+      danger: false,
+    });
+    if (!ok) return;
+    try {
+      const updated = await updatePostPlan(plan.id, { status: 'brand_draft' });
+      setPlan(updated);
+      onPlanChanged?.(updated);
+      // Stay on the detail page — the plan is still the user's, just
+      // back in draft state. They can resume editing immediately.
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('recall proposed plan failed', e);
+      // eslint-disable-next-line no-alert
+      window.alert(`Could not recall the proposal: ${e?.message || String(e)}`);
+    }
+  };
+
   // ---- Duplicate flow -------------------------------------------------
   const [dupPickerOpen, setDupPickerOpen] = useState(false);
 
@@ -1844,6 +1880,15 @@ const PostPlanDetailView = ({
         // plan is invisible to agency as actionable; only their own brand
         // teammates and the creator know it exists.
         out.push({ label: 'Propose plan', tone: 'primary', next: 'proposed' });
+      } else if (statusBucket === 'proposed' && !!plan?.createdBy && plan.createdBy === userId) {
+        // Symmetric to "Propose plan": the brand creator can pull their
+        // proposal back to brand_draft before agency acts on it. Per
+        // migration 0049, a new-plan proposal has no plan_proposals row
+        // — the plan IS the proposal — so recalling is just a status
+        // flip back. Permission added in migration 0056b's guard update.
+        // The Conversations log gets a "recalled the proposed plan."
+        // system message via the same migration's status-message trigger.
+        out.push({ label: 'Recall proposal', tone: 'ghost', action: 'recall-new-plan' });
       } else if (statusBucket === 'needs_review') {
         out.push({ label: 'Approve', tone: 'good', next: 'approved' });
         // The old "Propose changes" button used to live here, opening
@@ -2234,6 +2279,8 @@ const PostPlanDetailView = ({
               onClick={() => {
                 if (a.action === 'delete') {
                   handleDelete();
+                } else if (a.action === 'recall-new-plan') {
+                  handleRecallProposedPlan();
                 } else {
                   transitionStatus(a.next, { requireComment: a.requireComment });
                 }
