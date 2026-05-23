@@ -2489,15 +2489,23 @@ const PostPlanDetailView = ({
                               gap: 6,
                               padding: '6px 12px',
                               borderRadius: 99,
-                              border: on ? '1px solid var(--ink-1)' : '1px dashed var(--line)',
+                              // Match the Platforms-section pill weight
+                              // exactly (var(--ink-2) on active, var(--line)
+                              // on inactive). Previously used var(--ink-1)
+                              // for active which read as a heavier border
+                              // than the rest of the page; the active-state
+                              // surface-2 fill + bolder text already do the
+                              // distinguishing work.
+                              border: `1px solid ${on ? 'var(--ink-2)' : 'var(--line)'}`,
                               background: on ? 'var(--surface-2)' : 'transparent',
                               color: on ? 'var(--ink-1)' : 'var(--ink-4)',
                               fontWeight: on ? 600 : 400,
                               cursor: 'pointer',
                               fontSize: 12.5,
                               transition: 'background 120ms, color 120ms, border-color 120ms',
-                              // Dashed border for "would-add" tabs; solid for
-                              // already-on-plan tabs. Subtle visual cue.
+                              // Dashed border ONLY for inactive "+ would-add"
+                              // tabs (subtle cue). Plan-platform tabs and
+                              // any active tab use the solid border above.
                               borderStyle: isNewChannel && !on ? 'dashed' : 'solid',
                               opacity: isNewChannel && !on ? 0.85 : 1,
                             }}
@@ -2594,11 +2602,15 @@ const PostPlanDetailView = ({
                             )}
                             {/* Brand footer — proposal semantics. Submit
                                 is gated on isDirty (no point proposing
-                                identical copy) and only "Propose change"
-                                surfaces; AI co-pilot affordances stay
-                                agency-only. Per-platform eligibility check
-                                so a pending proposal on IG doesn't lock
-                                the LinkedIn footer too. */}
+                                identical copy). AI Draft / AI Redraft is
+                                available here too (gated on aiInlineEligible
+                                which is already brand-friendly per App.jsx
+                                — "open to brand on own brand_draft in
+                                Phase 1") so brand can lean on the AI when
+                                drafting a proposal. AICopyPreview's onAccept
+                                writes into copyDrafts via handleCopyChange,
+                                which makes isDirty true and surfaces the
+                                "Propose change" button on the next render. */}
                             {!isEditor && brandCanProposeCopyForPlatform(activeCopyTab) && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
                                 <span style={{ fontSize: 11.5, color: 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -2613,6 +2625,18 @@ const PostPlanDetailView = ({
                                   <span style={{ fontSize: 11.5, color: 'var(--bad)' }}>
                                     {proposalError}
                                   </span>
+                                )}
+                                {aiInlineEligible && aiPreviewPlatform !== activeCopyTab && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm ai-draft-btn"
+                                    onClick={() => setAiPreviewPlatform(activeCopyTab)}
+                                    disabled={submittingProposal}
+                                    title={draft.trim() ? 'Generate a fresh draft (you can replace or discard before proposing)' : 'Generate a draft from the brand voice'}
+                                  >
+                                    <span aria-hidden style={{ marginRight: 4 }}>✨</span>
+                                    {draft.trim() ? 'AI redraft' : 'AI draft'}
+                                  </button>
                                 )}
                                 <button
                                   type="button"
