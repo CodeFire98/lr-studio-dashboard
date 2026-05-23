@@ -67,7 +67,17 @@ const POSTED_TINT       = '#7C5CFF';
 const NEEDS_REVIEW_TINT = '#A16207';
 const PROPOSED_TINT     = '#C44A2C';  // coral — distinguishes a brand-originated proposal from agency review
 export const STATUS_CONFIG = {
-  brand_draft:  { label: 'Draft (not yet proposed)', color: 'var(--ink-4)',    background: 'var(--surface-2)' },
+  // brand_draft and drafting both display as "Drafting" — they're the
+  // SAME stage of the workflow ("someone is working on this, not yet
+  // ready to share"), just from opposite sides of the agency↔brand
+  // line. RLS (migration 0058) gates the two statuses by role so brand
+  // never sees an agency `drafting` row and agency never sees a brand
+  // `brand_draft` row; from each viewer's perspective there's only
+  // ever one kind of "Drafting" plan in the wild. Two distinct enum
+  // values stay for visibility scoping, but the user-facing label is
+  // unified so there's no confusing "what's the difference between
+  // Draft and Drafting?" UX gap.
+  brand_draft:  { label: 'Drafting',                color: 'var(--ink-4)',    background: 'var(--surface-2)' },
   drafting:     { label: 'Drafting',                color: 'var(--ink-4)',    background: 'var(--surface-2)' },
   proposed:     { label: 'Awaiting agency review',  color: PROPOSED_TINT,     background: `color-mix(in oklab, ${PROPOSED_TINT} 14%, var(--surface))` },
   needs_review: { label: 'Awaiting brand approval', color: NEEDS_REVIEW_TINT, background: `color-mix(in oklab, ${NEEDS_REVIEW_TINT} 18%, var(--surface))` },

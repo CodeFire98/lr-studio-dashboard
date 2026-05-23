@@ -103,15 +103,36 @@ const STATUS_ORDER = {
 // publication row; the Approved bucket excludes those, so "Approved"
 // becomes the actionable "approved-but-not-yet-live" pile the agency
 // can chase.
-const STATUS_GROUPS = {
+//
+// Role-aware visibility (added 2026-05-22 alongside migration 0058):
+// brand_draft is brand-only, drafting is agency-only. The two are
+// distinct internal statuses gated by RLS but share the same display
+// label "Drafting" — see STATUS_CONFIG in postPlanShared.jsx. Each
+// role's filter row surfaces just ONE "Drafting" pill that maps to
+// the status they're actually allowed to see; the other status's pill
+// is omitted so there's no confusing always-zero badge in the rail.
+const STATUS_GROUPS_ALL = {
   all:          { label: 'All',          displayStatuses: null },
-  brand_draft:  { label: 'Draft',        displayStatuses: ['brand_draft'] },
+  brand_draft:  { label: 'Drafting',     displayStatuses: ['brand_draft'] },                                                       // brand-only
   proposed:     { label: 'Proposed',     displayStatuses: ['proposed'] },
-  drafting:     { label: 'Drafting',     displayStatuses: ['drafting', 'not_started', 'wip', 'delayed'] },
+  drafting:     { label: 'Drafting',     displayStatuses: ['drafting', 'not_started', 'wip', 'delayed'] },                          // agency-only
   needs_review: { label: 'Needs review', displayStatuses: ['needs_review', 'needs_brand_feedback', 'needs_admin_revision'] },
   approved:     { label: 'Approved',     displayStatuses: ['approved', 'scheduled'] },
   posted:       { label: 'Posted',       displayStatuses: ['posted'] },
 };
+
+// Subset based on viewer role. Agency drops the brand-only bucket;
+// brand drops the agency-only bucket. Order is preserved either way
+// so the surviving pills don't shuffle around relative to each other.
+function getStatusGroupsForRole(isAdmin) {
+  const out = {};
+  for (const [key, group] of Object.entries(STATUS_GROUPS_ALL)) {
+    if (isAdmin && key === 'brand_draft') continue;
+    if (!isAdmin && key === 'drafting') continue;
+    out[key] = group;
+  }
+  return out;
+}
 
 const LS_VIEW_MODE     = 'lr_calendar_view_mode';
 const LS_STATUS_FILTER = 'lr_calendar_status_filter';
@@ -1013,11 +1034,22 @@ const CalendarView = ({
 }) => {
   const isAdmin = mode === 'admin';
 
+  // Role-aware filter buckets (post-migration 0058). Memoized on
+  // isAdmin since it's effectively a constant per session — but using
+  // useMemo keeps the reference stable and avoids surprises if isAdmin
+  // ever changes mid-mount (e.g. a debug tool toggling the role).
+  const STATUS_GROUPS = useMemo(() => getStatusGroupsForRole(isAdmin), [isAdmin]);
+
   // View mode + status filter are persisted so an agency lead who lives
   // in list view doesn't have to set it back every reload. The legacy
   // density toggle was retired alongside the new List view — list view
   // is the proper "more rows than fits as chips" surface; the
   // density-toggle compact mode was a half-measure.
+  //
+  // Status-filter allow-list is the role-scoped keys — a brand who
+  // previously had 'drafting' saved (or an agency with 'brand_draft'
+  // saved) gracefully falls back to 'all' since the other role's
+  // pill no longer exists in their group.
   const [viewMode, setViewMode]   = useState(() => readLS(LS_VIEW_MODE, 'month', ['month', 'week', 'list']));
   const [statusFilter, setStatusFilter] = useState(() => readLS(LS_STATUS_FILTER, 'all', Object.keys(STATUS_GROUPS)));
 

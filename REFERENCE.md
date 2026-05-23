@@ -3,7 +3,27 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-22 (**Live Posts: soft-delete + Remove menu + View-in-Live-posts deep-link + engagement scraper skip.** Users wanted a way to take a post card off the Live Posts grid without losing the engagement numbers they'd already captured for it — historic totals on the brand summary should not drop when a card is removed; only future tracking should stop.
+**Last updated:** 2026-05-22 (**Post-plan visibility gated by status × role — brand's `brand_draft` is invisible to agency; agency's `drafting` is invisible to brand. UI labels both as "Drafting".**
+
+**Problem.** Until this change, post-plan visibility was governed only by account membership. Brand could see plans agency was mid-drafting (`status='drafting'`); agency could see plans brand was mid-drafting before proposing (`status='brand_draft'`). Both defeat the "let the owning side prep in peace, announce when ready" pattern that migration 0050 established for the brand→agency direction (but never for the agency→brand direction, and even on the brand side the gate was UI-only, not RLS-enforced).
+
+**Schema (migration `0058_post_plans_visibility_by_role.sql`).** Drops + recreates `post_plans_select` with a role-aware filter: agency sees everything except `status='brand_draft'`; brand sees their account's plans except `status='drafting'`. No enum change, no data migration on existing rows. The two distinct internal statuses stay — they carry different visibility scopes by design.
+
+**INSERT / UPDATE / DELETE policies unchanged.** The status-transition guard (`guard_post_plan_status_transitions` from migration 0050) already forbids cross-role state moves. With SELECT-side gating layered on top, the two halves are consistent: you can't write what you can't see, and you can't see what isn't yours.
+
+**Realtime.** Supabase Realtime v2 applies RLS per-event for `postgres_changes` streams, so brand clients automatically stop receiving INSERT/UPDATE events for `drafting`-status plans and agency clients stop for `brand_draft` plans.
+
+**UI label unification (`postPlanShared.jsx`).** `STATUS_CONFIG.brand_draft` label changes from "Draft (not yet proposed)" → "Drafting". The two distinct enums share one display label; whichever one the viewer is allowed to see, they see "Drafting".
+
+**Calendar filter pills (`CalendarView.jsx`).** `STATUS_GROUPS` becomes `STATUS_GROUPS_ALL` + a `getStatusGroupsForRole(isAdmin)` helper. Agency view omits `brand_draft`; brand view omits `drafting`. `LS_STATUS_FILTER` validation uses role-scoped keys, so a previously-saved invalid filter gracefully falls back to `'all'`.
+
+**Dead callout removed (`PostPlanDetailView.jsx`).** The "Your agency is drafting this post" banner for brand viewers on `drafting`-status plans was unreachable after RLS (brand never reaches such a plan). Removed with a comment explaining how the brand still learns about agency drafting activity (via the "accepted the proposed plan." Conversations system message; the plan reappears in their calendar when agency clicks Submit for review).
+
+**Edge case worth knowing about.** Tagged-plan chips in the Conversations log point at `post_plan_id` regardless of status. A brand reading chat history might see a chip for a plan currently in `drafting` state — `loadPostPlans` no longer returns it, chip falls through to `<PlanChip deletedPlaceholder />`. Acceptable for v1.
+
+**Operator action:** apply `0058_post_plans_visibility_by_role.sql` on Supabase before merge.
+
+**Previous (2026-05-22):** (**Live Posts: soft-delete + Remove menu + View-in-Live-posts deep-link + engagement scraper skip.** Users wanted a way to take a post card off the Live Posts grid without losing the engagement numbers they'd already captured for it — historic totals on the brand summary should not drop when a card is removed; only future tracking should stop.
 
 **Schema (migration `0057_post_plan_publications_soft_delete.sql`).** Adds `deleted_at timestamptz` to `post_plan_publications` + a partial index on `(published_at desc) where deleted_at is null` so the common "active publications" filter stays cheap as soft-deleted rows accumulate. No RLS change — read-path filtering is enforced by the JS helpers (because aggregation paths legitimately need to see soft-deleted rows to keep historical totals stable).
 

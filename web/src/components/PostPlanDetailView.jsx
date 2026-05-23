@@ -2117,30 +2117,17 @@ const PostPlanDetailView = ({
               </div>
             </div>
           )}
-          {!isAdmin && statusBucket === 'drafting' && (
-            <div
-              role="status"
-              style={{
-                marginTop: 16,
-                padding: '10px 14px',
-                border: '1px solid color-mix(in oklab, var(--accent) 28%, var(--line))',
-                background: 'color-mix(in oklab, var(--accent) 5%, var(--surface))',
-                borderRadius: 8,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                maxWidth: 640,
-                fontSize: 13,
-                color: 'var(--ink-2)',
-                lineHeight: 1.45,
-              }}
-            >
-              <span aria-hidden style={{ flexShrink: 0, display: 'inline-flex', color: 'var(--accent-ink, var(--accent))' }}>
-                <Icon name="sparkles" size={14}/>
-              </span>
-              <span>Your agency is drafting this post. You'll see it for review when it's ready.</span>
-            </div>
-          )}
+          {/* Previously: a "Your agency is drafting this post. You'll
+              see it for review when it's ready." callout for brand
+              viewers on drafting plans. With migration 0058's RLS,
+              brand never reaches a drafting plan in the first place
+              (the SELECT policy filters status='drafting' out for
+              non-agency callers), so this branch was dead code. The
+              brand learns about agency drafting activity via the
+              Conversations log's "accepted the proposed plan." system
+              message instead, and the plan reappears in their
+              calendar the moment agency clicks "Submit for review"
+              (status flips to needs_review, which IS brand-visible). */}
           {pendingDateProposal && (
             <PendingDateProposalCard
               proposal={pendingDateProposal}
