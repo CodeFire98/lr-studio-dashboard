@@ -180,6 +180,24 @@ function dropSessionConv(userId, accountId, convId) {
   sessionConvCache.delete(sessionCacheKey(userId, accountId, convId));
 }
 
+// Drop every cache entry that doesn't belong to the given (userId,
+// accountId). Called on brand switch as belt-and-suspenders insurance:
+// the cache is already keyed per-brand so wrong-brand lookups MISS by
+// construction, but if any future bug ever writes a conv under the
+// wrong key, the stale entry would linger in memory until tab close.
+// Wiping non-matching entries on every brand switch is the simple,
+// defensive answer. Cost: multimodal attachment bubbles for any OTHER
+// brand the user toggled through this session reset to the
+// localStorage breadcrumb when they come back — acceptable, attachments
+// are session-only by design anyway.
+function pruneSessionCacheToBrand(userId, accountId) {
+  if (!userId || !accountId) return;
+  const prefix = `${userId}|${accountId}|`;
+  for (const k of Array.from(sessionConvCache.keys())) {
+    if (!k.startsWith(prefix)) sessionConvCache.delete(k);
+  }
+}
+
 function makeConvId() {
   // Date-prefixed for natural sort/display + a 4-char random suffix to
   // avoid collisions when two new chats land in the same millisecond.
@@ -772,6 +790,14 @@ const LinkAIPanel = ({
     sdkConvIdRef.current = null;
     setSdkConvId(null);
     setMessages([]);
+    // Drop module-level session cache entries from any OTHER brand we
+    // may have toggled through this session. The cache is already
+    // brand-keyed (lookups miss on wrong key), but stale entries don't
+    // need to live in memory — and wiping them closes a class of bug
+    // where any future race writes a conv under the wrong (userId,
+    // accountId, convId) tuple. See pruneSessionCacheToBrand for the
+    // full rationale.
+    pruneSessionCacheToBrand(userId, accountId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, accountId, isPageVariant]);
 

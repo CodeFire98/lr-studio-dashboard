@@ -3,7 +3,29 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-22 (**Post-plan visibility gated by status × role — brand's `brand_draft` is invisible to agency; agency's `drafting` is invisible to brand. UI labels both as "Drafting".**
+**Last updated:** 2026-05-23 (**LinkAI brand-isolation hardening — force-remount on brand switch + session-cache prune + system-prompt sanitisation + brand-resolve log.**
+
+**Problem.** User reported LinkAI claiming to be in Bamboo Bear while their URL/picker said Epigamia. Hard-reload fixed it; root cause was today-earlier's cross-contamination bug whose recovery snippet was never run on their session, so a Bamboo Bear conv was still resident in the module-level `sessionConvCache` Map and got rendered under the new brand's panel after switch. Wider audit confirmed the data layer is tight (every `loadAndCompileBrandContext` query hard-filters by `account_id`; every localStorage key is brand-scoped), but the *client component lifetime* spans brand switches via the persistent page-variant mount (PR #125), turning every state slot inside `LinkAIPanel` into a leak surface if any single reset step regresses.
+
+**Fix (four layers, smallest diff that closes the actual + adjacent failure modes):**
+1. **`<LinkAIPanel key={calendarAccountId} ... />` in `web/src/App.jsx`** (both page + drawer mounts). React unmounts the entire panel on brand switch and remounts a fresh instance. Every `useState`, every `useRef`, every `useChat` array, every closure capture — gone. The brand-switch effect inside the panel still runs on mount but with no prior state to corrupt. In-flight stream to the old brand is aborted on switch (which is correct — that response was for the old brand).
+2. **`pruneSessionCacheToBrand(userId, accountId)` in `web/src/components/LinkAIPanel.jsx`** — called inside the brand-switch effect. Drops module-level `sessionConvCache` entries whose key doesn't start with `${userId}|${accountId}|`. The cache is already brand-keyed (wrong-brand reads miss), but stale entries no longer outlive the brand switch — and the prune closes the specific failure mode that caused today's symptom. Cost: multimodal attachment bubbles for any *other* brand toggled-through this session reset to the localStorage breadcrumb on return, which matches existing reload-survival behaviour.
+3. **Sanitise `@sarahbamboo` → `@founder_handle` in `web/api/ai/chat.ts`** `write_brand_note` tool description. Hardcoded Bamboo Bear reference shipped to every brand's system prompt — small bias removed.
+4. **`[chat] brand-resolve account=<uuid> name="<resolved>" agency=<bool>` log in `web/api/ai/chat.ts`** fires per chat call after `loadAndCompileBrandContext` returns. Vercel function logs gain a one-line audit trail of which brand the server actually resolved for each accountId. Next regression in this class is grep-visible in seconds instead of from screenshots.
+
+**Deferred (C-tier).** Stamping `accountId` inside each conv index entry + filtering mismatches on `loadConvIndex` is the natural next defence-in-depth layer, but A already eliminates the root failure class so C is paranoia, not load-bearing. Tracked as follow-up.
+
+**Recovery for users who hit the pre-fix cross-contamination earlier today** still applies — same snippet as before:
+```js
+Object.keys(localStorage)
+  .filter(k => k.startsWith('lr_link_ai_'))
+  .forEach(k => localStorage.removeItem(k))
+```
+…then hard-reload. Worth pinning in the next agency-side announcement.
+
+Pure code (no schema/migration/env-var). Sections touched: Recent changes log; `Last updated`.)
+
+**Previous (2026-05-22):** (**Post-plan visibility gated by status × role — brand's `brand_draft` is invisible to agency; agency's `drafting` is invisible to brand. UI labels both as "Drafting".**
 
 **Problem.** Until this change, post-plan visibility was governed only by account membership. Brand could see plans agency was mid-drafting (`status='drafting'`); agency could see plans brand was mid-drafting before proposing (`status='brand_draft'`). Both defeat the "let the owning side prep in peace, announce when ready" pattern that migration 0050 established for the brand→agency direction (but never for the agency→brand direction, and even on the brand side the gate was UI-only, not RLS-enforced).
 
