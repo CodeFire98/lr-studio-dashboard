@@ -46,6 +46,7 @@ type PublicationRow = {
   post_plan_id: string;
   platform: Platform;
   live_url: string | null;
+  deleted_at: string | null;
   // Joined from post_plans so we can attribute the scrape's cost
   // to the right brand in `service_usage_log`. PostgREST returns
   // either an object or an array depending on FK generics; we handle
@@ -113,11 +114,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { data: pub, error: pubErr } = await serviceClient
     .from("post_plan_publications")
-    .select("id, post_plan_id, platform, live_url, post_plans(account_id)")
+    .select("id, post_plan_id, platform, live_url, deleted_at, post_plans(account_id)")
     .eq("id", publicationId)
     .maybeSingle<PublicationRow>();
   if (pubErr || !pub) {
     return res.status(404).json({ error: "Publication not found" });
+  }
+  // Soft-deleted publications shouldn't be re-scraped on manual refresh
+  // either — same intent as the cron filter (migration 0057). The Live
+  // Posts grid hides removed rows, so this is a defensive guard that
+  // also covers any stale client retrying with a since-removed pub id.
+  if (pub.deleted_at) {
+    return res.status(404).json({ error: "Publication has been removed" });
   }
   if (!pub.live_url) {
     return res.status(400).json({

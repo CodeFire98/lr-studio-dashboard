@@ -2320,6 +2320,29 @@ const PostPlanDetailView = ({
               {publications.length > 0 ? 'Edit live posts' : 'Mark as posted'}
             </button>
           )}
+          {/* "View in Live posts" — surfaces alongside "Edit live posts"
+              when at least one publication exists. Per user direction
+              (2026-05-22): NOT a replacement, an additional affordance.
+              The "Edit live posts" button is still needed for multi-
+              channel plans where some platforms aren't posted yet (the
+              modal is the only way to add the missing channel URLs).
+              The View button is the read-side complement — deep-links
+              into /c/:slug/posts?focus=<firstPubId> which scrolls the
+              matching card into view and briefly highlights it. We
+              focus the FIRST publication (the rail orders by
+              published_at desc so this is the most recent platform);
+              the rest are nearby in the same view. */}
+          {statusBucket === 'approved' && publications.length > 0 && brandSlug && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => navigate(`/c/${brandSlug}/posts?focus=${publications[0].id}`)}
+              title="Jump to this post on the Live Posts page"
+            >
+              <Icon name="arrow-up-right" size={13}/>
+              View in Live posts
+            </button>
+          )}
           {isAdmin && (
             <button
               type="button"
