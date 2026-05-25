@@ -3,7 +3,22 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-23 (**LinkAI brand-isolation hardening — force-remount on brand switch + session-cache prune + system-prompt sanitisation + brand-resolve log.**
+**Last updated:** 2026-05-24 (**Brand System v1 — claim guardrails + channel voice on `brand_kits`.** First slice of the new Brand System layer: two JSONB columns added to `brand_kits` (migration `0059_brand_system_v1`) that capture the brand-specific rules the LinkAI needs to write on-brand reliably.
+
+- **`claim_guardrails`** — `{ never_use: [{phrase, category, reason, use_instead, severity}], always_pair: [...], approved_qualifiers: [string], off_limits_numbers: [...] }`. Encodes **swap rules** ("never X → use Y") and **pair rules** ("if you say X, also say Y") that flat `dos`/`donts` string arrays can't preserve. The `severity` field (`hard_block` / `soft_block`) future-proofs a validator-loop in v2.
+- **`channel_voice`** — `{ global: {...}, instagram: {...}, linkedin: {...}, twitter: {...}, whatsapp: {...} }`. Per-channel voice prescription overlay (case / person / cadence / lead_with / ending_pattern / posting_frequency / pillars / rhythms / tone_modifiers / etc.) layered **above** skillRegistry's universal `platforms.md` playbook — universal mechanics stay there, brand-specific voice rules live here. The `global` sub-object carries brand-wide signatures (sign-off emoji, signature phrases, must-include differentiators).
+
+`brandContext.js` gains two pure helpers — `claimGuardrailsSection(jsonb)` and `channelVoiceSection(jsonb)` — that render the JSONB into `## Claim guardrails` and `## Channel voice` markdown sections inside `compileBrandContext()`'s output, between the existing `## Voice` ↔ `## Strategy` ↔ `## Visual identity` blocks. The new content sits in the high-attention upper portion of the prompt and benefits from the existing cache tier. **Empty-state defensive**: both helpers return `''` when the JSONB is `{}` / missing / malformed / has no usable sub-keys. Underscore-prefixed keys (e.g. `_meta`) are skipped so per-row metadata (source, schema_version, last_seeded_at) never leaks into the prompt.
+
+**Bamboo Bear is the only seeded brand in v1.** Migration `0060_seed_bamboo_bear_brand_system` populates both columns from the validated `Bamboo_Bear_Brand_System.md` content bible (§4 claim guardrails, §5 voice & tone, §8 channel strategy, §9 X rhythms only). Verification confirmed counts of 9 `never_use` / 2 `always_pair` / 6 approved qualifiers / 4 channels / 7 X rhythms / 6 signature phrases. Every other brand keeps `{}` defaults and emits zero new prompt content — strictly no behavioural change for non-seeded brands.
+
+**Out of scope for v1 (deferred to v2):** `content_frameworks` column (carousel templates, hook formulas — §9 of the bible), `sample_bank` column (few-shot examples per channel — §10), UI tab at `/c/:slug/brand-system` for read/edit, auto-extraction from website/IG into the new columns, conversational-correction auto-proposals from LinkAI transcripts, versioning / audit-snapshot-on-approve, evidence links per claim, periodic-refresh cron, REFERENCE.md migration-list backfill (0046–0058 still undocumented in §6 Migrations).
+
+**Brand Intelligence label rename** was considered then dropped — the existing label correctly describes the `brand_kits` page (tagline / audience / palette / competitors), not industry trends. Trend articles already live separately under "Trends" (`brand_trend_snapshots` + TrendsView). Nothing to rename.
+
+Files: `supabase/migrations/0059_brand_system_v1.sql` (schema), `supabase/migrations/0060_seed_bamboo_bear_brand_system.sql` (seed with transaction wrap + safety guard + post-seed verification block), `web/src/lib/brandContext.js` (+131 LOC: two pure helpers + two push calls in `compileBrandContext`). Migrations applied to prod Supabase via MCP `apply_migration` (tracked names: `brand_system_v1`, `bamboo_bear_brand_system_v1_seed`). Sections touched: Recent changes log; `Last updated`; §6 Data model (`brand_kits` core-tables row); §6 Migrations (new `0059` and `0060` entries).)
+
+**Previous (2026-05-23):** (**LinkAI brand-isolation hardening — force-remount on brand switch + session-cache prune + system-prompt sanitisation + brand-resolve log.**
 
 **Problem.** User reported LinkAI claiming to be in Bamboo Bear while their URL/picker said Epigamia. Hard-reload fixed it; root cause was today-earlier's cross-contamination bug whose recovery snippet was never run on their session, so a Bamboo Bear conv was still resident in the module-level `sessionConvCache` Map and got rendered under the new brand's panel after switch. Wider audit confirmed the data layer is tight (every `loadAndCompileBrandContext` query hard-filters by `account_id`; every localStorage key is brand-scoped), but the *client component lifetime* spans brand switches via the persistent page-variant mount (PR #125), turning every state slot inside `LinkAIPanel` into a leak surface if any single reset step regresses.
 
@@ -2217,7 +2232,7 @@ cascade on delete from `accounts`, so deleting a brand wipes all its data.
 | `assets` | Files uploaded against a task | `task_id`, `kind` (`reference`/`wip`/`deliverable`), `storage_path`, `mime_type`, `version`, `uploaded_by` | Same as task | Same |
 | `messages` | Conversation thread per task | `task_id`, `author_id`, `body` | Same as task | Author + agency |
 | `activity` | Event feed per task | `task_id`, `actor_id`, `action`, `payload` (jsonb) | Authenticated, scoped to readable tasks | **SELECT-only for users**; writes via `SECURITY DEFINER` triggers (`log_task_activity`, `log_message_activity`, `log_asset_activity`) |
-| `brand_kits` | Brand's design + voice profile | one per account; ~60 columns including `palette`, `fonts`, `tagline`, `mission`, `voice_tags`, `logos`, `enrichment_status`, `enriched_at` | Members + agency | Members + agency |
+| `brand_kits` | Brand's design + voice profile | one per account; ~60 columns including `palette`, `fonts`, `tagline`, `mission`, `voice_tags`, `logos`, `enrichment_status`, `enriched_at`. **Brand System v1 (2026-05-24)** adds two JSONB columns: `claim_guardrails` (structured never-use / always-pair / approved-qualifier rules) and `channel_voice` (per-channel voice prescription with `global` + IG/LinkedIn/X/WhatsApp sub-objects). Both default `{}`; consumed by `brandContext.js` and injected into every AI-context blob. | Members + agency | Members + agency |
 | `invitations` | Pending team invites | `account_id`, `email`, `token`, `role`, `expires_at` | Inviter + invitee | Inviter |
 
 ### Post plan tables (Social Calendar — added 2026-04-30)
@@ -2341,7 +2356,7 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
 
-Most recent: `0042_conversations.sql`.
+Most recent: `0060_seed_bamboo_bear_brand_system.sql`.
 
 Recent batch:
 - `0021_post_plans` — `post_plans` + `post_plan_comments` + `post_plan_attachments` + RLS + triggers + realtime.
@@ -2367,6 +2382,9 @@ Recent batch:
 - `0043_conversation_messages_tagged_plan_decouple` — drops the FK on `conversation_messages.tagged_post_plan_id`. The column stays as a UUID but no longer cascades-set-null when a plan is deleted, so deleted-plan messages keep their orphaned id → the bubble can detect "tagged a plan that no longer exists" and render a "Plan deleted" tombstone chip. Tiny migration — single `drop constraint if exists`.
 - `0044_brand_trend_snapshots` — adds the `brand_trend_snapshots` table for the LinkAI daily trend cache. Append-only, RLS mirrors `post_engagement_snapshots`. Service-role-only writes via `/api/trends/refresh-cron`.
 - `0045_engagement_refresh_cron` — moves the engagement-refresh cron from Vercel to Supabase pg_cron. **Installs the `pg_cron` and `pg_net` extensions**, creates the `cron_run_log` observability table (agency-readable, service-role writes), seeds two **Vault** secrets the cron statement reads at fire time (`engagement_cron_secret` + `engagement_project_url` — both start as `REPLACE_ME` placeholders; operator overwrites via Dashboard → Vault), and registers cron job `engagement-refresh-daily` on schedule `30 0 * * *` UTC (= 6:00 AM IST) which calls `<project_url>/functions/v1/engagement-refresh` with the bearer secret. Re-cadencing is a SQL-only change: `cron.unschedule('engagement-refresh-daily')` + `cron.schedule(...)` with the new expr. To verify after applying, see the migration's footer comment block.
+- *(0046–0058 — undocumented in this list; see the migration files themselves. Backfill deferred.)*
+- `0059_brand_system_v1` — adds two JSONB columns to `brand_kits` for the new Brand System layer: `claim_guardrails` (structured swap + pair rules + approved qualifiers + off-limits numeric rules) and `channel_voice` (per-channel voice prescription with a `global` brand-wide sub-object + IG/LinkedIn/X/WhatsApp sub-objects). Both default `{}` so existing rows are unaffected. Additive only — no RLS changes (inherits existing `brand_kits` policies). Consumed by new helpers in `brandContext.js`. Tracked in Supabase under name `brand_system_v1`.
+- `0060_seed_bamboo_bear_brand_system` — data-only seed populating both new columns for Bamboo Bear from `Bamboo_Bear_Brand_System.md`. Wrapped in a transaction with safety guards: (1) raises if `accounts.slug = 'bamboo-bear'` doesn't exist, (2) raises if Bamboo Bear has no `brand_kits` row, (3) post-seed verification that exactly 1 brand_kit has both columns populated. UPDATEs use `$seed$` dollar-quoted JSON literals + slug-based subselects (no hardcoded IDs). Tracked in Supabase under name `bamboo_bear_brand_system_v1_seed`. **Idempotent** — safe to re-run; both UPDATEs overwrite with the same payload.
 
 ---
 

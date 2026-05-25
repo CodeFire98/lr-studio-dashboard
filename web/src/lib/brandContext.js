@@ -246,6 +246,9 @@ export function compileBrandContext({
   ]);
   if (voice) sections.push(`## Voice\n${voice}`);
 
+  const channelVoiceBlock = channelVoiceSection(brandKit.channel_voice);
+  if (channelVoiceBlock) sections.push(channelVoiceBlock);
+
   const strategy = compactLines([
     bulletList(brandKit.value_props, 'Value props'),
     bulletList(brandKit.brand_pillars, 'Pillars'),
@@ -253,6 +256,9 @@ export function compileBrandContext({
     arrayLine(brandKit.product_categories, 'Products / categories'),
   ]);
   if (strategy) sections.push(`## Strategy\n${strategy}`);
+
+  const claimGuardrailsBlock = claimGuardrailsSection(brandKit.claim_guardrails);
+  if (claimGuardrailsBlock) sections.push(claimGuardrailsBlock);
 
   const visual = compactLines([
     brandKit.primary_color && `Primary: ${brandKit.primary_color}`,
@@ -619,6 +625,131 @@ function notesSection(notes) {
   }
   if (!parts.length) return null;
   return `## Notes from the agency admin\n${parts.join('\n\n')}`;
+}
+
+// ---------- ## Claim guardrails ---------------------------------------
+// Brand System v1 — structured claim rules consumed by the AI Co-pilot.
+// Renders from brand_kits.claim_guardrails JSONB. Returns '' when the
+// JSONB is empty/missing/malformed so brands without seeded data emit
+// zero new prompt content. Keys starting with `_` (e.g. `_meta`) are
+// metadata and never reach the prompt.
+function claimGuardrailsSection(guardrails) {
+  if (!guardrails || typeof guardrails !== 'object' || Array.isArray(guardrails)) return '';
+
+  const blocks = [];
+
+  const neverUse = Array.isArray(guardrails.never_use) ? guardrails.never_use : [];
+  if (neverUse.length) {
+    const lines = neverUse.map((rule) => {
+      const swap = rule.use_instead ? ` → use "${rule.use_instead}"` : ' → drop without replacement';
+      const sev = rule.severity === 'soft_block' ? ' (soft)' : '';
+      return `- "${rule.phrase}"${swap}${sev}`;
+    });
+    blocks.push(`### Never use\n${lines.join('\n')}`);
+  }
+
+  const alwaysPair = Array.isArray(guardrails.always_pair) ? guardrails.always_pair : [];
+  if (alwaysPair.length) {
+    const lines = alwaysPair.map((rule) => {
+      if (rule.required_pair) {
+        return `- "${rule.trigger_phrase}" must be paired with "${rule.required_pair}"`;
+      }
+      if (rule.preferred_alternative) {
+        return `- "${rule.trigger_phrase}" — prefer "${rule.preferred_alternative}"`;
+      }
+      return `- "${rule.trigger_phrase}"`;
+    });
+    blocks.push(`### Always pair\n${lines.join('\n')}`);
+  }
+
+  if (Array.isArray(guardrails.approved_qualifiers) && guardrails.approved_qualifiers.length) {
+    blocks.push(`### Approved qualifiers\n${guardrails.approved_qualifiers.join(', ')}`);
+  }
+
+  const offLimits = Array.isArray(guardrails.off_limits_numbers) ? guardrails.off_limits_numbers : [];
+  if (offLimits.length) {
+    const lines = offLimits.map((r) => `- ${r.type}: ${r.rule}`);
+    blocks.push(`### Off-limits numeric claims\n${lines.join('\n')}`);
+  }
+
+  if (!blocks.length) return '';
+  return `## Claim guardrails\n${blocks.join('\n\n')}`;
+}
+
+// ---------- ## Channel voice ------------------------------------------
+// Brand System v1 — per-channel voice prescription overlay. Layered ABOVE
+// the universal platform playbook from skillRegistry. Renders from
+// brand_kits.channel_voice JSONB. `global` sub-object (if present) emits
+// a brand-wide block first; per-channel blocks follow in fixed order so
+// future additions don't reorder existing output. Underscore-prefixed
+// keys (e.g. `_meta`) are skipped.
+function channelVoiceSection(channelVoice) {
+  if (!channelVoice || typeof channelVoice !== 'object' || Array.isArray(channelVoice)) return '';
+
+  const blocks = [];
+
+  const global = channelVoice.global;
+  if (global && typeof global === 'object') {
+    const lines = [];
+    if (global.sign_off) {
+      lines.push(`- Sign-off: ${global.sign_off}${global.sign_off_usage ? ` — ${global.sign_off_usage}` : ''}`);
+    }
+    if (Array.isArray(global.must_include_one_of) && global.must_include_one_of.length) {
+      lines.push(`- Must include at least one of: ${global.must_include_one_of.join(' | ')}`);
+    }
+    if (Array.isArray(global.signature_phrases) && global.signature_phrases.length) {
+      const phrases = global.signature_phrases
+        .map((p) => `"${p.phrase}"${p.usage ? ` (${p.usage})` : ''}`)
+        .join('; ');
+      lines.push(`- Signature phrases: ${phrases}`);
+    }
+    if (lines.length) blocks.push(`### Brand-wide signatures\n${lines.join('\n')}`);
+  }
+
+  const CHANNEL_ORDER = ['instagram', 'linkedin', 'twitter', 'whatsapp'];
+  const HEADINGS = {
+    instagram: 'Instagram',
+    linkedin: 'LinkedIn',
+    twitter: 'X (Twitter)',
+    whatsapp: 'WhatsApp',
+  };
+
+  for (const key of CHANNEL_ORDER) {
+    const ch = channelVoice[key];
+    if (!ch || typeof ch !== 'object') continue;
+
+    const lines = [];
+    if (ch.case) lines.push(`- Case: ${ch.case}`);
+    if (ch.person) lines.push(`- Person: ${ch.person}${ch.founder_name ? ` (${ch.founder_name})` : ''}`);
+    if (ch.cadence) lines.push(`- Cadence: ${ch.cadence}`);
+    if (ch.lead_with) lines.push(`- Lead with: ${ch.lead_with}`);
+    if (ch.stance) lines.push(`- Stance: ${ch.stance}`);
+    if (ch.anchor_rule) lines.push(`- Anchor rule: ${ch.anchor_rule}`);
+    if (ch.ending_pattern) lines.push(`- Ending: ${ch.ending_pattern}`);
+    if (Array.isArray(ch.tone_modifiers) && ch.tone_modifiers.length) {
+      lines.push(`- Tone modifiers: ${ch.tone_modifiers.join(', ')}`);
+    }
+    if (ch.competitor_handling) lines.push(`- Competitors: ${ch.competitor_handling}`);
+    if (Array.isArray(ch.format_constraints) && ch.format_constraints.length) {
+      lines.push(`- Format: ${ch.format_constraints.join('; ')}`);
+    }
+    if (Array.isArray(ch.pillars) && ch.pillars.length) {
+      lines.push(`- Pillars: ${ch.pillars.join(' | ')}`);
+    }
+    if (Array.isArray(ch.rhythms) && ch.rhythms.length) {
+      lines.push(`- Rhythms: ${ch.rhythms.join(' | ')}`);
+    }
+    if (ch.cta_default) lines.push(`- Default CTA: ${ch.cta_default}`);
+    if (ch.posting_frequency) lines.push(`- Posting frequency: ${ch.posting_frequency}`);
+    if (Array.isArray(ch.use_cases) && ch.use_cases.length) {
+      lines.push(`- Use cases: ${ch.use_cases.join('; ')}`);
+    }
+
+    if (lines.length) blocks.push(`### ${HEADINGS[key]}\n${lines.join('\n')}`);
+  }
+
+  if (!blocks.length) return '';
+  return `## Channel voice\n${blocks.join('\n\n')}`;
 }
 
 function recentPlansSection(plans) {
