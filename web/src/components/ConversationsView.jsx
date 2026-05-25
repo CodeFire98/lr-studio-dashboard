@@ -326,7 +326,7 @@ function MessageBubble({
   // don't compete visually with real human DMs.
   if (message.kind === 'system' && !isDeleted) {
     return (
-      <div className="conv-msg conv-msg-system">
+      <div id={`msg-${message.id}`} className="conv-msg conv-msg-system">
         <span className="conv-msg-system-text">
           <strong>{message.who?.name || 'Someone'}</strong>
           {' '}
@@ -343,6 +343,7 @@ function MessageBubble({
 
   return (
     <div
+      id={`msg-${message.id}`}
       className={
         'conv-msg ' +
         (message.from === 'me' ? 'conv-msg-me' : 'conv-msg-them') +
@@ -799,6 +800,31 @@ export default function ConversationsView({ accountId, accountName, userId, bran
       wrapRef.current.scrollTop = wrapRef.current.scrollHeight;
     }
   }, [messages.length, loading]);
+
+  // ----- Deep-link: #msg-<uuid> (e.g. from Slack #lrmedia-inbox) ------
+  // Scroll the targeted message into view + flash-highlight it once
+  // messages have loaded. Tracked per-hash so realtime updates after
+  // the scroll don't re-trigger us.
+  const scrolledHashRef = useRef(null);
+  useEffect(() => {
+    if (loading) return;
+    const hash = location.hash || '';
+    if (!hash.startsWith('#msg-')) return;
+    if (scrolledHashRef.current === hash) return;
+
+    const id = hash.slice(1); // strip leading #
+    const el = wrapRef.current?.querySelector(`#${CSS.escape(id)}`);
+    if (!el) return; // message not in current DOM (e.g. thread reply, not yet rendered)
+
+    scrolledHashRef.current = hash;
+    // Override the stuck-to-bottom heuristic so realtime new messages
+    // don't yank us back to the bottom right after we land.
+    stuckToBottomRef.current = false;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('conv-msg-flash');
+    const t = setTimeout(() => el.classList.remove('conv-msg-flash'), 2400);
+    return () => clearTimeout(t);
+  }, [loading, messages.length, location.hash]);
 
   const onWrapScroll = useCallback((e) => {
     const el = e.currentTarget;

@@ -6443,6 +6443,16 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--accent);
 }
 
+/* Deep-link target highlight — fades over ~2s after #msg-<uuid> lands. */
+@keyframes conv-msg-flash-anim {
+  0%   { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+  100% { background: transparent; }
+}
+.conv-msg-flash {
+  border-radius: 8px;
+  animation: conv-msg-flash-anim 2200ms ease-out;
+}
+
 /* Plan-chip card embedded inside a message bubble. Inline-block so it
    sits naturally below the body text without taking full width. */
 .conv-plan-chip {
