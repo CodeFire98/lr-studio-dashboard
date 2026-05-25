@@ -222,10 +222,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   });
 
   // ---- Fetch enriched context ----------------------------------------
-  // Two round-trips because conversations + brand_kits both FK to
-  // accounts — there's no direct FK between them so PostgREST can't
-  // resolve a chained embed in one go. At single-message scale the
-  // extra hop is invisible.
+  // Two round-trips: message+author+plan first (PostgREST embed via FK),
+  // then accounts row for the brand display name + URL slug. Brand
+  // display name + slug live on `accounts`, not `brand_kits` (brand_kits
+  // holds the design + voice profile and only references the account
+  // via `account_id`). At single-message scale the extra hop is invisible.
   //
   // Query 1: message + author + tagged plan + conversation.account_id
   const { data: row, error: fetchErr } = await supabase
@@ -281,20 +282,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  // Query 2: brand_kit by account_id
-  const { data: brandKit, error: brandErr } = await supabase
-    .from("brand_kits")
+  // Query 2: brand name + slug from accounts
+  const { data: account, error: accountErr } = await supabase
+    .from("accounts")
     .select("name, slug")
-    .eq("account_id", conv.account_id)
+    .eq("id", conv.account_id)
     .maybeSingle();
-  if (brandErr) {
-    await markFailure(supabase, messageId, 0, `brand_kit_fetch_failed: ${brandErr.message}`);
-    res.status(500).json({ error: "Brand fetch failed", detail: brandErr.message });
+  if (accountErr) {
+    await markFailure(supabase, messageId, 0, `account_fetch_failed: ${accountErr.message}`);
+    res.status(500).json({ error: "Account fetch failed", detail: accountErr.message });
     return;
   }
-  if (!brandKit?.name || !brandKit?.slug) {
-    await markFailure(supabase, messageId, 0, "brand_kit_missing");
-    res.status(200).json({ ok: true, skipped: "brand_kit_missing" });
+  if (!account?.name || !account?.slug) {
+    await markFailure(supabase, messageId, 0, "account_missing");
+    res.status(200).json({ ok: true, skipped: "account_missing" });
     return;
   }
 
@@ -306,8 +307,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     created_at: row.created_at,
     tagged_post_plan_id: row.tagged_post_plan_id,
     author_name: author.display_name || "Someone",
-    brand_name: brandKit.name,
-    brand_slug: brandKit.slug,
+    brand_name: account.name,
+    brand_slug: account.slug,
     plan_title: planRow?.title ?? null,
     plan_id: planRow?.id ?? null,
   };
