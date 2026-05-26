@@ -1547,15 +1547,33 @@ const CalendarView = ({
         {Object.entries(STATUS_GROUPS).map(([key, group]) => {
           const active = statusFilter === key;
           const count = groupCounts[key] || 0;
+          // Tint each pill with the same color the matching cards wear on
+          // the calendar. STATUS_GROUPS[key].displayStatuses lists the raw
+          // post_plans.status values that fall into this bucket; we look
+          // up the first one in STATUS_CONFIG to pull its display color +
+          // background tint. The "All" pill has `displayStatuses: null`
+          // and intentionally stays neutral (no single status to inherit
+          // from). CSS custom props avoid a class-per-status explosion.
+          const primaryStatus = group.displayStatuses?.[0];
+          const statusConfig  = primaryStatus ? STATUS_CONFIG[primaryStatus] : null;
+          const pillStyle     = statusConfig
+            ? { '--pill-color': statusConfig.color, '--pill-bg-tint': statusConfig.background }
+            : undefined;
           return (
             <button
               key={key}
               type="button"
               role="tab"
               aria-selected={active}
-              className={'cal-filter-pill' + (active ? ' on' : '')}
+              className={
+                'cal-filter-pill'
+                + (active ? ' on' : '')
+                + (statusConfig ? ' has-status-color' : '')
+              }
+              style={pillStyle}
               onClick={() => setStatusFilter(key)}
             >
+              {statusConfig && <span className="cal-filter-pill-dot" aria-hidden="true" />}
               <span>{group.label}</span>
               {count > 0 && <span className="cal-filter-pill-badge">{count}</span>}
             </button>
