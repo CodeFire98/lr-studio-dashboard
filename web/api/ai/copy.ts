@@ -48,6 +48,7 @@ import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { compileCopyGuidance } from "../../src/lib/skillRegistry.js";
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
 import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
+import { stripDashes, stripDashesStreamTransform } from "../_shared/textNormalize.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -72,24 +73,38 @@ const PLATFORM_GUIDANCE: Record<string, string> = {
     "X (Twitter) post. Punchy, single thought. Hard limit ~280 characters. No hashtags unless directly relevant. No emoji unless brand voice permits.",
 };
 
-const SYSTEM_INSTRUCTIONS_DRAFT = `You are writing a single social-media caption for a specific brand on a specific platform. Match the brand voice exactly — match the words, the rhythm, and the relationship to the audience.
+// SYSTEM_INSTRUCTIONS_* are wrapped in stripDashes() at module load so
+// the strings the model sees are themselves em-dash-free. This removes
+// in-context priming that historically pushed the model to use em-dashes
+// in its own output (the model imitates the house style it sees). The
+// runtime "no em-dashes" rule below is the explicit instruction; the
+// experimental_transform on streamText is the load-bearing enforcement
+// (see web/api/_shared/textNormalize.ts).
 
-The agency admin will give you an explicit instruction describing what this post should be about (a topic, an angle, a campaign, a hook). Follow that instruction tightly — it's the primary signal for what to write. Use the brand context for VOICE; use the admin's instruction for WHAT.
+const NO_DASHES_RULE = `Hard rule: never use em-dashes (Unicode U+2014) or en-dashes (U+2013) in your output. Use a comma, period, semicolon, regular hyphen ("-"), or rewrite the sentence instead. A server-side stream filter strips both characters before delivery, so writing them is wasted effort and leaves awkward spacing. Write naturally without them from the start. This applies especially to LinkedIn captions, where the model has historically over-used em-dashes.`;
+
+const SYSTEM_INSTRUCTIONS_DRAFT = stripDashes(`You are writing a single social-media caption for a specific brand on a specific platform. Match the brand voice exactly, match the words, the rhythm, and the relationship to the audience.
+
+${NO_DASHES_RULE}
+
+The agency admin will give you an explicit instruction describing what this post should be about (a topic, an angle, a campaign, a hook). Follow that instruction tightly, it's the primary signal for what to write. Use the brand context for VOICE; use the admin's instruction for WHAT.
 
 Output the caption text ONLY. No preamble like "Here's a draft:". No explanation. No quotes around the caption. No headers. Just the caption text, ready to paste.
 
-If the admin's instruction is empty, fall back to the post's stored concept; if that's also thin, write the best plausible caption you can rather than asking for clarification — the admin is reviewing in a preview and will edit before accepting.`;
+If the admin's instruction is empty, fall back to the post's stored concept; if that's also thin, write the best plausible caption you can rather than asking for clarification, the admin is reviewing in a preview and will edit before accepting.`);
 
-const SYSTEM_INSTRUCTIONS_IMPROVE = `You are revising an EXISTING social-media caption for a specific brand on a specific platform. You'll be given the current caption and the admin's instruction for what to change.
+const SYSTEM_INSTRUCTIONS_IMPROVE = stripDashes(`You are revising an EXISTING social-media caption for a specific brand on a specific platform. You'll be given the current caption and the admin's instruction for what to change.
+
+${NO_DASHES_RULE}
 
 Critical rules:
 - The current caption is the starting point. Preserve what works. Change ONLY what the admin asks you to change. Don't rewrite from scratch unless they explicitly ask.
 - The admin's instruction is the ONLY change directive. Don't add changes they didn't ask for ("while I'm here, let me also fix..."). Match what they asked, no more, no less.
-- Match the brand voice as established by the existing caption AND the brand context — don't drift toward a more generic tone.
+- Match the brand voice as established by the existing caption AND the brand context, don't drift toward a more generic tone.
 
 Output the revised caption text ONLY. No preamble. No explanation. No quotes. No "Here's the revised version:". Just the revised caption, ready to paste.
 
-If the admin's instruction is empty or vague, make a conservative single-pass improvement: tighten weak phrasing, fix awkward rhythm, lean further into the brand voice. Don't restructure or change the core message.`;
+If the admin's instruction is empty or vague, make a conservative single-pass improvement: tighten weak phrasing, fix awkward rhythm, lean further into the brand voice. Don't restructure or change the core message.`);
 
 type RequestBody = {
   // useCompletion sends the admin's instruction as `prompt` (always first
@@ -321,6 +336,12 @@ Output the caption text only — no preamble, no quotes. The output MUST follow 
     const result = streamText({
       model: anthropic(MODEL_ID),
       maxOutputTokens: MAX_TOKENS,
+      // Hard-strip em-dashes (U+2014) and en-dashes (U+2013) from the
+      // text-delta stream on the way to the client. Load-bearing
+      // enforcement of the NO_DASHES_RULE above. See
+      // web/api/_shared/textNormalize.ts for rationale and policy.
+      // (copy.ts has no tools, so only text-delta needs handling.)
+      experimental_transform: stripDashesStreamTransform(),
       system: systemBlocks,
       messages: [
         { role: "user", content: userMessage },

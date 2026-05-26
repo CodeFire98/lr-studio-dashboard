@@ -58,6 +58,11 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
 import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 import {
+  stripDashes,
+  stripDashesDeep,
+  stripDashesStreamTransform,
+} from "../_shared/textNormalize.js";
+import {
   convertToModelMessages,
   generateObject,
   InvalidToolInputError,
@@ -222,7 +227,11 @@ function sanitizeBrokenToolCalls(messages: UIMessage[]): UIMessage[] {
   });
 }
 
-const SYSTEM_PROMPT = `You are the LinkAI for Linkrunner Media — a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
+const SYSTEM_PROMPT = stripDashes(`You are the LinkAI for Linkrunner Media, a social-media creative agency. You help the agency admin plan content, draft post copy, and brainstorm campaigns for one brand at a time.
+
+## Hard rule: no em-dashes or en-dashes
+
+Never use em-dashes (Unicode character U+2014) or en-dashes (U+2013) in any output. Not in this chat reply, not in copy you draft via tools, not in brand notes you write. Use a comma, period, semicolon, regular hyphen ("-"), or rewrite the sentence instead. This rule is enforced server-side: a stream filter strips both characters from your output before delivery, so writing them is wasted effort and leaves awkward spacing artefacts in the user-facing result. Write naturally without them from the start. This applies to LinkedIn captions especially, where the model historically slipped them in most often.
 
 ## How to behave
 
@@ -289,7 +298,7 @@ __SKILL_MENU__
 
 - Don't publish anything. You can only create drafts.
 - Don't touch other brands. You're scoped to the active brand only.
-- Don't claim to schedule posts — you create drafts on a date; the agency owns the workflow.`.replace("__SKILL_MENU__", compileSkillMenu());
+- Don't claim to schedule posts: you create drafts on a date; the agency owns the workflow.`.replace("__SKILL_MENU__", compileSkillMenu()));
 
 // The request body carries the UIMessage[] from useChat plus our custom
 // accountId field (configured via DefaultChatTransport's body option on
@@ -596,14 +605,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // "Propose plan" button on the detail view to submit for agency
         // review. Agency callers keep 'drafting' as before — they own
         // the plan from the moment they commit.
+        // Strip em-dashes and en-dashes from every string in the input
+        // BEFORE we echo any of it. Belt-and-suspenders with the
+        // experimental_transform stream filter: that filter catches
+        // dashes on the way to the client during streaming; this catches
+        // them in the assembled-from-buffer input that gets (a) echoed
+        // back to the model as the tool result for the next reasoning
+        // step and (b) committed to post_plans.copyVariants when the
+        // admin clicks "Open plan" (commitAiDraftPlan reads input.result
+        // directly). Without this, em-dashes survive into post_plans
+        // rows even when the streaming UI showed clean output.
+        const clean = stripDashesDeep(input);
         return {
           ok: true,
           result: {
             proposed: true,
-            scheduled_at: input.scheduled_at,
-            platforms: input.platforms,
-            concept: input.concept,
-            copy_variants: input.copy_variants,
+            scheduled_at: clean.scheduled_at,
+            platforms: clean.platforms,
+            concept: clean.concept,
+            copy_variants: clean.copy_variants,
             status: callerIsAgency ? "drafting" : "brand_draft",
           },
         };
@@ -614,7 +634,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "Persist a fact about this brand to the brand_kit_notes table — the LinkAI's long-term memory layer for this brand. Use this when the admin tells you to remember something: 'remember that…', 'from now on…', 'make a note that…', 'the founder hates the word X', 'no holiday content before Oct 15'. The note becomes part of the brand context on every future AI call (chat + inline copy generation). Set is_pinned=true for ALWAYS-true facts that should ride along on every call regardless of recency; leave is_pinned=false for time-bound or campaign-specific facts that decay out of the window over time. After calling, confirm to the admin in one short sentence what you wrote down.",
       inputSchema: writeBrandNoteInput,
       execute: async (input): Promise<ToolExecResult> => {
-        const noteBody = input.body.trim();
+        // Strip em-dashes / en-dashes from the note body before it
+        // lands in brand_kit_notes. Notes are read back into the brand
+        // context on every future AI call, so an em-dash that leaks
+        // into a note would re-prime the model on every subsequent
+        // turn even after the streaming filter caught it on the way
+        // out the first time.
+        const noteBody = stripDashes(input.body).trim();
         if (!noteBody) return { ok: false, error: "body is required" };
 
         const { data, error } = await serviceClient
@@ -710,6 +736,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       maxOutputTokens: MAX_TOKENS_PER_TURN,
       stopWhen: stepCountIs(MAX_STEPS),
       tools,
+      // Hard-strip em-dashes (U+2014) and en-dashes (U+2013) from every
+      // text-delta and tool-input-delta chunk on the way to the client.
+      // This is the load-bearing enforcement of the "no em-dashes" rule
+      // stated in SYSTEM_PROMPT - Claude slips em-dashes in habitually
+      // even when explicitly told not to (heavy training signal toward
+      // them, especially on LinkedIn-tone prose), so prompt rule alone
+      // is not enough. See web/api/_shared/textNormalize.ts for the
+      // rationale and the substitution policy (both dash variants
+      // become a plain "-").
+      experimental_transform: stripDashesStreamTransform<typeof tools>(),
       // Telemetry → service_usage_log for the daily digest. Fires once
       // per request, AFTER all tool-call steps complete; `totalUsage`
       // aggregates tokens across every LLM call in the multi-step run
