@@ -4179,6 +4179,42 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--surface);
 }
 
+/* Status-pill colour treatment — each pill (except "All") inherits the
+   same tint its matching cards wear on the calendar via two custom
+   props set inline by CalendarView (--pill-color = the status's display
+   colour, --pill-bg-tint = the tinted card background). The pill stays
+   visually quiet in its idle state (just a small coloured dot in front
+   of the label, no tinted background) so the row of pills doesn't
+   shout; the active "on" state uses the tinted background + matching
+   text/border so it visibly belongs to the same family as the cards
+   below. "All" pill has no status to inherit from and keeps the
+   original ink-black active style. */
+.cal-filter-pill-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pill-color, var(--ink-4));
+  flex-shrink: 0;
+}
+.cal-filter-pill.has-status-color:hover {
+  border-color: var(--pill-color, var(--ink-4));
+}
+.cal-filter-pill.has-status-color.on {
+  background: var(--pill-bg-tint);
+  color: var(--pill-color);
+  border-color: var(--pill-color);
+}
+.cal-filter-pill.has-status-color.on .cal-filter-pill-dot {
+  /* Already on a tinted background — drop the dot so the colour story
+     is told by the pill chrome itself, not duplicated by a sub-element. */
+  display: none;
+}
+.cal-filter-pill.has-status-color.on .cal-filter-pill-badge {
+  background: var(--pill-color);
+  color: var(--surface);
+}
+
 /* Week grid — 7 columns stacked-card layout (Trello-style, not time
    grid). Sticky-ish min-width keeps each column readable on narrow
    viewports; horizontal scroll if needed. */
