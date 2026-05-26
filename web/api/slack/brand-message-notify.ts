@@ -222,13 +222,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   });
 
   // ---- Fetch enriched context ----------------------------------------
-  // Two round-trips: message+author+plan first (PostgREST embed via FK),
-  // then accounts row for the brand display name + URL slug. Brand
-  // display name + slug live on `accounts`, not `brand_kits` (brand_kits
-  // holds the design + voice profile and only references the account
-  // via `account_id`). At single-message scale the extra hop is invisible.
+  // Three small queries instead of a single embed:
+  //   1. message + author + conversation.account_id (PostgREST FK embeds)
+  //   2. accounts row for brand display name + URL slug
+  //   3. (conditional) post_plans row when tagged_post_plan_id is set
   //
-  // Query 1: message + author + tagged plan + conversation.account_id
+  // post_plans is NOT embedded here because migration 0043 dropped the
+  // FK on `conversation_messages.tagged_post_plan_id` (to let deleted
+  // plans leave an orphaned id → "Plan deleted" tombstone in the UI).
+  // Without the FK PostgREST can't resolve the embed and returns
+  // "Could not find a relationship between …" — caught during smoke
+  // test of PR #134, fixed here.
+  //
+  // Brand display name + slug live on `accounts`, not `brand_kits`
+  // (brand_kits holds the design + voice profile and only references the
+  // account via `account_id`). At single-message scale the extra hops
+  // are invisible.
+  //
+  // Query 1: message + author + conversation.account_id
   const { data: row, error: fetchErr } = await supabase
     .from("conversation_messages")
     .select(
@@ -240,8 +251,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         created_at,
         tagged_post_plan_id,
         author:profiles!conversation_messages_author_id_fkey ( display_name, is_agency ),
-        conversation:conversations!conversation_messages_conversation_id_fkey ( account_id ),
-        plan:post_plans!conversation_messages_tagged_post_plan_id_fkey ( id, title )
+        conversation:conversations!conversation_messages_conversation_id_fkey ( account_id )
       `,
     )
     .eq("id", messageId)
@@ -299,7 +309,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const planRow = (row as any).plan as { id: string; title: string | null } | null;
+  // Query 3 (conditional): tagged plan, if any. A null result here is a
+  // valid state — the plan may have been deleted after the message was
+  // posted (no FK enforces existence; see migration 0043). The Slack
+  // message just omits the plan chip in that case, mirroring the
+  // "Plan deleted" tombstone in the brand UI.
+  let planRow: { id: string; title: string | null } | null = null;
+  if (row.tagged_post_plan_id) {
+    const { data: pp, error: planErr } = await supabase
+      .from("post_plans")
+      .select("id, title")
+      .eq("id", row.tagged_post_plan_id)
+      .maybeSingle();
+    if (planErr) {
+      // Soft failure — log but don't block the Slack ping. The plan chip
+      // is a nice-to-have, not the primary signal.
+      console.warn("[slack-relay] plan fetch failed:", planErr.message);
+    } else if (pp?.id) {
+      planRow = { id: pp.id, title: pp.title };
+    }
+  }
 
   const ctx: MessageContext = {
     message_id: row.id,
