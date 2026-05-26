@@ -759,6 +759,50 @@ const LinkAIPanel = ({
     e.target.value = "";
   };
 
+  // Clipboard paste — third entry point alongside the paperclip button
+  // and drag-drop. Catches OS screenshot tools (Cmd+Shift+4 → buffer,
+  // Cmd+V here) and image-copy from other apps. Wired onto the textarea
+  // so it only fires when the composer has focus.
+  //
+  // Mixed-content paste (clipboard contains both an image AND text,
+  // e.g. copying a rich block from Slack/Notion) is treated as
+  // "image attached + text pasted into the textarea normally" — we
+  // don't preventDefault when there's also text. Image-only paste
+  // (the common screenshot path) does preventDefault to suppress the
+  // browser's no-op paste-image-into-textarea attempt.
+  //
+  // Browsers name clipboard images "image.png" generically. When
+  // multiple images get pasted in one go, all four chips would show
+  // the same label. Rename to a timestamped form so the tray reads
+  // sensibly (`pasted-2026-05-26T14-30-22.png`, etc.).
+  const onPaste = useCallback((e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imageItems = items.filter(
+      (it) => it.kind === "file" && isAcceptedMime(it.type),
+    );
+    if (imageItems.length === 0) return; // no image — let default paste behavior run
+
+    const rawFiles = imageItems.map((it) => it.getAsFile()).filter(Boolean);
+    if (rawFiles.length === 0) return;
+
+    const hasPlainText = items.some(
+      (it) => it.kind === "string" && it.type === "text/plain",
+    );
+    if (!hasPlainText) e.preventDefault();
+
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const renamed = rawFiles.map((f, i) => {
+      const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
+      const name = rawFiles.length > 1
+        ? `pasted-${ts}-${i + 1}.${ext}`
+        : `pasted-${ts}.${ext}`;
+      // The File constructor is supported in every modern browser. We
+      // keep the original blob bytes — only the name is changed.
+      return new File([f], name, { type: f.type, lastModified: f.lastModified });
+    });
+    addFiles(renamed);
+  }, [addFiles]);
+
   const formatAttachmentSize = (bytes) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -1362,6 +1406,7 @@ const LinkAIPanel = ({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={onPaste}
                 placeholder={
                   isBusy && streamingActiveConv
                     ? "Generating… type your next message"
@@ -1390,7 +1435,7 @@ const LinkAIPanel = ({
                 </button>
               )}
             </div>
-            <div className="link-ai-page-hint">⌘↩ to send · drop an image to attach</div>
+            <div className="link-ai-page-hint">⌘↩ to send · paste or drop an image to attach</div>
           </>
         ) : (
           <>
