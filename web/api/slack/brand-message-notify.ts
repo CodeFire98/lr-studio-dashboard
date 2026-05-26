@@ -114,21 +114,23 @@ function buildSlackPayload(ctx: MessageContext): object {
     ? `${APP_URL}/c/${encodeURIComponent(ctx.brand_slug)}/calendar/${ctx.plan_id}`
     : null;
 
+  // Layout: "Alt 3 — bold brand inline, no header" (see PR #137).
+  // We deliberately do NOT use a `header` block (too dominant) or an
+  // `actions` block (button blocks trigger Slack's "interactivity not
+  // configured" warning ⚠ on the bubble even for pure link buttons).
+  // Inline mrkdwn links inside a `context` block render as a single
+  // discreet footer line — no warning, no Slack-app interactivity
+  // wiring needed.
+  const brandName = sanitizeForSlackMrkdwn(ctx.brand_name);
+  const authorName = sanitizeForSlackMrkdwn(ctx.author_name);
+
   const blocks: object[] = [
-    {
-      type: "header",
-      text: {
-        type: "plain_text",
-        text: `New message from ${ctx.brand_name}`,
-        emoji: true,
-      },
-    },
     {
       type: "context",
       elements: [
         {
           type: "mrkdwn",
-          text: `*${ctx.author_name}* · ${formatIst(ctx.created_at)}`,
+          text: `*${brandName}* · ${authorName} · ${formatIst(ctx.created_at)}`,
         },
       ],
     },
@@ -153,22 +155,21 @@ function buildSlackPayload(ctx: MessageContext): object {
     });
   }
 
-  const actionElements: object[] = [
-    {
-      type: "button",
-      text: { type: "plain_text", text: "Open conversation", emoji: false },
-      url: conversationUrl,
-      style: "primary",
-    },
-  ];
+  // Footer: inline link(s). Slack mrkdwn link syntax is `<url|label>`.
+  // Multiple links join with ` · ` to match the attribution-line cadence.
+  const linkParts = [`<${conversationUrl}|Open conversation>`];
   if (planUrl) {
-    actionElements.push({
-      type: "button",
-      text: { type: "plain_text", text: "Open plan", emoji: false },
-      url: planUrl,
-    });
+    linkParts.push(`<${planUrl}|Open plan>`);
   }
-  blocks.push({ type: "actions", elements: actionElements });
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: linkParts.join(" · "),
+      },
+    ],
+  });
 
   return {
     // `text` is the fallback shown in notification previews + screen
@@ -314,11 +315,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   // posted (no FK enforces existence; see migration 0043). The Slack
   // message just omits the plan chip in that case, mirroring the
   // "Plan deleted" tombstone in the brand UI.
+  //
+  // Column is `concept` (text), not `title` — post_plans never had a
+  // `title` column (see REFERENCE.md §6 / migration 0006). Surfaces as
+  // the plan label in the Slack "On plan: …" line.
   let planRow: { id: string; title: string | null } | null = null;
   if (row.tagged_post_plan_id) {
     const { data: pp, error: planErr } = await supabase
       .from("post_plans")
-      .select("id, title")
+      .select("id, concept")
       .eq("id", row.tagged_post_plan_id)
       .maybeSingle();
     if (planErr) {
@@ -326,7 +331,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       // is a nice-to-have, not the primary signal.
       console.warn("[slack-relay] plan fetch failed:", planErr.message);
     } else if (pp?.id) {
-      planRow = { id: pp.id, title: pp.title };
+      planRow = { id: pp.id, title: pp.concept ?? null };
     }
   }
 
