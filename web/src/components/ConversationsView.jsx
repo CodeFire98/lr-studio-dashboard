@@ -427,6 +427,53 @@ function Composer({
     }
   };
 
+  // Clipboard paste — same entry-point pattern as LinkAI's composer.
+  // Catches OS screenshot tools (Cmd+Shift+4 → buffer, Cmd+V here) and
+  // image-copy from other apps. Funnels into the existing onPickFiles
+  // pipeline so the resulting attachment behaves identically to one
+  // added via the paperclip click: it appears in `pendingFiles`, gets
+  // uploaded to the post-plan-attachments Storage bucket on Send, and
+  // renders as an attachment block on the message bubble downstream.
+  //
+  // Mixed-content paste (image + plain text, e.g. rich block from
+  // Slack/Notion) lets the text paste into the textarea normally and
+  // attaches the image alongside. Image-only paste preventDefaults the
+  // browser's no-op image-into-textarea attempt.
+  //
+  // Browsers name clipboard images "image.png" generically. Multiple
+  // images in one paste would collide on that name in the tray, so
+  // images get renamed to a timestamped form. Non-image files (rare
+  // for Ctrl+V, but possible via "Copy file" from a file manager) keep
+  // their browser-provided name.
+  const onPaste = (e) => {
+    if (busy) return;
+    const items = Array.from(e.clipboardData?.items || []);
+    const fileItems = items.filter((it) => it.kind === 'file');
+    if (fileItems.length === 0) return;
+
+    const rawFiles = fileItems.map((it) => it.getAsFile()).filter(Boolean);
+    if (rawFiles.length === 0) return;
+
+    const hasPlainText = items.some(
+      (it) => it.kind === 'string' && it.type === 'text/plain',
+    );
+    if (!hasPlainText) e.preventDefault();
+
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const renamed = rawFiles.map((f, i) => {
+      // Only rename images (which the browser names generically).
+      // Non-image files copied from the OS file manager have real
+      // filenames already - preserve those.
+      if (!f.type.startsWith('image/')) return f;
+      const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      const name = rawFiles.length > 1
+        ? `pasted-${ts}-${i + 1}.${ext}`
+        : `pasted-${ts}.${ext}`;
+      return new File([f], name, { type: f.type, lastModified: f.lastModified });
+    });
+    onPickFiles?.(renamed);
+  };
+
   // Auto-grow textarea up to the CSS cap (132px = ~5 lines). After
   // that the textarea scrolls internally — the composer-wrap height
   // stays bounded so it can't push itself out of the sticky viewport.
@@ -482,6 +529,7 @@ function Composer({
           value={draft}
           onChange={(e) => onDraftChange?.(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={placeholder || 'Type a message…'}
           disabled={busy}
         />
@@ -528,7 +576,7 @@ function Composer({
           </button>
         </div>
       </div>
-      <div className="conv-composer-hint">⌘↩ to send</div>
+      <div className="conv-composer-hint">⌘↩ to send · paste images to attach</div>
     </div>
   );
 }
