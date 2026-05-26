@@ -4273,7 +4273,15 @@ function aggregateAtTime(publications, snapsByPub, asOfMs, platformFilter = null
     anyReportedViews && anyMissingViews ? 'partial' :
     anyReportedViews ? 'all' :
     null;
-  return { engagement, views, rate, rateBasis, postsCount };
+  // Avg engagement per post — brand-level KPI that works for every
+  // platform regardless of view availability. Replaces the inflated
+  // "engagement rate" rollup that the previous implementation showed
+  // (engagement-across-all-posts / views-from-some-posts), which
+  // routinely produced values >100% when LinkedIn / IG-photo
+  // engagement got divided by IG-video-only view counts. See the
+  // 2026-05-26 changelog entry for the full rationale.
+  const avgEngagementPerPost = postsCount > 0 ? engagement / postsCount : 0;
+  return { engagement, views, rate, rateBasis, postsCount, avgEngagementPerPost };
 }
 
 // Per-metric cumulative count at-or-before asOfMs. Returns null when
@@ -4303,12 +4311,6 @@ function pctChangeSummary(current, baseline) {
     return null;
   }
   return ((current - baseline) / baseline) * 100;
-}
-
-function ratePointDiff(a, b) {
-  if (a === null || a === undefined) return null;
-  if (b === null || b === undefined) return null;
-  return a - b;
 }
 
 /**
@@ -4392,17 +4394,17 @@ export async function loadEngagementSummaryForBrand(accountId, periodDays = 30) 
   const deltas = {
     vsYesterday: {
       engagement: pctChangeSummary(current.engagement, yesterday.engagement),
-      ratePoints: ratePointDiff(current.rate, yesterday.rate),
+      avgPerPost: pctChangeSummary(current.avgEngagementPerPost, yesterday.avgEngagementPerPost),
       postsCount: current.postsCount - yesterday.postsCount,
     },
     vsLastWeek: {
       engagement: pctChangeSummary(current.engagement, lastWeek.engagement),
-      ratePoints: ratePointDiff(current.rate, lastWeek.rate),
+      avgPerPost: pctChangeSummary(current.avgEngagementPerPost, lastWeek.avgEngagementPerPost),
       postsCount: current.postsCount - lastWeek.postsCount,
     },
     vsLastMonth: {
       engagement: pctChangeSummary(current.engagement, lastMonth.engagement),
-      ratePoints: ratePointDiff(current.rate, lastMonth.rate),
+      avgPerPost: pctChangeSummary(current.avgEngagementPerPost, lastMonth.avgEngagementPerPost),
       postsCount: current.postsCount - lastMonth.postsCount,
     },
   };
@@ -4419,10 +4421,10 @@ export async function loadEngagementSummaryForBrand(accountId, periodDays = 30) 
       const agg = aggregateAtTime(pubsInScope, snapsByPub, endMs);
       return { date: dateKey, value: agg.engagement };
     }),
-    rate: sparklineKeys.map((dateKey) => {
+    avgPerPost: sparklineKeys.map((dateKey) => {
       const endMs = istDayKeyToEndOfDayMs(dateKey);
       const agg = aggregateAtTime(pubsInScope, snapsByPub, endMs);
-      return { date: dateKey, value: agg.rate };
+      return { date: dateKey, value: agg.avgEngagementPerPost };
     }),
     posts: sparklineKeys.map((dateKey) => {
       const endMs = istDayKeyToEndOfDayMs(dateKey);
@@ -4475,6 +4477,7 @@ export async function loadEngagementSummaryForBrand(accountId, periodDays = 30) 
       views: current.views,
       rate: current.rate,
       rateBasis: current.rateBasis,
+      avgEngagementPerPost: current.avgEngagementPerPost,
       postsCount: current.postsCount,
     },
     deltas,

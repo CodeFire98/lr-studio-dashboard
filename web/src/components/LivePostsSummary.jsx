@@ -4,10 +4,20 @@
 
    Layout:
      - Period picker top-right (7d / 30d / 90d / All, default 30d)
-     - 3 KPI tiles: engagement / engagement rate / active posts
-       Each with a 24px sparkline + 3 deltas (yesterday / week / month)
+     - 3 KPI tiles: engagement / engagement-per-post / posts
+       Each with a 24px sparkline + 3 deltas (yesterday / week / month).
+       The middle tile was previously "Engagement rate" (a single %),
+       but at brand level the math is fundamentally broken when only
+       a subset of platforms expose view counts: numerator gets all
+       engagement, denominator gets views-from-IG-video-and-X-only,
+       producing >100% rates that misrepresent the brand. "Engagement
+       per post" works for every platform regardless of view coverage.
+       True engagement rate (as %) moved to per-platform rows where
+       the math is honest (see PlatformRow).
      - "By platform" rows: IG / LinkedIn / X — only renders platforms
-       with at least 1 publication
+       with at least 1 publication. Per-platform engagement rate chip
+       appears only when every in-scope post on that platform reports
+       view counts (rateBasis === 'all').
 
    Data: single read via loadEngagementSummaryForBrand() — see db.js
    for the math. All computation client-side from cumulative snapshots.
@@ -89,10 +99,13 @@ function formatPct(n) {
   return `${sign}${n.toFixed(0)}%`;
 }
 
-function formatRatePoints(n) {
+// Average engagement per post — a brand-level KPI that works regardless
+// of which platforms report view counts (replaced "Engagement rate" as
+// the middle KPI tile on 2026-05-26). One decimal looks natural for a
+// per-post value (e.g. "18.6"); strip the ".0" when the value is whole.
+function formatPerPost(n) {
   if (n == null || !isFinite(n)) return '—';
-  const sign = n > 0 ? '+' : '';
-  return `${sign}${n.toFixed(1)}pp`;
+  return n.toFixed(1).replace(/\.0$/, '');
 }
 
 function formatIntDelta(n) {
@@ -261,6 +274,18 @@ function PlatformRow({ platform, info }) {
     .map((m) => ({ key: m, value: info.metrics?.[m] }))
     .filter((m) => m.value != null);
 
+  // Engagement rate (true %) — render ONLY when math is honest, i.e.
+  // every in-scope publication on this platform reported view counts.
+  // rateBasis === 'all' means: 100% view-data coverage for this
+  // platform's posts in the period. Common cases:
+  //   - X:         usually 'all' (X tweets reliably expose view_count)
+  //   - IG-video:  'all' when the brand only posts Reels/videos
+  //   - IG-mixed:  'partial' when a brand posts both Reels + photos →
+  //                hide the rate to avoid the same inflation that
+  //                broke the old brand-level rate KPI
+  //   - LinkedIn:  always null (no view data ever) → no rate shown
+  const showRate = info.rateBasis === 'all' && info.rate != null;
+
   return (
     <div className="lps-platform-row">
       <div className="lps-platform-name">
@@ -280,6 +305,15 @@ function PlatformRow({ platform, info }) {
               <span className="lps-platform-metric-val">{formatCount(m.value)}</span>
             </span>
           ))
+        )}
+        {showRate && (
+          <span
+            className="lps-platform-metric lps-platform-rate"
+            title={`Engagement rate = engagement ${formatCount(info.engagement)} ÷ views ${formatCount(info.views)} × 100. Calculated only when every in-scope post on this platform reports view counts.`}
+          >
+            <span className="lps-platform-metric-icon" aria-hidden="true">📊</span>
+            <span className="lps-platform-metric-val">{formatRate(info.rate)}</span>
+          </span>
         )}
       </div>
       <div className="lps-platform-spark">
@@ -345,10 +379,12 @@ export function LivePostsSummary({ accountId }) {
       week:      trendKind(deltas.vsLastWeek.engagement, 'pct'),
       month:     trendKind(deltas.vsLastMonth.engagement, 'pct'),
     };
-    const rateKinds = {
-      yesterday: trendKind(deltas.vsYesterday.ratePoints, 'pp'),
-      week:      trendKind(deltas.vsLastWeek.ratePoints, 'pp'),
-      month:     trendKind(deltas.vsLastMonth.ratePoints, 'pp'),
+    // Per-post deltas use the same 'pct' classification as the
+    // engagement tile — both are continuous % changes, not pp deltas.
+    const perPostKinds = {
+      yesterday: trendKind(deltas.vsYesterday.avgPerPost, 'pct'),
+      week:      trendKind(deltas.vsLastWeek.avgPerPost, 'pct'),
+      month:     trendKind(deltas.vsLastMonth.avgPerPost, 'pct'),
     };
     const postsKinds = {
       yesterday: trendKind(deltas.vsYesterday.postsCount, 'int'),
@@ -366,15 +402,23 @@ export function LivePostsSummary({ accountId }) {
           { label: 'vs last month',  kind: engKinds.month,     display: formatPct(deltas.vsLastMonth.engagement) },
         ],
       },
-      rate: {
-        value: formatRate(p.rate),
-        valueAnnotation: p.rateBasis === 'partial' ? 'views from IG/X only' : null,
-        label: 'Engagement rate',
-        sparkData: sparklines?.rate || [],
+      // "Engagement per post" replaces the older "Engagement rate" KPI.
+      // The old rate rollup divided engagement-from-all-posts by
+      // views-from-IG-video-and-X-only, which routinely produced
+      // values >100% when LinkedIn / IG-photo engagement got divided
+      // by IG-video-only view counts. The new metric works for every
+      // platform regardless of view availability. True engagement rate
+      // (as a %) still appears in the "By platform" section below for
+      // platforms where the math is honest (all in-scope pubs report
+      // views).
+      avgPerPost: {
+        value: formatPerPost(p.avgEngagementPerPost),
+        label: 'Engagement per post',
+        sparkData: sparklines?.avgPerPost || [],
         deltas: [
-          { label: 'vs yesterday',  kind: rateKinds.yesterday, display: formatRatePoints(deltas.vsYesterday.ratePoints) },
-          { label: 'vs last week',  kind: rateKinds.week,      display: formatRatePoints(deltas.vsLastWeek.ratePoints) },
-          { label: 'vs last month', kind: rateKinds.month,     display: formatRatePoints(deltas.vsLastMonth.ratePoints) },
+          { label: 'vs yesterday',  kind: perPostKinds.yesterday, display: formatPct(deltas.vsYesterday.avgPerPost) },
+          { label: 'vs last week',  kind: perPostKinds.week,      display: formatPct(deltas.vsLastWeek.avgPerPost) },
+          { label: 'vs last month', kind: perPostKinds.month,     display: formatPct(deltas.vsLastMonth.avgPerPost) },
         ],
       },
       posts: {
@@ -441,7 +485,7 @@ export function LivePostsSummary({ accountId }) {
 
       <div className="lps-tiles">
         <KpiTile {...tiles.engagement} />
-        <KpiTile {...tiles.rate} />
+        <KpiTile {...tiles.avgPerPost} />
         <KpiTile {...tiles.posts} />
       </div>
 
