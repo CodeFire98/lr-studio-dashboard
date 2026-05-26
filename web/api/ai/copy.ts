@@ -48,7 +48,12 @@ import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { compileCopyGuidance } from "../../src/lib/skillRegistry.js";
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
 import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
-import { stripDashes, stripDashesStreamTransform } from "../_shared/textNormalize.js";
+import {
+  stripDashes,
+  stripDashesStreamTransform,
+  toWellFormedString,
+  isWellFormedString,
+} from "../_shared/textNormalize.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
@@ -144,8 +149,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "platform must be one of: instagram, linkedin, x" });
   }
   const mode: "draft" | "improve" = body.mode === "improve" ? "improve" : "draft";
-  const instruction = typeof body.prompt === "string" ? body.prompt.trim() : "";
-  const currentCopy = typeof body.current_copy === "string" ? body.current_copy : "";
+  const rawInstruction = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  const rawCurrentCopy = typeof body.current_copy === "string" ? body.current_copy : "";
+  // Repair any lone UTF-16 surrogates that snuck in via clipboard / storage
+  // round-trips. Anthropic's strict JSON parser rejects them with 400 "no
+  // low surrogate in string" - replacing with U+FFFD keeps the request
+  // valid. See web/api/_shared/textNormalize.ts for the full rationale.
+  const instructionWf  = isWellFormedString(rawInstruction)  ? rawInstruction  : toWellFormedString(rawInstruction);
+  const currentCopyWf  = isWellFormedString(rawCurrentCopy)  ? rawCurrentCopy  : toWellFormedString(rawCurrentCopy);
+  if (instructionWf !== rawInstruction || currentCopyWf !== rawCurrentCopy) {
+    console.warn(
+      `[copy] repaired lone surrogate(s) in input (mode=${mode}, account=${body.accountId}, plan_id=${body.plan_id})`,
+    );
+  }
+  const instruction = instructionWf;
+  const currentCopy = currentCopyWf;
   if (mode === "improve" && !currentCopy.trim()) {
     return res.status(400).json({ error: "current_copy is required for improve mode" });
   }

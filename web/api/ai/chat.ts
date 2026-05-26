@@ -61,6 +61,7 @@ import {
   stripDashes,
   stripDashesDeep,
   stripDashesStreamTransform,
+  toWellFormedDeep,
 } from "../_shared/textNormalize.js";
 import {
   convertToModelMessages,
@@ -860,9 +861,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
         },
       ],
-      // sanitizeBrokenToolCalls unblocks conversations that were poisoned
-      // by a malformed tool_use block from a turn before this fix shipped.
-      messages: await convertToModelMessages(sanitizeBrokenToolCalls(body.messages)),
+      // Two-layer message-history sanitisation before convertToModelMessages:
+      //   - sanitizeBrokenToolCalls unblocks conversations that were poisoned
+      //     by a malformed tool_use block from a turn before that fix shipped.
+      //   - toWellFormedDeep replaces any lone UTF-16 surrogates with U+FFFD
+      //     so Anthropic's strict JSON parser doesn't reject the request with
+      //     400 "no low surrogate in string" (caused by clipboard/storage
+      //     round-trips truncating mid-surrogate-pair). Without this, a
+      //     single bad-Unicode message poisons every subsequent turn until
+      //     the user starts a new chat.
+      messages: await convertToModelMessages(
+        (() => {
+          const sanitized = sanitizeBrokenToolCalls(body.messages);
+          const { value: cleaned, repaired } = toWellFormedDeep(sanitized);
+          if (repaired > 0) {
+            console.warn(
+              `[chat] repaired ${repaired} lone-surrogate string(s) in message history (account=${body.accountId})`,
+            );
+          }
+          return cleaned;
+        })(),
+      ),
     });
 
     // Pipe the AI SDK's native UIMessage stream protocol directly to the
