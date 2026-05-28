@@ -66,6 +66,7 @@ const Icon = ({ name, size = 16, stroke = 1.6, ...rest }) => {
     case "close": return (<svg {...common}><path d="M18 6 6 18M6 6l12 12"/></svg>);
     case "user": return (<svg {...common}><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>);
     case "shield": return (<svg {...common}><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3z"/></svg>);
+    case "copy": return (<svg {...common}><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg>);
     default: return (<svg {...common}><rect x="3" y="3" width="18" height="18" rx="4"/></svg>);
   }
 };

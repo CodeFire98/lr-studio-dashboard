@@ -455,24 +455,13 @@ function Composer({
     if (autoFocus) textareaRef.current?.focus();
   }, [autoFocus]);
 
-  // Send-key behaviour forks on input device:
-  // - Desktop (mouse + keyboard): ⌘↩ / Ctrl+Enter sends, Enter inserts
-  //   a newline. Preserves the long-form-draft pattern power users rely
-  //   on; accidental sends would be painful here.
-  // - Coarse-pointer (phone, tablet, touch laptop): Enter sends,
-  //   Shift+Enter inserts a newline. Matches WhatsApp web, Slack mobile,
-  //   iMessage — the de facto messaging-app convention. Mobile keyboards
-  //   don't surface Cmd/Ctrl, so the ⌘↩ rule alone leaves the iOS
-  //   "return" key doing nothing useful.
-  const isCoarsePointer = useCoarsePointer();
+  // Send-key behaviour: ⌘↩ / Ctrl+Enter sends, Enter inserts a newline,
+  // everywhere. The dedicated Send button is the only submit affordance
+  // on mobile (since mobile keyboards don't have Cmd/Ctrl), which is
+  // what users actually expect from a messaging composer — Enter on
+  // touch should never accidentally send a half-typed message.
   const onKeyDown = (e) => {
     if (e.key !== 'Enter') return;
-    if (isCoarsePointer) {
-      if (e.shiftKey) return; // intentional newline
-      e.preventDefault();
-      if (canSend) onSubmit?.();
-      return;
-    }
     if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       if (canSend) onSubmit?.();
