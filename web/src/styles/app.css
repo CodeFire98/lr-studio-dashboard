@@ -2408,6 +2408,22 @@ input, textarea { font: inherit; color: inherit; }
     width: 260px;
   }
 }
+@media (max-width: 640px) {
+  /* On phone the sidebar is a full off-canvas drawer (min(82vw, 320px))
+     — not a 64px rail. The 980px rule above floats the menu to the
+     RIGHT of the user pill, which lands outside the drawer in the
+     dimmed scrim area (the user couldn't tap inside it without the
+     scrim catching the tap first). Revert to the default "above the
+     pill" position, sized to the drawer's full inner width. */
+  .user-menu {
+    left: 8px;
+    right: 8px;
+    bottom: calc(100% + 6px);
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+}
 @keyframes userMenuIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
