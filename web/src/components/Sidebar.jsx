@@ -101,9 +101,39 @@ const Sidebar = ({
   isAllClientsMode,
   onSelectBrand,
   onCreateBrand,
+  // Mobile drawer props — default to behavior-preserving values so any
+  // call site that doesn't pass them renders exactly as before. The
+  // off-canvas pattern only kicks in at the 980px breakpoint where the
+  // sidebar gets `transform: translateX(-100%)` by default; `.is-open`
+  // flips it back. On desktop the transform is unset, so isOpen is
+  // a no-op visually.
+  isOpen = false,
+  onClose,
 }) => {
   const isGuest = !auth;
   const isAgency = !!auth?.isAgency;
+
+  // Escape closes the drawer on mobile. No-op on desktop because the
+  // sidebar isn't transformable there. We only mount the handler when
+  // open so we don't fight any other escape consumers (modals, etc.).
+  useEffect(() => {
+    if (!isOpen || !onClose) return;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
+  // Wrap any nav-item click on mobile with onClose so the drawer auto-
+  // dismisses after a tap. setRoute already navigates; we just chain
+  // close. This is the smaller, more localized version of the
+  // "auto-close on route change" effect inside App.jsx — that effect
+  // is the authoritative one, this just adds snappy feedback so the
+  // drawer slides shut the instant a nav-item is tapped instead of
+  // after the next render.
+  const handleNavClick = (key) => {
+    setRoute({ view: key });
+    if (onClose) onClose();
+  };
 
   // Pick the right nav config for the current context.
   const navConfig = (() => {
@@ -148,7 +178,33 @@ const Sidebar = ({
     : (auth?.account?.name || (auth?.email ? auth.email : ""));
 
   return (
-    <aside className="sidebar" data-guest={isGuest ? "true" : "false"}>
+    <>
+      {/* Scrim sits as a sibling of the sidebar so a tap outside the
+          drawer dismisses it. Only visible at mobile breakpoints when
+          isOpen is true — CSS controls visibility via `.is-open`. */}
+      <div
+        className={'sidebar-scrim' + (isOpen ? ' is-open' : '')}
+        onClick={onClose}
+        aria-hidden="true"
+      />
+    <aside
+      className={'sidebar' + (isOpen ? ' is-open' : '')}
+      data-guest={isGuest ? "true" : "false"}
+      aria-hidden={isOpen ? undefined : undefined /* purely visual on desktop */}
+    >
+      {/* Close button shown only in the mobile drawer — desktop hides it
+          via CSS. Gives a tappable affordance inside the drawer so users
+          aren't reliant on the scrim or the hamburger to dismiss. */}
+      {onClose && (
+        <button
+          type="button"
+          className="sidebar-drawer-close"
+          onClick={onClose}
+          aria-label="Close menu"
+        >
+          <Icon name="x" size={18} />
+        </button>
+      )}
       <div className="sidebar-brand">
         <span className="dot" />
         <span>Linkrunner</span>
@@ -176,7 +232,7 @@ const Sidebar = ({
             <button
               key={n.key}
               className={"nav-item " + (route.view === n.key ? "active" : "")}
-              onClick={() => setRoute({ view: n.key })}
+              onClick={() => handleNavClick(n.key)}
             >
               <Icon name={n.icon} size={16} />
               <span>{n.label}</span>
@@ -208,7 +264,7 @@ const Sidebar = ({
             <button
               key={n.key}
               className={"nav-item " + (route.view === n.key ? "active" : "")}
-              onClick={() => setRoute({ view: n.key })}
+              onClick={() => handleNavClick(n.key)}
             >
               <Icon name={n.icon} size={16} />
               <span>{n.label}</span>
@@ -299,6 +355,7 @@ const Sidebar = ({
         </div>
       )}
     </aside>
+    </>
   );
 };
 
