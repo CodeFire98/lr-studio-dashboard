@@ -5621,8 +5621,14 @@ input, textarea { font: inherit; color: inherit; }
   .link-ai-header-spacer { flex: 1; }
 }
 
-/* Desktop hides the mobile header and the scrim by default. */
-.link-ai-header--mobile { display: none; }
+/* Desktop scrim hidden by default — only visible at mobile breakpoints
+   when the history sheet is open (handled inside the @media block). The
+   .link-ai-header--mobile default-hidden rule USED to live here too,
+   but its single-class specificity tied with the @media block's same
+   selector — and being written AFTER, it always won the cascade, so
+   the mobile header was permanently invisible. Moved into the
+   @media (min-width: 641px) block below where it correctly applies
+   only at desktop widths. */
 .link-ai-history-scrim {
   display: none;
   position: fixed;
@@ -5632,6 +5638,9 @@ input, textarea { font: inherit; color: inherit; }
   opacity: 0;
   pointer-events: none;
   transition: opacity 200ms var(--ease-out);
+}
+@media (min-width: 641px) {
+  .link-ai-header--mobile { display: none; }
 }
 
 /* Page-variant composer: textarea + Send on one row (no full-width
@@ -7819,22 +7828,17 @@ input, textarea { font: inherit; color: inherit; }
 
   /* ----- Brand Intelligence (BrandKitView) ----- */
   /* BrandKitView uses many inline `grid-template-columns: 1fr 1fr`,
-     `180px 1fr`, `repeat(3, 1fr)` etc. on its section grids. Too many
-     to className-ify individually. Collapse every such inline-styled
-     grid inside any `.card` to a single column on phone via attribute
-     selector + !important (only way to beat inline styles). Targets
-     ONLY elements that set `grid-template-columns` in their inline
-     style — `display: grid; place-items: center` style centering
-     blocks are untouched. */
-  .view .card [style*="grid-template-columns"] {
+     `180px 1fr`, `repeat(3, 1fr)` etc. — some are INSIDE `.card`
+     children (`.card`'s section internals), but the Visual System
+     wrapper that holds the Palette + Typography cards is INLINE-grid
+     itself, ABOVE both cards. Scoping to `.view` (not `.view .card`)
+     catches both layers. Excludes `.cal-week-grid` which has its own
+     mobile path via JS forcing list mode. `display: grid; place-
+     items: center` blocks are untouched (selector matches only
+     `grid-template-columns` inline style). */
+  .view [style*="grid-template-columns"]:not(.cal-week-grid) {
     grid-template-columns: 1fr !important;
     gap: 12px !important;
-  }
-  /* The Logo & marks card has a `repeat(3, 1fr)` variant strip that
-     becomes acceptable at 2 columns on phone (still scannable, doesn't
-     waste vertical). */
-  .view .card .kit-variants[style*="grid-template-columns"] {
-    grid-template-columns: repeat(2, 1fr) !important;
   }
 }
 
