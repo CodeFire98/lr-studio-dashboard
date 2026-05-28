@@ -450,6 +450,13 @@ function Composer({
 }) {
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  // Separate input with `capture="environment"` triggers the device
+  // camera directly on mobile (rear-facing). The default paperclip
+  // input still opens the photo library. Camera button only rendered
+  // on coarse-pointer devices since desktop has no camera in this
+  // context. Same pattern shipped to IdeateView in PR 2.
+  const cameraInputRef = useRef(null);
+  const isCoarsePointer = useCoarsePointer();
 
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
@@ -585,6 +592,16 @@ function Composer({
             onChange={onFileInputChange}
             accept="image/*,video/*,application/pdf,application/zip,application/x-zip-compressed,text/*"
           />
+          {isCoarsePointer && (
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={(e) => { onFileInputChange(e); if (e.target) e.target.value = ''; }}
+            />
+          )}
           <button
             type="button"
             className="conv-composer-icon-btn"
@@ -595,6 +612,18 @@ function Composer({
           >
             <Icon name="paperclip" size={16} />
           </button>
+          {isCoarsePointer && (
+            <button
+              type="button"
+              className="conv-composer-icon-btn"
+              onClick={() => cameraInputRef.current?.click()}
+              title="Take a photo"
+              aria-label="Take a photo"
+              disabled={busy}
+            >
+              <Icon name="aperture" size={16} />
+            </button>
+          )}
           {showTagAffordance && (
             <button
               type="button"

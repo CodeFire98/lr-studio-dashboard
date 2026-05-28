@@ -885,11 +885,19 @@ const AttachmentsCard = ({
   isAgency = false,
 }) => {
   const inputRef = useRef(null);
+  // Separate camera-capture input — rear-facing on mobile, opens
+  // native camera directly. Lets agency staff at a shoot snap a
+  // deliverable photo without going through the library round-trip,
+  // and lets brand users attach a fresh reference photo on the go.
+  // Coarse-pointer gated since desktop has no camera in this context.
+  const cameraRef = useRef(null);
+  const isCoarsePointer = useCoarsePointer();
   const onPick = () => inputRef.current?.click();
+  const onPickCamera = () => cameraRef.current?.click();
   const onChange = (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length) onUpload(files);
-    if (inputRef.current) inputRef.current.value = '';
+    if (e.target) e.target.value = '';
   };
   return (
     <div className="card">
@@ -899,25 +907,51 @@ const AttachmentsCard = ({
           <div className="card-sub">{subtitle}</div>
         </div>
         {canUpload && (
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={onPick}
-            disabled={uploading}
-          >
-            <Icon name="upload" size={13}/>{uploading ? 'Uploading…' : 'Upload'}
-          </button>
+          <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={onPick}
+              disabled={uploading}
+            >
+              <Icon name="upload" size={13}/>{uploading ? 'Uploading…' : 'Upload'}
+            </button>
+            {isCoarsePointer && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={onPickCamera}
+                disabled={uploading}
+                aria-label="Take a photo"
+                title="Take a photo"
+              >
+                <Icon name="aperture" size={13}/>
+              </button>
+            )}
+          </div>
         )}
       </div>
       <div style={{ padding: '0 16px 16px' }}>
         {canUpload && (
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            onChange={onChange}
-            style={{ display: 'none' }}
-          />
+          <>
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              onChange={onChange}
+              style={{ display: 'none' }}
+            />
+            {isCoarsePointer && (
+              <input
+                ref={cameraRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={onChange}
+                style={{ display: 'none' }}
+              />
+            )}
+          </>
         )}
         {items.length === 0 ? (
           <div className="empty" style={{ padding: 20, color: 'var(--ink-4)', fontSize: 13 }}>

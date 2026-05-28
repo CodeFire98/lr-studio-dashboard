@@ -5664,6 +5664,49 @@ input, textarea { font: inherit; color: inherit; }
   pointer-events: none;
   transition: opacity 200ms var(--ease-out);
 }
+
+/* ---------- Suppress sticky-hover transform lifts on touch ---------- */
+/* iOS Safari keeps `:hover` styles applied after a tap until the user
+   taps elsewhere. Transform-based lifts (`translateY(-1px)` on cards,
+   `scale(1.08)` on swatches) end up visually frozen in the lifted
+   state — looks like the card is permanently hovering, then snaps
+   back unexpectedly on the next tap. Color/background hover swaps
+   don't have this problem because they reset on the next interaction
+   without leaving a visible artifact.
+
+   The five known transform-lift offenders are listed explicitly here
+   so we're not nuking *all* hover effects on touch (some are
+   intentional). If a new transform-on-hover gets added, add it to
+   this list too. */
+@media (hover: none) and (pointer: coarse) {
+  .project-card:hover,
+  .lib-tile:hover,
+  .pf-swatch:hover,
+  .sidebar-login-btn:hover,
+  .cal-week-card:hover {
+    transform: none;
+  }
+}
+
+/* ---------- Hide ⌘↩/drag-drop hints on touch ---------- */
+/* The composer hints mention "⌘↩ to send" + "paste / drop image to
+   attach" — both are desktop-only affordances. On touch keyboards
+   neither makes sense; the hint reads as broken instructions. Hide
+   the entire hint row on coarse-pointer. The visible Send button +
+   paperclip + camera (PR 3) are sufficient affordances on mobile. */
+@media (hover: none) and (pointer: coarse) {
+  .conv-composer-hint,
+  .link-ai-page-hint,
+  .link-ai-hint {
+    display: none;
+  }
+  /* Keyboard-shortcut labels in user menu / context menus (⌘⇧L,
+     ⌘↩, Esc, etc.) don't apply on touch — mobile keyboards have
+     no Cmd/Shift modifiers. Hide them so the menu rows don't show
+     a misleading suggestion that no shortcut exists for. */
+  .kbd-hint { display: none; }
+}
+
 /* Explicit close (×) button on the chat history rail — mobile-only.
    The user couldn't discover scrim-tap dismissal in real-device
    testing — a visible × in the rail's top-right anchors the
