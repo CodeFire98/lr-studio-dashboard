@@ -196,6 +196,7 @@ html {
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg);
   color: var(--ink);
   overflow-x: hidden;
@@ -212,6 +213,7 @@ input, textarea { font: inherit; color: inherit; }
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .main {
@@ -243,6 +245,7 @@ input, textarea { font: inherit; color: inherit; }
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   z-index: 30;
 }
 .sidebar-brand {
@@ -611,6 +614,7 @@ input, textarea { font: inherit; color: inherit; }
 .home-stage {
   position: relative;
   min-height: calc(100vh - 60px);
+  min-height: calc(100dvh - 60px);
   display: flex;
   flex-direction: column;
   padding: var(--space-16) var(--space-10) var(--space-16);
@@ -2109,11 +2113,12 @@ input, textarea { font: inherit; color: inherit; }
    ========================================================= */
 
 /* ----- Login / auth shell ----- */
-.auth-root { display: block; min-height: 100vh; background: var(--bg); }
+.auth-root { display: block; min-height: 100vh; min-height: 100dvh; background: var(--bg); }
 .auth-shell {
   display: grid;
   grid-template-columns: 1.05fr 1fr;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .auth-aside {
   position: relative;
@@ -2837,6 +2842,7 @@ input, textarea { font: inherit; color: inherit; }
 .onboarding-modal {
   max-width: 580px;
   max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
   display: flex;
   flex-direction: column;
 }
@@ -3944,6 +3950,7 @@ input, textarea { font: inherit; color: inherit; }
   flex-direction: column;
   gap: 6px;
   max-height: calc(100vh - 260px);
+  max-height: calc(100dvh - 260px);
   overflow-y: auto;
 }
 .inbox-row {
@@ -5083,7 +5090,9 @@ input, textarea { font: inherit; color: inherit; }
    while the user is on /calendar etc. */
 .main:has(.linkai-page.is-active) {
   height: 100vh;
+  height: 100dvh;
   max-height: 100vh;
+  max-height: 100dvh;
   min-height: 0;
   overflow: hidden;
   padding: 0;
@@ -7027,7 +7036,9 @@ input, textarea { font: inherit; color: inherit; }
    actual scrolling container. */
 .main:has(.conv-wrap) {
   height: 100vh;
+  height: 100dvh;
   max-height: 100vh;
+  max-height: 100dvh;
   min-height: 0;
   overflow: hidden;
   padding: 0;
@@ -7362,4 +7373,211 @@ input, textarea { font: inherit; color: inherit; }
   font-size: 13px;
   color: var(--ink-3);
   font-style: italic;
+}
+
+/* =========================================================================
+   Mobile shell — PR 1 of the phased rollout (2026-05-28)
+
+   Everything below this line is *additive* to the desktop CSS above. The
+   strategy is: keep the existing desktop selectors byte-stable, and layer
+   mobile behaviour through media queries that desktop browsers never
+   evaluate (or evaluate to no-ops).
+
+   Three breakpoints in play:
+     - 980px (existing): collapses the sidebar icon rail. We extend it
+       here so the rail no longer exists at all — instead a hamburger
+       in the topbar opens an off-canvas drawer.
+     - 640px (new): single-column phone layout. Sheet modals slide up
+       from the bottom; safe-area envs apply to topbar + sidebar.
+     - (hover: none) and (pointer: coarse): touch-device retrofits.
+       Larger tap targets, no hover-only reveals. Independent of
+       viewport width so a touch laptop above 980px still gets the
+       ergonomic minimums.
+
+   See §15 Mobile UX in REFERENCE.md for the full pattern doc.
+   ========================================================================= */
+
+/* Hamburger button — lives at the start of .topbar in the JSX. Default
+   state is hidden on desktop; the 980px media query reveals it. */
+.topbar-hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-right: var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--ink-2);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.topbar-hamburger:hover { background: var(--surface-2); color: var(--ink); }
+.topbar-hamburger:active { background: var(--surface-3, var(--surface-2)); }
+
+/* Scrim + drawer-close button — both invisible on desktop. */
+.sidebar-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(23, 23, 26, 0.42);
+  backdrop-filter: blur(2px);
+  z-index: 90;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease-out);
+}
+.sidebar-drawer-close {
+  display: none;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--ink-3);
+  background: transparent;
+  cursor: pointer;
+  z-index: 2;
+}
+.sidebar-drawer-close:hover { background: var(--surface-2); color: var(--ink); }
+
+/* ---------- 980px: hamburger + off-canvas drawer ---------- */
+@media (max-width: 980px) {
+  /* The desktop 64px-rail behaviour from the existing 980px block (line
+     2097) still applies because that block comes first and we don't
+     override the grid-template-columns here — except we DO, see below.
+     Critical: we collapse the grid to single-column so the main content
+     gets the full viewport width, and we lift the sidebar OUT of the
+     grid via position: fixed. */
+  .app { grid-template-columns: 1fr; }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: min(86vw, 320px);
+    height: 100vh;
+    height: 100dvh;
+    transform: translateX(-100%);
+    transition: transform 220ms var(--ease-out);
+    z-index: 100;
+    /* Restore everything the existing 980px rule hid — we're no longer
+       a 64px icon rail at this breakpoint, we're a full drawer. */
+    padding: calc(var(--space-5) + env(safe-area-inset-top)) var(--space-4) calc(var(--space-5) + env(safe-area-inset-bottom));
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sidebar.is-open { transform: translateX(0); }
+
+  /* Override the existing 980px hide-rules — we want full text + brand
+     wordmark + user info inside the drawer, since this is no longer a
+     compact rail. The selectors below mirror those at line 2099, but
+     re-show them. */
+  .sidebar .nav-item span,
+  .sidebar .sidebar-brand span:not(.dot),
+  .sidebar .sidebar-user .who,
+  .sidebar .nav-section-label { display: inline; }
+  .sidebar .sidebar-brand .wordmark-tail { display: inline; }
+
+  .sidebar-scrim { display: block; }
+  .sidebar-scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar-drawer-close { display: inline-flex; }
+
+  /* Show the hamburger inside the topbar. */
+  .topbar-hamburger { display: inline-flex; }
+
+  /* Safe-area + slightly tighter spacing on the topbar so the iOS
+     status bar doesn't overlap the crumb. */
+  .topbar {
+    padding-top: calc(var(--space-4) + env(safe-area-inset-top));
+    padding-left: calc(var(--space-5) + env(safe-area-inset-left));
+    padding-right: calc(var(--space-5) + env(safe-area-inset-right));
+  }
+}
+
+/* ---------- 640px: phone-shape content + sheet modals ---------- */
+@media (max-width: 640px) {
+  /* Content padding crunch — desktop padding leaves no room for content
+     on a 360px-wide viewport. */
+  .view {
+    padding: var(--space-5) var(--space-4) calc(var(--space-12) + env(safe-area-inset-bottom));
+  }
+
+  /* The crumb collapses to its strong label only; intermediate
+     breadcrumbs would line-break ugly. */
+  .topbar { padding-left: calc(var(--space-3) + env(safe-area-inset-left)); padding-right: calc(var(--space-3) + env(safe-area-inset-right)); gap: var(--space-2); }
+  .topbar .crumb { font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-right { gap: var(--space-2); }
+
+  /* ----- Generic modal -> bottom sheet ----- */
+  .modal-scrim {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - var(--space-6));
+    overflow-y: auto;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    padding: var(--space-6) var(--space-5) calc(var(--space-6) + env(safe-area-inset-bottom));
+    animation: sheetSlideUp 240ms var(--ease-out);
+  }
+  @keyframes sheetSlideUp {
+    from { transform: translateY(24px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+  }
+
+  /* ----- Login modal + onboarding modal -> bottom sheet ----- */
+  .login-modal-backdrop {
+    padding: 0;
+    align-items: end;
+  }
+  .login-modal {
+    max-width: 100%;
+    width: 100%;
+    max-height: calc(100dvh - var(--space-4));
+    overflow-y: auto;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    animation: sheetSlideUp 240ms var(--ease-out);
+  }
+  .onboarding-modal {
+    max-width: 100%;
+    max-height: calc(100dvh - var(--space-4));
+  }
+}
+
+/* ---------- Coarse-pointer (touch) ergonomics ---------- */
+/* Independent of viewport width — a touch laptop above 980px still
+   benefits from larger tap targets and no hover-reveals.
+
+   Scope is tight: 44px floor on actual button-like elements, with
+   surgical opt-outs added in PR 3 for dense rows that break. We
+   deliberately DON'T set min-height on text inputs (they already
+   look fine) or generic .btn-sm (some chips are intentionally
+   smaller). The list below is what was load-bearing in PR 1's QA. */
+@media (hover: none) and (pointer: coarse) {
+  /* Suppress the 300ms tap delay + double-tap zoom on interactive
+     elements. */
+  button, [role="button"], a.btn, .nav-item, .topbar-hamburger {
+    touch-action: manipulation;
+  }
+  /* No native tap-highlight overlay — we have our own :active states. */
+  html { -webkit-tap-highlight-color: transparent; }
+
+  /* Floor tap targets at 44px for the primary action buttons. The
+     sidebar nav-items, hamburger, drawer-close, and topbar action
+     buttons need to be comfortable for thumbs. */
+  .topbar-hamburger,
+  .sidebar-drawer-close { min-width: 44px; min-height: 44px; }
+  .sidebar .nav-item { min-height: 44px; }
 }

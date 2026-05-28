@@ -38,6 +38,7 @@ import { BrandOnboardingModal } from './components/BrandOnboardingModal.jsx';
 import { ConfirmHost } from './components/ConfirmDialog.jsx';
 import { CreateBrandHost } from './components/CreateBrandModal.jsx';
 import MOCK from './lib/mockData.js';
+import { useCoarsePointer } from './lib/useCoarsePointer.ts';
 import { readAuth, writeAuth, setActiveBrand, signOut } from './lib/auth.js';
 import {
   acceptInvitation,
@@ -183,6 +184,18 @@ const App = () => {
   const [tweaks, setTweaks] = useTweaks();
   const [tweaksOpen, setTweaksOpen] = useState(false);
   const [linkAiOpen, setLinkAiOpen] = useState(false);
+  // Mobile off-canvas sidebar drawer state. Always false on desktop —
+  // the drawer mode only kicks in at the 980px breakpoint where CSS
+  // sets the sidebar to `transform: translateX(-100%)` by default. On
+  // desktop this state never affects layout (the sidebar isn't
+  // transformable above 980px) so it's safe to keep it always-mounted.
+  const [navOpen, setNavOpen] = useState(false);
+  // Single source of truth for coarse-pointer (touch) detection. Used
+  // here to fork the topbar LinkAI button between drawer (desktop) and
+  // page-route (mobile) and pass downstream to composers for the
+  // Enter-sends behaviour swap. Returns false on every desktop browser,
+  // so behaviour above 980px is identical to today.
+  const isCoarsePointer = useCoarsePointer();
   const [auth, setAuth] = useState(() => readAuth());
   const [mode, setMode] = useState(() => localStorage.getItem("lr_mode") || "customer");
   // Agency users navigate via a brand picker that scopes every surface to
@@ -217,6 +230,27 @@ const App = () => {
     if (navigationType === 'POP') return;
     window.scrollTo(0, 0);
   }, [location.pathname, navigationType]);
+
+  // Auto-close the mobile drawer whenever the route changes — covers
+  // every entry point (nav-item taps inside the drawer, deep links,
+  // back/forward, programmatic navigation). The drawer itself also
+  // closes optimistically on nav-item click for snappier UX; this is
+  // the authoritative fallback.
+  useEffect(() => {
+    setNavOpen(false);
+  }, [location.pathname]);
+
+  // Lock body scroll while the mobile drawer is open. Without this,
+  // touch-dragging on the scrim scrolls the underlying page instead
+  // of being absorbed by the overlay — classic mobile bug. Restored
+  // on cleanup so closing the drawer (or remounting) doesn't strand
+  // the body in a locked state.
+  useEffect(() => {
+    if (!navOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [navOpen]);
 
   // Resolve the current brand slug for URL generation. Priority:
   // 1. The slug already in the URL (route.brandSlug)
@@ -1204,6 +1238,8 @@ const App = () => {
         isAllClientsMode={isAllClientsMode}
         onSelectBrand={handleSelectBrand}
         onCreateBrand={handleCreateBrand}
+        isOpen={navOpen}
+        onClose={() => setNavOpen(false)}
       />
       <div className="main">
         {inviteBanner && (
@@ -1229,6 +1265,19 @@ const App = () => {
           </div>
         )}
         <div className="topbar">
+          {/* Hamburger — hidden via CSS above the 980px breakpoint, so
+              desktop users never see it. On mobile it toggles the
+              off-canvas sidebar drawer. */}
+          <button
+            type="button"
+            className="topbar-hamburger"
+            onClick={() => setNavOpen((v) => !v)}
+            aria-label={navOpen ? "Close menu" : "Open menu"}
+            aria-expanded={navOpen}
+            aria-controls="lr-sidebar"
+          >
+            <Icon name="list" size={18} />
+          </button>
           <div className="crumb">{crumb}</div>
           <div className="topbar-right">
             {showGotIdeasCta && (
@@ -1239,7 +1288,19 @@ const App = () => {
             {linkAiEligible && (
               <button
                 className={"btn btn-sm link-ai-trigger " + (linkAiOpen ? "is-open" : "")}
-                onClick={() => setLinkAiOpen((v) => !v)}
+                onClick={() => {
+                  // On coarse-pointer devices there's no room for the
+                  // right-side drawer alongside content — route to the
+                  // persistent page-variant mount below instead. The
+                  // drawer JSX further down is suppressed via the same
+                  // gate so it never appears on mobile.
+                  if (isCoarsePointer) {
+                    setLinkAiOpen(false);
+                    setRoute({ view: "linkai" });
+                    return;
+                  }
+                  setLinkAiOpen((v) => !v);
+                }}
                 title={linkAiOpen ? "Hide LinkAI" : "Open LinkAI"}
                 aria-pressed={linkAiOpen}
               >
@@ -1302,11 +1363,14 @@ const App = () => {
           </div>
         )}
       </div>
-      {linkAiEligible && linkAiOpen && (
+      {linkAiEligible && linkAiOpen && !isCoarsePointer && (
         <Suspense fallback={null}>
           {/* `key={scopeAccountId}` — same brand-switch-safety reasoning as
               the page-variant mount above. The drawer is open-on-demand so
-              remount cost is even lower here. */}
+              remount cost is even lower here. On coarse-pointer devices we
+              suppress this mount entirely — there's no room for an overlay
+              drawer alongside content; the topbar trigger routes to the
+              page-variant mount above instead. */}
           <LinkAIPanel
             key={scopeAccountId}
             accountId={scopeAccountId}

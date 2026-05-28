@@ -3,9 +3,31 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-26 (**Supabase: adopt explicit-GRANT convention for new public-schema tables ahead of the 2026-10-30 platform default flip.** Supabase emailed announcing that on 2026-10-30 existing projects (us) will start enforcing a security-first default for the Data API: new public-schema tables created from that date will NOT be exposed to the Data API unless an explicit `GRANT ... ON public.foo TO authenticated` is added in the migration. Tables that exist on Oct 30 are grandfathered and unaffected — all 61 current migrations + every table they create stay working forever with zero changes. Production is safe today and stays safe. The only impact is on future migrations: any new public-schema table that needs client-side query access must include the GRANT alongside the RLS-enable + policies, or `supabase.from('foo')...` will silently fail with a PostgREST "relation does not exist" error. Adopting the convention NOW (5 months ahead of the cutoff) so we don't have to remember the date later — every migration written from this point on includes the GRANT. Service-role-only tables (telemetry / audit / scraper-write paths — see `service_usage_log`, `daily_digest_log`, `slack_notify_log` for the pattern) skip the GRANT since service_role bypasses Data API restrictions. Pure doc + convention change — no code, no migration, no env-var work. Action item for the user: optionally run Supabase dashboard → Database → Security Advisor once before Oct 30 to audit which tables are currently exposed (RLS should already restrict appropriately, but worth eyeballing). Sections touched: Recent changes log; `Last updated`; §6 Data model > Migrations (new "Convention going forward" subsection documenting the GRANT pattern + template).)
+**Last updated:** 2026-05-28 (**Mobile shell — PR 1 of the phased mobile rollout.** The dashboard is now navigable on phones + tablets. Off-canvas sidebar drawer triggered by a new hamburger in `.topbar`, full-screen sheet modals at ≤640px, `100vh` → `100dvh` dual-value swaps at nine sites for iOS Safari, `viewport-fit=cover` so safe-area envs populate, `useCoarsePointer()` hook for touch-detection. Strategy is *additive*: every change is layered through new media-query blocks and `if (isCoarsePointer) { … }` branches that return false on desktop, so desktop layout above 980px stays byte-stable. New §15 Mobile UX section documents the breakpoint scheme, drawer pattern, and PR 2-4 roadmap. Verified by resizing the dev server through desktop (1440px), tablet (820px), and phone (375px) viewports — desktop sidebar still 232px sticky; tablet/phone shows hamburger that opens the drawer with scrim + body-scroll-lock; LoginModal slides up from the bottom as a sheet at 375px. Zero console errors across all viewports.)
+
+**Previous update:** 2026-05-26 (**Supabase: adopt explicit-GRANT convention for new public-schema tables ahead of the 2026-10-30 platform default flip.** Supabase emailed announcing that on 2026-10-30 existing projects (us) will start enforcing a security-first default for the Data API: new public-schema tables created from that date will NOT be exposed to the Data API unless an explicit `GRANT ... ON public.foo TO authenticated` is added in the migration. Tables that exist on Oct 30 are grandfathered and unaffected — all 61 current migrations + every table they create stay working forever with zero changes. Production is safe today and stays safe. The only impact is on future migrations: any new public-schema table that needs client-side query access must include the GRANT alongside the RLS-enable + policies, or `supabase.from('foo')...` will silently fail with a PostgREST "relation does not exist" error. Adopting the convention NOW (5 months ahead of the cutoff) so we don't have to remember the date later — every migration written from this point on includes the GRANT. Service-role-only tables (telemetry / audit / scraper-write paths — see `service_usage_log`, `daily_digest_log`, `slack_notify_log` for the pattern) skip the GRANT since service_role bypasses Data API restrictions. Pure doc + convention change — no code, no migration, no env-var work. Action item for the user: optionally run Supabase dashboard → Database → Security Advisor once before Oct 30 to audit which tables are currently exposed (RLS should already restrict appropriately, but worth eyeballing). Sections touched: Recent changes log; `Last updated`; §6 Data model > Migrations (new "Convention going forward" subsection documenting the GRANT pattern + template).)
 
 ## Recent changes log
+
+### 2026-05-28 — Mobile shell — PR 1: off-canvas drawer, sheet modals, safe-area, useCoarsePointer hook
+
+**Mobile shell — PR 1 of the phased mobile rollout.** First slice of the mobile work. Goal of this PR: every screen navigable on a phone, modals usable, LinkAI reachable, with desktop layout above 980px byte-stable. The next PRs build on this foundation with per-surface mobile layouts (PR 2 — CalendarView agenda mode, PostPlanDetailView per-platform tab snap-scroll, ConversationsView visible-`…`-menu replacing right-click, LinkAIPanel top-sheet history rail + bottom-sheet artifact pane, camera capture on IdeateView), touch-pattern retrofits (PR 3 — Enter-sends-on-mobile composers, hover-rule guards), and polish (PR 4 — bottom-sheet drag-to-dismiss, iOS PWA meta, landscape).
+
+**Design principle: additive only.** Every change is layered through new media-query blocks and `useCoarsePointer()` branches that return `false` on desktop. Desktop selectors (`.sidebar`, `.topbar`, `.modal-scrim`, `.app`) keep their pre-PR declarations. The one exception is the `100vh` → `100dvh` dual-value swap at nine sites — `100vh` stays as the desktop fallback for browsers that don't understand `100dvh`, so the cost is zero. JSX changes are prop additions with behaviour-preserving defaults (`isOpen = false`, `onClose` undefined).
+
+**Files added:**
+- [web/src/lib/useCoarsePointer.ts](web/src/lib/useCoarsePointer.ts) (new, ~30 LOC) — `matchMedia('(hover: none) and (pointer: coarse)')` wrapper with `addEventListener('change')` subscription. Returns false on desktop and during SSR / pre-mount. Single source of truth for touch detection — CSS uses the same media query directly, so behaviour and styles never disagree.
+
+**Files touched:**
+- [web/index.html](web/index.html) — viewport meta gains `viewport-fit=cover` so iOS populates `env(safe-area-inset-*)`.
+- [web/src/App.jsx](web/src/App.jsx) — new `navOpen` state + two effects (auto-close on `location.pathname` change, body-scroll-lock while open). Hamburger button (`list` icon) at the start of `.topbar`, hidden via CSS above 980px. Sidebar receives `isOpen` + `onClose` props. Topbar LinkAI button branches on `useCoarsePointer()`: desktop toggles the drawer mount (existing behaviour), touch devices route to `/c/:slug/linkai` instead. The LinkAI drawer mount itself (the `linkAiEligible && linkAiOpen && …` block) gains a `!isCoarsePointer` gate so it never appears on mobile — only the persistent page-variant mount renders there.
+- [web/src/components/Sidebar.jsx](web/src/components/Sidebar.jsx) — new `isOpen` + `onClose` props (default to behaviour-preserving values). New `.sidebar-scrim` sibling (tap to dismiss), new `.sidebar-drawer-close` (`x` icon) top-right. Escape-key handler when open. Nav-item click chains `onClose` for snappier UX. The wrapping `<>...</>` fragment is new so the scrim can be a sidebar sibling.
+- [web/src/styles/app.css](web/src/styles/app.css) — ~200 LOC appended at the end. `100vh` → `100dvh` dual-value at nine sites. New `@media (max-width: 980px)` block: `.app` collapses to `1fr`, sidebar `position: fixed` + `transform: translateX(-100%)`, `.is-open` flips to `translateX(0)`, hamburger reveals, scrim + drawer-close reveal, safe-area padding. The pre-existing 980px block (line 2097) is intentionally left alone — its hide-rules for nav-item text + brand wordmark are overridden by selectors `.sidebar .nav-item span { display: inline; }` etc. in the new block (so the drawer shows full text, not a compact rail). New `@media (max-width: 640px)` block: `.modal-scrim` + `.login-modal-backdrop` become bottom sheets (align-items end, 100% width, `border-radius: var(--radius-xl) var(--radius-xl) 0 0`, slide-up animation, `padding-bottom: env(safe-area-inset-bottom)`). New `@media (hover: none) and (pointer: coarse)` block: `touch-action: manipulation`, no tap-highlight, 44px tap-target floor on hamburger + drawer-close + sidebar nav-items.
+- [REFERENCE.md](REFERENCE.md) — new §15 Mobile UX section documents the breakpoint scheme, useCoarsePointer hook, drawer pattern, and PR 2-4 roadmap.
+
+**Verification ran during dev:** dev server up, viewport resized through desktop (1440×900 — sidebar 232px sticky, hamburger hidden, drawer-close hidden, grid `232px 1198px`), tablet (820×900 — sidebar offscreen at `translateX(-320px)`, hamburger reveals, tap opens drawer with scrim + body-scroll-lock + close button), phone (375×812 — same drawer behaviour, plus LoginModal opens as a bottom sheet with `align-items: end` and 100% width). Zero console errors across all viewports.
+
+**Sections touched:** Recent changes log; `Last updated`; new §15 Mobile UX.
 
 ### 2026-05-26 — hotfix: chat.ts SYSTEM_PROMPT — remove stray backticks that broke prod
 
@@ -2821,6 +2843,47 @@ Running log of "we considered X and chose Y because Z" — newest first.
 - **Status `scheduled` has no button**: `post_plans.status` enum includes `scheduled` (between approved and posted), but no UI surface flips into it. Either add a "Schedule" CTA on approved plans or remove the value from the enum.
 - **Realtime publication for `post_plan_views`**: not added in 0022. Doesn't break unread today (App.jsx refetches the view stamps on each refresh tick triggered by comment/attachment/plan events), but means cross-tab "I marked seen in tab A → clear dot in tab B" relies on the next refresh tick rather than firing on the views write itself. Add to publication if cross-tab unread feels laggy.
 - **Credential rotations** (see §12).
+
+---
+
+## 15. Mobile UX
+
+The dashboard was desktop-only until PR 1 of the mobile rollout (2026-05-28). The mobile architecture is **additive** to desktop CSS and JSX — every change is layered through media queries and a single touch-detection hook so the desktop experience stays byte-stable. Desktop is the surface where 100% of usage happens today; a desktop regression is treated as a blocker, not a fix-later.
+
+### Breakpoint scheme
+
+| Range | Layout |
+|---|---|
+| `≥ 1281px` | Full sidebar (232px) + content. Unchanged from pre-mobile. |
+| `980–1280px` | Existing icon-rail at 64px. Pre-mobile behaviour, untouched. |
+| `≤ 980px` | Sidebar is removed from the grid (`grid-template-columns: 1fr`) and becomes a `position: fixed` off-canvas drawer transformed offscreen by default. A hamburger button appears in `.topbar`. The 64px-rail rule from the pre-existing 980px block is overridden by the later block — at this breakpoint we want the full nav inside the drawer, not a compact rail. |
+| `≤ 640px` | All of the above plus: `.view` padding crunches, topbar shrinks. `.modal-scrim` and `.login-modal-backdrop` both convert to bottom sheets (`align-items: end`, full width, 16px 16px 0 0 border-radius, slide-up animation, `padding-bottom: env(safe-area-inset-bottom)`). |
+| `(hover: none) and (pointer: coarse)` | Independent of viewport width — applies to phones, tablets, touch laptops. Adds `touch-action: manipulation` to interactive elements, suppresses tap-highlight, floors the hamburger / drawer-close / sidebar nav-items at 44px tap target. |
+
+### `useCoarsePointer` hook
+
+[web/src/lib/useCoarsePointer.ts](web/src/lib/useCoarsePointer.ts) — wraps `matchMedia('(hover: none) and (pointer: coarse)')` with an `addEventListener('change')` subscription. Returns `false` on every desktop browser and during SSR / pre-mount, so any `if (isCoarsePointer) { … }` branch is a no-op on desktop. Used in [App.jsx](web/src/App.jsx) today to swap the topbar LinkAI button from drawer-open to page-route on touch, and to suppress the LinkAI drawer mount entirely on coarse-pointer devices (only the persistent page-variant mount renders). Future composers will use it for Enter-sends-on-mobile and camera-capture-button-on-touch in PR 2.
+
+### Off-canvas sidebar drawer
+
+[Sidebar.jsx](web/src/components/Sidebar.jsx) accepts `isOpen` + `onClose` props that default to behaviour-preserving values (`false` / `undefined`). On desktop the `is-open` className modifier has no effect because the sidebar isn't transformable above 980px. Below 980px:
+
+- `.sidebar-scrim` is a sibling rendered above content with `z-index: 90`, tap-to-dismiss via `onClick={onClose}`.
+- `.sidebar` itself is `position: fixed; width: min(86vw, 320px); transform: translateX(-100%); transition: transform 220ms`. `.is-open` flips to `translateX(0)`.
+- A `.sidebar-drawer-close` button (`x` icon) appears inside the drawer top-right.
+- The hamburger button (`.topbar-hamburger`, `list` icon) sits at the start of `.topbar`, hidden via CSS above 980px.
+
+App-level state owns the drawer: `navOpen` in [App.jsx](web/src/App.jsx) plus two effects — one auto-closes on `location.pathname` change (catches every entry point including deep links and back/forward), one applies `document.body.style.overflow = 'hidden'` while open to absorb scrim taps without scrolling the underlying page.
+
+### Safe-area + dynamic-viewport units
+
+[web/index.html](web/index.html) carries `viewport-fit=cover` so iOS populates `env(safe-area-inset-*)`. Topbar + sidebar padding use `env(safe-area-inset-top/left/right/bottom)` at the 980px breakpoint so the iOS status bar + home indicator don't overlap. Nine `100vh` sites in [app.css](web/src/styles/app.css) (body, `.app`, `.sidebar`, `.home-stage`, `.auth-root`, `.auth-shell`, `.onboarding-modal`, `.inbox-list`, `.main:has(.linkai-page.is-active)`, `.main:has(.conv-wrap)`) all use the dual-value pattern `height: 100vh; height: 100dvh;` — `100dvh` only matters on mobile browser chrome, so desktop stays unaffected and old browsers fall through to `100vh`.
+
+### Roadmap (planned, not yet shipped)
+
+- **PR 2** — per-surface mobile layouts: CalendarView agenda-only mode at ≤640px (the existing `.cal-list` renderer at line 954 takes over), PostPlanDetailView per-platform tab snap-scroll + hover-pencil → permanent-on-coarse, ConversationsView visible `…` overflow menu on own messages replacing right-click, LinkAIPanel top-sheet history rail + bottom-sheet artifact pane, IdeateView camera capture button alongside paperclip, MarkAsPostedModal sticky footer + keyboard-aware scroll.
+- **PR 3** — touch interaction polish: Enter-sends-on-mobile across the three composers, `@media (hover: hover)` guards on hover-only affordances that don't have natural fallbacks, drag-drop hint copy hidden on coarse-pointer.
+- **PR 4** — polish: bottom-sheet drag-to-dismiss, iOS PWA meta tags, landscape orientation, unify `.modal-scrim` and `.login-modal-backdrop`.
 
 ---
 
