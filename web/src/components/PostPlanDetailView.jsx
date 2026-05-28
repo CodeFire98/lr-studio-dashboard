@@ -52,6 +52,7 @@ import { SafeImage } from './SafeImage.jsx';
 import { VideoThumb } from './VideoThumb.jsx';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 import { useLightbox } from './Lightbox.jsx';
+import { useCoarsePointer } from '../lib/useCoarsePointer.ts';
 import { AICopyPreview } from './AICopyPreview.jsx';
 import { AIImagePromptPanel } from './AIImagePromptPanel.jsx';
 
@@ -634,6 +635,14 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCap
   const [editingCaption, setEditingCaption] = useState(false);
   const [captionDraft, setCaptionDraft] = useState(caption);
   const [hovering, setHovering] = useState(false);
+  // On coarse-pointer devices there's no hover event to reveal the edit
+  // pencil — without this, brand users on phones can't discover that the
+  // caption is editable. OR'ing the hook into the visibility check keeps
+  // the desktop "minimal chrome on idle" experience while making the
+  // pencil always-visible on touch. No JS state changes — this is a
+  // read-only derived boolean.
+  const isCoarsePointer = useCoarsePointer();
+  const showEditAffordances = hovering || isCoarsePointer;
   // Keep the draft in sync if the parent updates the underlying att
   // (e.g. after a successful optimistic save → server-canonical row
   // swap, or after a remote realtime change).
@@ -805,7 +814,7 @@ const AttachmentTile = ({ att, canDelete, onDelete, onLightboxDelete, canEditCap
             >
               {primaryLabel}
             </button>
-            {canEditCaption && hovering && (
+            {canEditCaption && showEditAffordances && (
               <button
                 type="button"
                 onClick={startEditingCaption}
@@ -2555,7 +2564,12 @@ const PostPlanDetailView = ({
                   if (visibleTabs.length === 0) return null;
                   return (
                   <div style={{ padding: '0 16px 16px' }}>
-                    <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+                    {/* Class hook lets mobile CSS turn this row into a
+                        horizontally scrolling, snap-aligned strip — so
+                        on a 360px viewport users can swipe through tabs
+                        instead of having them wrap to two rows above the
+                        editor. Desktop styling is unchanged. */}
+                    <div className="copy-platform-tabs" style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
                       {visibleTabs.map((p) => {
                         const on = activeCopyTab === p;
                         const platCfg = PLATFORM_BY_KEY[p];

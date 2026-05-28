@@ -135,7 +135,7 @@ const MarkAsPostedModal = ({
       onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel?.(); }}
     >
       <div
-        className="login-modal"
+        className="login-modal mark-as-posted-modal"
         role="dialog"
         aria-modal="true"
         style={{ maxWidth: 480, width: '100%' }}
@@ -190,6 +190,16 @@ const MarkAsPostedModal = ({
                       placeholder="https://… (optional)"
                       value={row.url}
                       onChange={(e) => setUrl(k, e.target.value)}
+                      onFocus={(e) => {
+                        // Mobile soft keyboards routinely cover the
+                        // input when it gains focus inside a tall sheet.
+                        // Scroll the input into the middle of the
+                        // viewport so the keyboard appears below it.
+                        // No-op on desktop where there's no soft
+                        // keyboard, so the behaviour is mobile-only by
+                        // virtue of where it matters.
+                        try { e.target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+                      }}
                       autoComplete="off"
                       style={{
                         width: '100%',

@@ -5524,6 +5524,42 @@ input, textarea { font: inherit; color: inherit; }
   .link-ai-page-wrapper:has(.link-ai-artifact) .link-ai-history { display: none; }
   .link-ai-artifact { flex: 1 1 auto; border-left: 0; }
 }
+/* ---------- MarkAsPostedModal sticky footer on mobile ---------- */
+/* The modal uses .login-modal which becomes a bottom sheet at ≤640px.
+   The body of the sheet can scroll (when multiple platforms + their URL
+   inputs push the content past viewport height), so the action row (which
+   sits at the bottom of the JSX, NOT inside a sticky footer container)
+   ends up below the fold and the user has to scroll to reach Save.
+   Pinning the actions row to `position: sticky; bottom: 0` keeps the
+   primary CTA reachable at all times. The selector targets the last
+   non-button-row div inside .mark-as-posted-modal — which is the
+   actions-row div. */
+.mark-as-posted-modal {
+  display: flex;
+  flex-direction: column;
+}
+.mark-as-posted-modal > div:last-child {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  padding-bottom: calc(20px + env(safe-area-inset-bottom)) !important;
+  margin-top: auto;
+}
+
+@media (max-width: 640px) {
+  /* Phone — the 240px conversation-history rail doesn't fit alongside
+     the chat on a 375px viewport (chat would get squeezed to ~135px).
+     Hide it entirely; multi-conversation switching is a desktop-only
+     affordance for v1 of the mobile rollout. Users on phone get one
+     ongoing LinkAI conversation, which is the main flow anyway.
+     Tracked as a follow-up: in PR 3+ this becomes a top-sheet drawer
+     toggled from the chat header.
+
+     Artifact pane already converts to full-width overlay above (at
+     900px), so it works at phone size with no extra rules. */
+  .link-ai-history { display: none; }
+}
 
 /* Page-variant composer: textarea + Send on one row (no full-width
    send button below the textarea like the panel variant), tiny hint
@@ -7580,4 +7616,123 @@ input, textarea { font: inherit; color: inherit; }
   .topbar-hamburger,
   .sidebar-drawer-close { min-width: 44px; min-height: 44px; }
   .sidebar .nav-item { min-height: 44px; }
+
 }
+
+/* ---------- ≤640px: calendar agenda + filter pill density ---------- */
+@media (max-width: 640px) {
+  /* Filter pills wrap to two rows cleanly with tighter gap + smaller
+     padding. The pill row is the second-biggest information density
+     on the surface; squeezing it preserves vertical space for the
+     agenda list itself. */
+  .cal-filter-pills { gap: 4px; }
+  .cal-filter-pill { padding: 4px 10px; font-size: 12.5px; }
+
+  /* Calendar view-mode segmented control: the JS forces agenda mode
+     at this breakpoint (via the useNarrow effect in CalendarView.jsx),
+     so the Month / Week / List toggle is irrelevant and confusing
+     (e.g. "Month" stays highlighted even though List is rendered).
+     Hide the whole control on narrow viewports. */
+  .cal-segmented { display: none; }
+
+  /* Stack the controls row (nav arrows + heading + Today on one line,
+     the segmented control underneath). */
+  .cal-controls { flex-wrap: wrap; gap: var(--space-2); }
+  .cal-controls-right { width: 100%; justify-content: flex-end; }
+
+  /* The agenda list is single-column day groups — but on a 360px
+     viewport, the row's stats + lead-time end up cramped against the
+     status pill. Drop the row to a vertical stack so the title +
+     status + stats each get their own line. */
+  .cal-list-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .cal-list-row-title { flex-basis: 100%; }
+
+  /* ----- PostPlanDetailView ----- */
+  /* Stack the page-head: title above, actions row below. The default
+     desktop layout (`display: flex; align-items: flex-end`) keeps the
+     "actions far right via margin-left: auto" pattern which crashes
+     onto a 360px viewport. */
+  .page-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-3);
+  }
+  .page-head h1 { font-size: 32px; line-height: 1.1; }
+  .page-head .actions {
+    margin-left: 0;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* Per-platform copy tabs — snap-scrolling strip on mobile. Desktop
+     keeps `flex-wrap: wrap` from the inline style; our override forces
+     a single line that horizontally scrolls with momentum. Snap on
+     each pill so a swipe lands on a tab boundary. */
+  .copy-platform-tabs {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    /* Hide the scrollbar but keep functionality — clean visual at
+       the cost of no scrollbar hint. The visible-active-pill is the
+       hint instead. */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    padding-bottom: 2px; /* avoid clipping focus rings */
+  }
+  .copy-platform-tabs::-webkit-scrollbar { display: none; }
+  .copy-platform-tabs > button {
+    scroll-snap-align: start;
+    flex-shrink: 0;
+  }
+
+  /* ----- ConversationsView composer ----- */
+  /* Larger icon buttons on phone — 32px is undersized for thumbs even
+     though it works for trackpad. The visible Send button stays at
+     its existing height to keep proportions consistent. */
+  .conv-composer-icon-btn { width: 36px; height: 36px; }
+}
+
+/* ---------- ConversationsView own-message overflow ("...") menu ---------- */
+/* The visible "..." button on the right edge of own messages. Hidden by
+   default on desktop, revealed on hover. Touch devices always see it
+   via the coarse-pointer rule below — they have no hover to discover
+   the right-click context menu otherwise. */
+.conv-msg-overflow-btn {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms var(--ease-out), background-color 120ms ease;
+}
+.conv-msg-overflow-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.conv-msg-me {
+  position: relative; /* anchor for the absolutely-positioned overflow */
+}
+.conv-msg-me:hover .conv-msg-overflow-btn,
+.conv-msg-overflow-btn:focus-visible { opacity: 1; }
+
+@media (hover: none) and (pointer: coarse) {
+  /* On touch, always show the overflow button — there's no hover event
+     to discover it, and right-click doesn't exist as a fallback. */
+  .conv-msg-overflow-btn { opacity: 1; }
+  /* Larger tap target on touch — 36px clears the comfortable-thumb
+     threshold without overwhelming the bubble. */
+  .conv-msg-overflow-btn { width: 36px; height: 36px; }
+}
+

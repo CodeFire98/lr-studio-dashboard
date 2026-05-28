@@ -44,6 +44,7 @@ import { z } from "zod";
 import { Icon } from "./Icon.jsx";
 import { supabase } from "../lib/supabase.js";
 import { buildTemplatedLinkAISuggestions } from "../lib/db.js";
+import { useCoarsePointer } from "../lib/useCoarsePointer.ts";
 import { formatPlanChipTime } from "./ConversationsView.jsx";
 // AI Elements' `Conversation` was intentionally dropped from Phase 2a —
 // its stick-to-bottom scroll behaviour conflicts with the existing
@@ -1079,8 +1080,20 @@ const LinkAIPanel = ({
     sendMessage({ parts });
   };
 
+  // Send-key behaviour forks on input device. Same convention as the
+  // Conversations composer — see the comment there for the full
+  // rationale. Desktop: ⌘↩ / Ctrl+Enter sends, Enter newlines. Touch:
+  // Enter sends, Shift+Enter newlines (WhatsApp/Slack mobile pattern).
+  const isCoarsePointer = useCoarsePointer();
   const handleKeyDown = (e) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    if (e.key !== "Enter") return;
+    if (isCoarsePointer) {
+      if (e.shiftKey) return;
+      e.preventDefault();
+      handleSend();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       handleSend();
     }

@@ -17,6 +17,7 @@ import { Avatar } from './primitives.jsx';
 import { StatusPill } from './postPlanShared.jsx';
 import { linkifyText } from './IdeateView.jsx';
 import { useLightbox } from './Lightbox.jsx';
+import { useCoarsePointer } from '../lib/useCoarsePointer.ts';
 import {
   loadConversationForAccount,
   loadConversationMessages,
@@ -341,12 +342,30 @@ function MessageBubble({
     );
   }
 
+  // Visible "..." overflow trigger on own messages — discoverable on
+  // touch where right-click doesn't exist. Synthesizes a context-menu
+  // event payload from the button's bounding rect so the existing
+  // ContextMenu positioning logic works unchanged. Desktop still gets
+  // right-click via onContextMenu below; the visible button is
+  // CSS-hidden on hover-capable devices and revealed on coarse-pointer
+  // (or just :hover, see `.conv-msg-overflow-btn` rules).
+  const handleOverflowTap = (e) => {
+    e.stopPropagation();
+    if (isDeleted) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    // Pass an event-shaped object the ContextMenu host can read like
+    // a real contextmenu event — clientX/Y anchor the menu to the
+    // button's bottom-right corner.
+    onContextMenu?.({ preventDefault() {}, stopPropagation() {}, clientX: rect.right, clientY: rect.bottom }, message);
+  };
+
+  const isOwn = message.from === 'me';
   return (
     <div
       id={`msg-${message.id}`}
       className={
         'conv-msg ' +
-        (message.from === 'me' ? 'conv-msg-me' : 'conv-msg-them') +
+        (isOwn ? 'conv-msg-me' : 'conv-msg-them') +
         (isActiveThread ? ' conv-msg-active' : '')
       }
       onContextMenu={(e) => {
@@ -393,6 +412,22 @@ function MessageBubble({
           </div>
         )}
       </div>
+      {/* Visible "..." overflow on own messages. The menu it opens is
+          identical to the desktop right-click menu (delete, etc.) —
+          this is just the touch + non-power-user entry point. Hidden by
+          default on hover-capable devices; revealed on hover, or always
+          shown on coarse-pointer (see app.css). */}
+      {isOwn && !isDeleted && onContextMenu && (
+        <button
+          type="button"
+          className="conv-msg-overflow-btn"
+          onClick={handleOverflowTap}
+          aria-label="Message options"
+          title="Message options"
+        >
+          <Icon name="more" size={14} />
+        </button>
+      )}
     </div>
   );
 }
@@ -420,8 +455,25 @@ function Composer({
     if (autoFocus) textareaRef.current?.focus();
   }, [autoFocus]);
 
+  // Send-key behaviour forks on input device:
+  // - Desktop (mouse + keyboard): ⌘↩ / Ctrl+Enter sends, Enter inserts
+  //   a newline. Preserves the long-form-draft pattern power users rely
+  //   on; accidental sends would be painful here.
+  // - Coarse-pointer (phone, tablet, touch laptop): Enter sends,
+  //   Shift+Enter inserts a newline. Matches WhatsApp web, Slack mobile,
+  //   iMessage — the de facto messaging-app convention. Mobile keyboards
+  //   don't surface Cmd/Ctrl, so the ⌘↩ rule alone leaves the iOS
+  //   "return" key doing nothing useful.
+  const isCoarsePointer = useCoarsePointer();
   const onKeyDown = (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    if (e.key !== 'Enter') return;
+    if (isCoarsePointer) {
+      if (e.shiftKey) return; // intentional newline
+      e.preventDefault();
+      if (canSend) onSubmit?.();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       if (canSend) onSubmit?.();
     }
