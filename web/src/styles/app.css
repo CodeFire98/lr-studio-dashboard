@@ -5665,6 +5665,39 @@ input, textarea { font: inherit; color: inherit; }
   transition: opacity 200ms var(--ease-out);
 }
 
+/* ---------- Ultra-narrow polish (≤360px — iPhone SE 1st gen) ---------- */
+/* At 320–360px the existing 640px rules apply but a few key surfaces
+   end up cramped. Spot-fixes that don't warrant a separate breakpoint
+   block. */
+@media (max-width: 360px) {
+  /* Hero text on the Social Calendar empty state — at 320px the
+     32px serif title still wraps okay but feels overly big for the
+     viewport. Drop a notch. */
+  .page-head h1 { font-size: 28px; }
+  /* Calendar filter pill row gets very tight — tighten further. */
+  .cal-filter-pill { padding: 3px 8px; font-size: 12px; }
+  /* View padding crunch even tighter to claw back horizontal real
+     estate. */
+  .view { padding-left: var(--space-3); padding-right: var(--space-3); }
+}
+
+/* ---------- Landscape orientation polish (phone in landscape) ---------- */
+/* Phones in landscape are wide enough (≥568px) that the mobile drawer
+   layout typically doesn't activate — the desktop / 980px-rail layouts
+   carry over. The one place portrait assumptions DO break in landscape
+   is bottom-sheet modals: they slide up from the bottom and end up
+   nearly full-screen when there's only ~375px of vertical room.
+   Cap their height so the user can still see the dimmed content
+   behind them as orientation context. The modal body's existing
+   `overflow-y: auto` keeps the content scrollable inside the cap.
+
+   Targets phone-class landscape via `max-height: 500px` so tablet
+   landscape (≥~1024×768) isn't affected. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .modal { max-height: 90vh; max-height: 90dvh; }
+  .login-modal { max-height: 90vh; max-height: 90dvh; }
+}
+
 /* ---------- Suppress sticky-hover transform lifts on touch ---------- */
 /* iOS Safari keeps `:hover` styles applied after a tap until the user
    taps elsewhere. Transform-based lifts (`translateY(-1px)` on cards,
