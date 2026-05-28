@@ -4486,3 +4486,166 @@ export async function loadEngagementSummaryForBrand(accountId, periodDays = 30) 
   };
 }
 
+// =====================================================================
+// Billing v1 — brand_payments table + brand-invoices storage bucket
+// =====================================================================
+// Agency creates Razorpay payment links out-of-band and posts the URL +
+// amount as a payment request row. Brand sees it as Outstanding and taps
+// "Pay now" (external link). Agency marks paid + uploads the invoice PDF
+// later, which the brand can download from Payment history.
+//
+// RLS: agency full CRUD; brand owners SELECT only on their account's
+// rows. See migration 0062_brand_payments.
+
+const BRAND_INVOICE_BUCKET = 'brand-invoices';
+
+export async function loadBillingForAccount(accountId) {
+  if (!accountId) return { outstanding: [], history: [], voided: [] };
+  const { data, error } = await supabase
+    .from('brand_payments')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('issued_on', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  const outstanding = [];
+  const history = [];
+  const voided = [];
+  for (const row of data || []) {
+    if (row.status === 'paid') history.push(row);
+    else if (row.status === 'voided') voided.push(row);
+    else outstanding.push(row);
+  }
+  // Outstanding sorts by due_on ASC (closest due first), nulls last.
+  outstanding.sort((a, b) => {
+    if (a.due_on && b.due_on) return a.due_on.localeCompare(b.due_on);
+    if (a.due_on) return -1;
+    if (b.due_on) return 1;
+    return (b.issued_on || '').localeCompare(a.issued_on || '');
+  });
+  // History sorts by paid_at DESC, falling back to updated_at.
+  history.sort((a, b) =>
+    (b.paid_at || b.updated_at || '').localeCompare(a.paid_at || a.updated_at || '')
+  );
+  return { outstanding, history, voided };
+}
+
+export async function createPayment(input) {
+  const row = {
+    account_id: input.accountId,
+    title: input.title,
+    description: input.description || null,
+    amount: Number(input.amount),
+    currency: input.currency,
+    payment_link_url: input.paymentLinkUrl || null,
+    due_on: input.dueOn || null,
+    issued_on: input.issuedOn || null, // null → DB default current_date
+    internal_notes: input.internalNotes || null,
+    created_by: input.createdBy || null,
+  };
+  // Drop null issued_on so the DB default fires.
+  if (!row.issued_on) delete row.issued_on;
+  const { data, error } = await supabase
+    .from('brand_payments')
+    .insert(row)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updatePayment(id, patch) {
+  const row = {};
+  if (patch.title !== undefined) row.title = patch.title;
+  if (patch.description !== undefined) row.description = patch.description || null;
+  if (patch.amount !== undefined) row.amount = Number(patch.amount);
+  if (patch.currency !== undefined) row.currency = patch.currency;
+  if (patch.paymentLinkUrl !== undefined) row.payment_link_url = patch.paymentLinkUrl || null;
+  if (patch.dueOn !== undefined) row.due_on = patch.dueOn || null;
+  if (patch.issuedOn !== undefined) row.issued_on = patch.issuedOn;
+  if (patch.internalNotes !== undefined) row.internal_notes = patch.internalNotes || null;
+  if (patch.paidAt !== undefined) row.paid_at = patch.paidAt || null;
+  if (patch.paidNote !== undefined) row.paid_note = patch.paidNote || null;
+  if (patch.status !== undefined) row.status = patch.status;
+  if (patch.invoiceFilePath !== undefined) row.invoice_file_path = patch.invoiceFilePath || null;
+  if (patch.invoiceFileName !== undefined) row.invoice_file_name = patch.invoiceFileName || null;
+  const { data, error } = await supabase
+    .from('brand_payments')
+    .update(row)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function voidPayment(id) {
+  return updatePayment(id, { status: 'voided' });
+}
+
+export async function deletePayment(id) {
+  const { error } = await supabase.from('brand_payments').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// Upload an invoice file to brand-invoices/<accountId>/<paymentId>/<safeName>
+// and update the row with the resulting path + original filename.
+export async function uploadInvoiceFile({ paymentId, accountId, file }) {
+  if (!file) throw new Error('No file provided');
+  const safeName = (file.name || 'invoice.pdf').replace(/[^\w.\-]+/g, '_');
+  const path = `${accountId}/${paymentId}/${Date.now()}_${safeName}`;
+  const { error: upErr } = await supabase.storage
+    .from(BRAND_INVOICE_BUCKET)
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || 'application/octet-stream',
+    });
+  if (upErr) throw upErr;
+  // Persist the new path + original filename. If a prior file existed, we
+  // intentionally leave it — replacing is a separate action and the new
+  // row state points at the latest upload.
+  const updated = await updatePayment(paymentId, {
+    invoiceFilePath: path,
+    invoiceFileName: file.name || safeName,
+  });
+  return updated;
+}
+
+// Mark paid + optionally upload an invoice in one logical step. The
+// upload happens BEFORE the status flip so a failed upload leaves the
+// row Outstanding (no half-done state).
+export async function markPaymentPaid({ paymentId, accountId, paidAt, paidNote, file }) {
+  let invoiceFilePath;
+  let invoiceFileName;
+  if (file) {
+    const safeName = (file.name || 'invoice.pdf').replace(/[^\w.\-]+/g, '_');
+    const path = `${accountId}/${paymentId}/${Date.now()}_${safeName}`;
+    const { error: upErr } = await supabase.storage
+      .from(BRAND_INVOICE_BUCKET)
+      .upload(path, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file.type || 'application/octet-stream',
+      });
+    if (upErr) throw upErr;
+    invoiceFilePath = path;
+    invoiceFileName = file.name || safeName;
+  }
+  return updatePayment(paymentId, {
+    status: 'paid',
+    paidAt: paidAt || new Date().toISOString().slice(0, 10),
+    paidNote: paidNote || null,
+    ...(invoiceFilePath ? { invoiceFilePath, invoiceFileName } : {}),
+  });
+}
+
+// 1h-TTL signed URL for the brand-side download button.
+export async function getInvoiceDownloadUrl(path) {
+  if (!path) return null;
+  const { data, error } = await supabase.storage
+    .from(BRAND_INVOICE_BUCKET)
+    .createSignedUrl(path, 60 * 60);
+  if (error) throw error;
+  return data?.signedUrl || null;
+}
