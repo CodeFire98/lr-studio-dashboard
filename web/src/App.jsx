@@ -646,7 +646,7 @@ const App = () => {
     if (!auth?.isAgency) return;
     const r = route.view;
     const allClientsRoutes = new Set(['profile', 'settings', 'clients', 'members', 'not_found']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'conversations', 'linkai', 'profile', 'settings', 'clients', 'members', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'conversations', 'linkai', 'billing', 'profile', 'settings', 'clients', 'members', 'not_found']);
     if (isAllClientsMode) {
       if (!allClientsRoutes.has(r)) navigate('/clients');
     } else {
