@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Icon } from './Icon.jsx';
+import { useCoarsePointer } from '../lib/useCoarsePointer.ts';
 import {
   loadPostPlanIdeas,
   createPostPlanIdea,
@@ -74,6 +75,13 @@ const IdeateView = ({ auth, accountId }) => {
   const [submittedFlash, setSubmittedFlash] = useState(null);
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
+  // Separate input with `capture="environment"` triggers the device camera
+  // directly on mobile (rear-facing). The default `fileInputRef` above still
+  // opens the photo library, so brand users get both flows. Camera button
+  // is only rendered on coarse-pointer devices since desktop users have no
+  // camera in this context.
+  const cameraInputRef = useRef(null);
+  const isCoarsePointer = useCoarsePointer();
 
   const [ideas, setIdeas] = useState([]);
   const [loadingIdeas, setLoadingIdeas] = useState(true);
@@ -289,6 +297,16 @@ const IdeateView = ({ auth, accountId }) => {
             style={{display: 'none'}}
             onChange={(e) => addFiles(e.target.files)}
           />
+          {isCoarsePointer && (
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{display: 'none'}}
+              onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
+            />
+          )}
           <button
             type="button"
             className="ideate-icon-btn"
@@ -298,6 +316,17 @@ const IdeateView = ({ auth, accountId }) => {
           >
             <Icon name="paperclip" size={16} />
           </button>
+          {isCoarsePointer && (
+            <button
+              type="button"
+              className="ideate-icon-btn"
+              onClick={() => cameraInputRef.current?.click()}
+              aria-label="Take a photo"
+              title="Take a photo"
+            >
+              <Icon name="aperture" size={16} />
+            </button>
+          )}
           <div style={{flex: 1}} />
           <button
             type="button"

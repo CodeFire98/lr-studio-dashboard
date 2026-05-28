@@ -22,6 +22,7 @@ import {
   updatePostPlan,
 } from '../lib/db.js';
 import { supabase } from '../lib/supabase';
+import { useCoarsePointer } from '../lib/useCoarsePointer.ts';
 
 // =====================================================================
 // Drag-to-reschedule helper. Given the plan's existing scheduled_at and
@@ -1050,10 +1051,39 @@ const CalendarView = ({
   // previously had 'drafting' saved (or an agency with 'brand_draft'
   // saved) gracefully falls back to 'all' since the other role's
   // pill no longer exists in their group.
-  const [viewMode, setViewMode]   = useState(() => readLS(LS_VIEW_MODE, 'month', ['month', 'week', 'list']));
+  const [storedViewMode, setStoredViewMode] = useState(() => readLS(LS_VIEW_MODE, 'month', ['month', 'week', 'list']));
   const [statusFilter, setStatusFilter] = useState(() => readLS(LS_STATUS_FILTER, 'all', Object.keys(STATUS_GROUPS)));
 
-  useEffect(() => { writeLS(LS_VIEW_MODE, viewMode); }, [viewMode]);
+  // Force the day-grouped agenda list whenever the viewport is too
+  // narrow OR the input device is touch — both signals point at "the
+  // week grid will be horrible here". OR'ing them means Chrome
+  // devtools mobile-emulation (narrow viewport, fine pointer) also
+  // shows the agenda mode, matching what users actually see on their
+  // phones. The agenda list is already day-grouped and purpose-built
+  // for narrow viewports.
+  // `setViewMode` still writes the user's preference to localStorage so
+  // when they're back on desktop their week/month choice is preserved.
+  const isCoarsePointer = useCoarsePointer();
+  const [isNarrow, setIsNarrow] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth <= 640
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(max-width: 640px)');
+    const update = () => setIsNarrow(mq.matches);
+    update();
+    if (mq.addEventListener) mq.addEventListener('change', update);
+    else mq.addListener(update);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', update);
+      else mq.removeListener(update);
+    };
+  }, []);
+  const forceList = isCoarsePointer || isNarrow;
+  const viewMode = forceList ? 'list' : storedViewMode;
+  const setViewMode = setStoredViewMode;
+
+  useEffect(() => { writeLS(LS_VIEW_MODE, storedViewMode); }, [storedViewMode]);
   useEffect(() => { writeLS(LS_STATUS_FILTER, statusFilter); }, [statusFilter]);
 
   const [viewDate, setViewDate] = useState(() => {
