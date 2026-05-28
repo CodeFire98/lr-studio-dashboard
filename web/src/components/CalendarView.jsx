@@ -844,21 +844,36 @@ const ListRow = ({ post, onOpen, onContextMenu, unreadCount, commentsCount, atta
   );
 };
 
-const ListView = ({ viewDate, postPlans, onOpenPost, onChipContextMenu, unreadByPlan, unackedPlanIds, isAdmin, onOpenDay }) => {
-  // Month-scoped — anchor on viewDate's month/year. Filter posts to
-  // those scheduled in that month, sort chronologically.
+const ListView = ({ viewDate, postPlans, weekScoped, onOpenPost, onChipContextMenu, unreadByPlan, unackedPlanIds, isAdmin, onOpenDay }) => {
+  // Two modes:
+  // - Month-scoped (desktop default): anchor on viewDate's month/year,
+  //   show every day in that calendar month.
+  // - Week-scoped (mobile agenda): anchor on the week containing viewDate
+  //   (Sun-start), show that one week only. Prev/Next step by week so the
+  //   user pages through a focused 7-day chunk at a time.
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
+
+  const weekBounds = useMemo(() => {
+    if (!weekScoped) return null;
+    const start = startOfWeek(viewDate);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 7); // exclusive
+    return { start, end };
+  }, [weekScoped, viewDate]);
 
   const monthPosts = useMemo(() => {
     return (postPlans || [])
       .filter((p) => {
         if (!p.scheduledAt) return false;
         const d = new Date(p.scheduledAt);
+        if (weekBounds) {
+          return d >= weekBounds.start && d < weekBounds.end;
+        }
         return d.getFullYear() === year && d.getMonth() === month;
       })
       .sort((a, b) => (a.scheduledAt || '').localeCompare(b.scheduledAt || ''));
-  }, [postPlans, year, month]);
+  }, [postPlans, year, month, weekBounds]);
 
   // Bulk-fetch comments + attachments (references + deliverables) for
   // every visible plan in one shot. Re-runs whenever the visible-plan
@@ -931,13 +946,17 @@ const ListView = ({ viewDate, postPlans, onOpenPost, onChipContextMenu, unreadBy
   }, [days, todayIso]);
 
   if (days.length === 0) {
+    const emptyLabel = weekBounds
+      ? `No posts the week of ${weekBounds.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.`
+      : `No posts in ${viewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}.`;
+    const browseHint = weekBounds ? 'week' : 'month';
     return (
       <div className="cal-list-empty">
-        <div className="big">No posts in {viewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}.</div>
+        <div className="big">{emptyLabel}</div>
         <div className="sub">
           {isAdmin
-            ? 'Use Today or the prev/next arrows to browse another month, or click below to plan one now.'
-            : 'Nothing here yet. Use the prev/next arrows to browse another month, or click below to propose a post for your agency to review.'}
+            ? `Use Today or the prev/next arrows to browse another ${browseHint}, or click below to plan one now.`
+            : `Nothing here yet. Use the prev/next arrows to browse another ${browseHint}, or click below to propose a post for your agency to review.`}
         </div>
         <button
           type="button"
@@ -1074,14 +1093,26 @@ const CalendarView = ({
     update();
     if (mq.addEventListener) mq.addEventListener('change', update);
     else mq.addListener(update);
+    // Belt-and-suspenders: some embedded preview environments don't fire
+    // matchMedia change events on programmatic resize. The `resize`
+    // event is universally supported. Both call setIsNarrow with the
+    // same value when they agree, so double-firing is idempotent.
+    window.addEventListener('resize', update);
     return () => {
       if (mq.removeEventListener) mq.removeEventListener('change', update);
       else mq.removeListener(update);
+      window.removeEventListener('resize', update);
     };
   }, []);
   const forceList = isCoarsePointer || isNarrow;
   const viewMode = forceList ? 'list' : storedViewMode;
   const setViewMode = setStoredViewMode;
+  // When the agenda is force-rendered on mobile, treat it as week-scoped
+  // (prev/next arrows step by week, heading shows "Week of …", ListView
+  // filters to one week). Showing a whole month at once is too much to
+  // scroll through on a phone — a focused week per swipe matches the
+  // ergonomics of mobile email/calendar apps.
+  const weekScoped = forceList;
 
   useEffect(() => { writeLS(LS_VIEW_MODE, storedViewMode); }, [storedViewMode]);
   useEffect(() => { writeLS(LS_STATUS_FILTER, statusFilter); }, [statusFilter]);
@@ -1267,7 +1298,7 @@ const CalendarView = ({
   }, [filteredPostPlans]);
 
   const goPrev = () => {
-    if (viewMode === 'week') {
+    if (viewMode === 'week' || weekScoped) {
       const d = new Date(viewDate);
       d.setDate(d.getDate() - 7);
       setViewDate(d);
@@ -1276,7 +1307,7 @@ const CalendarView = ({
     }
   };
   const goNext = () => {
-    if (viewMode === 'week') {
+    if (viewMode === 'week' || weekScoped) {
       const d = new Date(viewDate);
       d.setDate(d.getDate() + 7);
       setViewDate(d);
@@ -1521,19 +1552,19 @@ const CalendarView = ({
           <button
             className="btn btn-sm btn-ghost"
             onClick={goPrev}
-            aria-label={viewMode === 'week' ? 'Previous week' : 'Previous month'}
+            aria-label={(viewMode === 'week' || weekScoped) ? 'Previous week' : 'Previous month'}
           >
             <Icon name="chevron-left" size={14}/>
           </button>
           <div className="cal-controls-heading">
-            {viewMode === 'week'
+            {(viewMode === 'week' || weekScoped)
               ? formatWeekRange(weekStart)
               : viewDate.toLocaleDateString('en-US', HEADING_FMT)}
           </div>
           <button
             className="btn btn-sm btn-ghost"
             onClick={goNext}
-            aria-label={viewMode === 'week' ? 'Next week' : 'Next month'}
+            aria-label={(viewMode === 'week' || weekScoped) ? 'Next week' : 'Next month'}
           >
             <Icon name="chevron-right" size={14}/>
           </button>
@@ -1633,6 +1664,7 @@ const CalendarView = ({
         <ListView
           viewDate={viewDate}
           postPlans={filteredPostPlans}
+          weekScoped={weekScoped}
           onOpenPost={openExisting}
           onChipContextMenu={handleChipContextMenu}
           unreadByPlan={unreadByPlan}

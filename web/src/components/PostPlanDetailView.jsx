@@ -9,7 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Icon } from './Icon.jsx';
-import { Avatar } from './primitives.jsx';
+import { Avatar, CopyButton } from './primitives.jsx';
 import { diffWords } from '../lib/wordDiff.js';
 import {
   PLATFORMS,
@@ -2658,7 +2658,7 @@ const PostPlanDetailView = ({
                             {/* Agency footer — direct save semantics + AI
                                 co-pilot affordances. */}
                             {isEditor && (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
                                 <span style={{ fontSize: 11.5, color: isDirty ? 'var(--accent-ink)' : 'var(--ink-4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                   {saving && isDirty
                                     ? 'Saving…'
@@ -2666,6 +2666,11 @@ const PostPlanDetailView = ({
                                       ? 'Unsaved changes'
                                       : (<><Icon name="check" size={11}/>Saved</>)}
                                 </span>
+                                {/* One-click copy of the current draft —
+                                    paste straight into the platform's
+                                    post composer. Disabled when the field
+                                    is empty (CopyButton enforces). */}
+                                <CopyButton text={draft} title={`Copy ${platLabel} copy to clipboard`} />
                                 <span style={{ flex: 1 }}/>
                                 {aiInlineEligible && aiPreviewPlatform !== activeCopyTab && (
                                   <button
@@ -2819,6 +2824,7 @@ const PostPlanDetailView = ({
                           style={{
                             width: '100%',
                             padding: '10px 12px',
+                            paddingTop: saved ? 38 : 10, // make room for top-right Copy button
                             border: '1px solid var(--line)',
                             borderRadius: 6,
                             background: 'var(--surface)',
@@ -2833,6 +2839,18 @@ const PostPlanDetailView = ({
                           }}
                           title={canEditThis ? editTooltip : undefined}
                         >
+                          {/* Floating Copy button — only shown when there
+                              IS saved copy to grab. Click is stop-propped
+                              so it doesn't bubble up to the card's
+                              "enter edit mode" handler. */}
+                          {saved && (
+                            <div
+                              style={{ position: 'absolute', top: 6, right: 6, zIndex: 1 }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <CopyButton text={saved} title={`Copy ${platLabel} copy to clipboard`} />
+                            </div>
+                          )}
                           {saved
                             ? linkifySegments(saved)
                             : (

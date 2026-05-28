@@ -2,6 +2,7 @@
 /* Shared primitives: Avatar, AvatarStack, Status, Art (procedural creative placeholder) */
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLightbox } from './Lightbox.jsx';
+import { Icon } from './Icon.jsx';
 
 const Avatar = ({ person, size = "md", ...rest }) => {
   const cls = size === "lg" ? "avatar avatar-lg" : size === "sm" ? "avatar avatar-sm" : "avatar";
@@ -155,4 +156,51 @@ const Modal = ({ onClose, children }) => {
   );
 };
 
-export { Avatar, AvatarStack, StatusBadge, Art, Modal, STATUS_LABELS };
+// Single-shot "Copy to clipboard" button. Shows a brief Copied tick on
+// success then reverts to the Copy icon after 1.6s. Falls back to a
+// hidden-textarea + document.execCommand for non-secure / iframe
+// contexts (matches the AIImagePromptPanel pattern). Pure helper —
+// no app-specific assumptions; usable anywhere we have a text blob
+// and want a one-click copy affordance.
+//
+// Lazy-import Icon to avoid a circular dep with components that import
+// Avatar. CSS lives in app.css under `.copy-btn` + `.copy-btn--copied`.
+const CopyButton = ({ text, label = 'Copy', className = '', size = 14, title = 'Copy to clipboard' }) => {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const handleCopy = async (e) => {
+    e.stopPropagation();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      // Older browsers / insecure contexts — selection trick.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); setCopied(true); } catch {}
+      document.body.removeChild(ta);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={`copy-btn ${copied ? 'copy-btn--copied' : ''} ${className}`.trim()}
+      onClick={handleCopy}
+      title={copied ? 'Copied!' : title}
+      aria-label={copied ? 'Copied to clipboard' : title}
+      disabled={!text}
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={size} />
+      {label && <span className="copy-btn-label">{copied ? 'Copied' : label}</span>}
+    </button>
+  );
+};
+
+export { Avatar, AvatarStack, StatusBadge, Art, Modal, CopyButton, STATUS_LABELS };

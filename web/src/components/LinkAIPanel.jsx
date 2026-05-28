@@ -45,6 +45,7 @@ import { Icon } from "./Icon.jsx";
 import { supabase } from "../lib/supabase.js";
 import { buildTemplatedLinkAISuggestions } from "../lib/db.js";
 import { useCoarsePointer } from "../lib/useCoarsePointer.ts";
+import { CopyButton } from "./primitives.jsx";
 import { formatPlanChipTime } from "./ConversationsView.jsx";
 // AI Elements' `Conversation` was intentionally dropped from Phase 2a —
 // its stick-to-bottom scroll behaviour conflicts with the existing
@@ -639,6 +640,12 @@ const LinkAIPanel = ({
   // expanded again, deterministic, no localStorage state.
   const [artifact, setArtifact] = useState(null);
   const railCollapsed = !!artifact;
+  // Mobile-only state: the chat history rail is CSS-hidden by default
+  // on phones (no room alongside the chat). The new mobile header
+  // exposes a "Chats" button that flips this open — the rail then
+  // slides in as a fixed-position overlay. Tap a chat row or the
+  // scrim to close. Desktop ignores this state entirely.
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const openArtifact = useCallback((next) => {
     setArtifact(next);
@@ -1080,19 +1087,13 @@ const LinkAIPanel = ({
     sendMessage({ parts });
   };
 
-  // Send-key behaviour forks on input device. Same convention as the
-  // Conversations composer — see the comment there for the full
-  // rationale. Desktop: ⌘↩ / Ctrl+Enter sends, Enter newlines. Touch:
-  // Enter sends, Shift+Enter newlines (WhatsApp/Slack mobile pattern).
+  // Send-key behaviour: ⌘↩ / Ctrl+Enter sends, Enter inserts a newline,
+  // everywhere. The visible Send button is the only submit affordance
+  // on mobile — Enter on touch should never accidentally send a half-
+  // typed message. Matches the Conversations composer convention.
   const isCoarsePointer = useCoarsePointer();
   const handleKeyDown = (e) => {
     if (e.key !== "Enter") return;
-    if (isCoarsePointer) {
-      if (e.shiftKey) return;
-      e.preventDefault();
-      handleSend();
-      return;
-    }
     if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       handleSend();
@@ -1211,13 +1212,38 @@ const LinkAIPanel = ({
       role={isPageVariant ? undefined : "dialog"}
       aria-label={isPageVariant ? undefined : "LinkAI"}
     >
-      {/* Page variant deliberately skips the in-panel header — the
-          breadcrumb in the app's topbar already says "LinkAI" and the
-          BrandPicker shows the brand context, so a second header inside
-          the card was redundant and ate ~80px of vertical chat space.
-          "Start new" surfaces as a small floating button (rendered below
-          the .link-ai-panel--page outer) only when there's a conversation
-          to clear. */}
+      {/* Page variant deliberately skips the in-panel header on
+          desktop — the breadcrumb in the app's topbar already says
+          "LinkAI" and the BrandPicker shows the brand context. On
+          mobile the rail is CSS-hidden so we need to expose "Chats"
+          (history toggle) and "+ New" inside the page itself; the
+          mobile header below appears only at ≤640px via CSS. */}
+      {isPageVariant && (
+        <header className="link-ai-header link-ai-header--mobile">
+          <button
+            type="button"
+            className="link-ai-header-btn"
+            onClick={() => setHistoryOpen((v) => !v)}
+            title="Recent chats"
+            aria-expanded={historyOpen}
+            aria-label="Recent chats"
+          >
+            <Icon name="list" size={14} />
+            <span>Chats</span>
+          </button>
+          <div className="link-ai-header-spacer" />
+          <button
+            type="button"
+            className="link-ai-header-btn"
+            onClick={startNew}
+            title="Start a new conversation"
+            aria-label="Start a new conversation"
+          >
+            <Icon name="plus" size={14} />
+            <span>New</span>
+          </button>
+        </header>
+      )}
       {!isPageVariant && (
         <header className="link-ai-header">
           <div>
@@ -1499,14 +1525,25 @@ const LinkAIPanel = ({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
+      {/* Scrim — only meaningful on mobile when the rail is open as
+          an overlay. Desktop sees opacity:0 + pointer-events:none. */}
+      <div
+        className={"link-ai-history-scrim" + (historyOpen ? " is-open" : "")}
+        onClick={() => setHistoryOpen(false)}
+        aria-hidden="true"
+      />
       <aside
-        className={"link-ai-history" + (railCollapsed ? " link-ai-history--collapsed" : "")}
+        className={
+          "link-ai-history"
+          + (railCollapsed ? " link-ai-history--collapsed" : "")
+          + (historyOpen ? " is-open" : "")
+        }
         aria-label="LinkAI chat history"
       >
         <button
           type="button"
           className={railCollapsed ? "link-ai-history-new-collapsed" : "link-ai-history-new"}
-          onClick={startNew}
+          onClick={() => { startNew(); setHistoryOpen(false); }}
           title="Start a new conversation"
         >
           <Icon name="plus" size={12} />
@@ -1533,7 +1570,7 @@ const LinkAIPanel = ({
                     <button
                       type="button"
                       className="link-ai-history-row-main"
-                      onClick={() => switchToConv(c.id)}
+                      onClick={() => { switchToConv(c.id); setHistoryOpen(false); }}
                       title={c.title}
                     >
                       <span className="link-ai-history-row-title">{c.title}</span>
@@ -1696,6 +1733,11 @@ function ArtifactPane({ artifact, brandSlug, onClose, onCommitDraft, onNavigateT
               <section key={`${platform}-${i}`} className="link-ai-artifact-variant">
                 <div className="link-ai-artifact-variant-head">
                   <span className="link-ai-tool-pill">{platform}</span>
+                  {/* One-click copy of this variant's body — lets users
+                      grab the AI-drafted caption straight into IG /
+                      LinkedIn / X composer without having to open the
+                      plan detail page first. */}
+                  {body && <CopyButton text={body} title={`Copy ${platform} copy`} />}
                 </div>
                 {body && (
                   <pre className="link-ai-artifact-variant-body">{body}</pre>

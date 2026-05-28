@@ -5441,6 +5441,9 @@ input, textarea { font: inherit; color: inherit; }
   align-items: center;
   gap: 6px;
 }
+.link-ai-artifact-variant-head .copy-btn {
+  margin-left: auto;
+}
 .link-ai-artifact-variant-body {
   margin: 0;
   font-family: inherit;
@@ -5524,6 +5527,39 @@ input, textarea { font: inherit; color: inherit; }
   .link-ai-page-wrapper:has(.link-ai-artifact) .link-ai-history { display: none; }
   .link-ai-artifact { flex: 1 1 auto; border-left: 0; }
 }
+/* ---------- One-click Copy button (CopyButton primitive) ---------- */
+/* Small ghost-style button that pairs an icon with a "Copy" / "Copied"
+   label. Used inside post-plan copy cards and on the LinkAI artifact
+   preview so users can grab caption text in one tap. The .copy-btn--copied
+   state flips the icon to a green check + temporarily relabels. */
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.copy-btn:hover { background: var(--surface-2); color: var(--ink); border-color: color-mix(in oklab, var(--accent) 30%, var(--line)); }
+.copy-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.copy-btn--copied,
+.copy-btn--copied:hover {
+  color: var(--good, #1f7a4d);
+  border-color: color-mix(in oklab, var(--good, #1f7a4d) 40%, var(--line));
+  background: color-mix(in oklab, var(--good, #1f7a4d) 8%, var(--surface));
+}
+.copy-btn-label { line-height: 1; }
+/* Icon-only variant — pass label="" to use it. */
+.copy-btn.copy-btn--icon-only { padding: 0 7px; }
+
 /* ---------- MarkAsPostedModal sticky footer on mobile ---------- */
 /* The modal uses .login-modal which becomes a bottom sheet at ≤640px.
    The body of the sheet can scroll (when multiple platforms + their URL
@@ -5548,17 +5584,54 @@ input, textarea { font: inherit; color: inherit; }
 }
 
 @media (max-width: 640px) {
-  /* Phone — the 240px conversation-history rail doesn't fit alongside
-     the chat on a 375px viewport (chat would get squeezed to ~135px).
-     Hide it entirely; multi-conversation switching is a desktop-only
-     affordance for v1 of the mobile rollout. Users on phone get one
-     ongoing LinkAI conversation, which is the main flow anyway.
-     Tracked as a follow-up: in PR 3+ this becomes a top-sheet drawer
-     toggled from the chat header.
+  /* Phone — the 240px conversation-history rail can't sit alongside
+     the chat on a 375px viewport. Instead it becomes a slide-in
+     overlay anchored to the left, toggled by the "Chats" button in
+     the new mobile header. Tap the scrim or any row to close. */
+  .link-ai-history {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(82vw, 320px);
+    height: 100vh;
+    height: 100dvh;
+    z-index: 90;
+    transform: translateX(-100%);
+    transition: transform 200ms var(--ease-out);
+    border-right: 1px solid var(--line);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.18);
+    padding-top: calc(14px + env(safe-area-inset-top));
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+  .link-ai-history.is-open { transform: translateX(0); }
+  .link-ai-history-scrim { display: block; }
+  .link-ai-history-scrim.is-open { opacity: 1; pointer-events: auto; }
 
-     Artifact pane already converts to full-width overlay above (at
-     900px), so it works at phone size with no extra rules. */
-  .link-ai-history { display: none; }
+  /* Mobile header — only this variant of .link-ai-header is rendered
+     for the page variant at small widths. Desktop hides it. */
+  .link-ai-header--mobile {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .link-ai-header-spacer { flex: 1; }
+}
+
+/* Desktop hides the mobile header and the scrim by default. */
+.link-ai-header--mobile { display: none; }
+.link-ai-history-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(23, 23, 26, 0.42);
+  z-index: 85;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease-out);
 }
 
 /* Page-variant composer: textarea + Send on one row (no full-width
@@ -7640,15 +7713,28 @@ input, textarea { font: inherit; color: inherit; }
   .cal-controls { flex-wrap: wrap; gap: var(--space-2); }
   .cal-controls-right { width: 100%; justify-content: flex-end; }
 
-  /* The agenda list is single-column day groups — but on a 360px
-     viewport, the row's stats + lead-time end up cramped against the
-     status pill. Drop the row to a vertical stack so the title +
-     status + stats each get their own line. */
+  /* The agenda list is a CSS grid on desktop
+     (`grid-template-columns: 100px auto minmax(0, 1fr) auto auto auto`).
+     On a 375px viewport that template leaves the title with ~40px and
+     `word-break: break-word` collapses the text to one letter per line
+     (the original bug from the first phone screenshot). Override with
+     a 2-row grid-areas layout: title on its own line, everything else
+     wraps below in a chip row. */
   .cal-list-row {
-    flex-wrap: wrap;
-    row-gap: 4px;
+    grid-template-columns: auto 1fr auto !important;
+    grid-template-areas:
+      "time     title  status"
+      "plats    stats  lead";
+    align-items: center;
+    gap: 4px 10px;
+    padding: 12px 16px;
   }
-  .cal-list-row-title { flex-basis: 100%; }
+  .cal-list-row-time     { grid-area: time; }
+  .cal-list-row-title    { grid-area: title; min-width: 0; }
+  .cal-list-row-status   { grid-area: status; justify-self: end; }
+  .cal-list-row-platforms{ grid-area: plats; justify-self: start; }
+  .cal-list-row-stats    { grid-area: stats; }
+  .cal-list-row-lead     { grid-area: lead; justify-self: end; }
 
   /* ----- PostPlanDetailView ----- */
   /* Stack the page-head: title above, actions row below. The default
@@ -7689,10 +7775,67 @@ input, textarea { font: inherit; color: inherit; }
   }
 
   /* ----- ConversationsView composer ----- */
-  /* Larger icon buttons on phone — 32px is undersized for thumbs even
-     though it works for trackpad. The visible Send button stays at
-     its existing height to keep proportions consistent. */
+  /* Larger icon buttons + Send on phone — thumb targets. Enter inserts
+     a newline on all devices (PR 2.5), so the Send button is the only
+     submit affordance on mobile and needs to be reachable. */
   .conv-composer-icon-btn { width: 36px; height: 36px; }
+  .conv-composer-send { height: 40px; padding: 0 16px; font-size: 14px; }
+
+  /* ----- LinkAI composer Send button ----- */
+  .link-ai-send { padding: 10px 18px; font-size: 14px; min-height: 40px; }
+
+  /* ----- Generic card-head: stack title + primary action on mobile ----- */
+  /* The desktop layout (`display: flex; justify-content: space-between`)
+     pushes the action button (e.g. "Add note") to the right of the
+     title block. On a 375px viewport the title's long subtitle + an
+     action button collide. Stack so the action sits underneath. */
+  .card-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .card { padding: var(--space-5) var(--space-4); }
+
+  /* ----- Brand notes card: stack content + metadata vertically ----- */
+  /* On desktop the row is body | meta side-by-side (meta is hover-
+     revealed). On a phone the meta is always-visible (no hover) and
+     side-by-side crashes the body into a narrow column. Stack so the
+     body gets full width and the metadata row sits below as a chip
+     strip — always visible since there's no hover entry point on
+     touch. */
+  .brand-note-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .brand-note-meta {
+    opacity: 1;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    border-top: 1px solid var(--line-3, var(--line));
+    padding-top: 6px;
+  }
+  .brand-note-action { padding: 4px 8px; min-height: 32px; }
+
+  /* ----- Brand Intelligence (BrandKitView) ----- */
+  /* BrandKitView uses many inline `grid-template-columns: 1fr 1fr`,
+     `180px 1fr`, `repeat(3, 1fr)` etc. on its section grids. Too many
+     to className-ify individually. Collapse every such inline-styled
+     grid inside any `.card` to a single column on phone via attribute
+     selector + !important (only way to beat inline styles). Targets
+     ONLY elements that set `grid-template-columns` in their inline
+     style — `display: grid; place-items: center` style centering
+     blocks are untouched. */
+  .view .card [style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+  /* The Logo & marks card has a `repeat(3, 1fr)` variant strip that
+     becomes acceptable at 2 columns on phone (still scannable, doesn't
+     waste vertical). */
+  .view .card .kit-variants[style*="grid-template-columns"] {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
 }
 
 /* ---------- ConversationsView own-message overflow ("...") menu ---------- */
