@@ -1228,7 +1228,12 @@ const LinkAIPanel = ({
             aria-expanded={historyOpen}
             aria-label="Recent chats"
           >
-            <Icon name="list" size={14} />
+            {/* "clock" (recents/history glyph) — intentionally NOT
+                the "list" icon, which is the topbar hamburger sitting
+                right above this button. Two ≡ icons stacked in the
+                same screen quadrant read as a single duplicated
+                control and confuses users (real-device feedback). */}
+            <Icon name="clock" size={14} />
             <span>Chats</span>
           </button>
           <div className="link-ai-header-spacer" />
@@ -1540,6 +1545,20 @@ const LinkAIPanel = ({
         }
         aria-label="LinkAI chat history"
       >
+        {/* Explicit close button at the top of the rail — visible only
+            on mobile via CSS (.link-ai-history-close is hidden on
+            desktop). Scrim-tap dismissal exists but isn't always
+            discoverable on touch, especially when the scrim opacity
+            looks subtle to the user. */}
+        <button
+          type="button"
+          className="link-ai-history-close"
+          onClick={() => setHistoryOpen(false)}
+          aria-label="Close chat history"
+          title="Close"
+        >
+          <Icon name="x" size={16} />
+        </button>
         <button
           type="button"
           className={railCollapsed ? "link-ai-history-new-collapsed" : "link-ai-history-new"}

@@ -5607,7 +5607,10 @@ input, textarea { font: inherit; color: inherit; }
     border-right: 1px solid var(--line);
     border-bottom: 0;
     box-shadow: 8px 0 32px rgba(0, 0, 0, 0.18);
-    padding-top: calc(14px + env(safe-area-inset-top));
+    /* Top padding leaves room for the absolute-positioned close
+       button (at top: 8px, height 36px → claims up to ~50px from
+       the top edge) so the "+ New chat" button doesn't underlap it. */
+    padding-top: calc(52px + env(safe-area-inset-top));
     padding-bottom: calc(14px + env(safe-area-inset-bottom));
   }
   .link-ai-history.is-open { transform: translateX(0); }
@@ -5644,6 +5647,42 @@ input, textarea { font: inherit; color: inherit; }
   opacity: 0;
   pointer-events: none;
   transition: opacity 200ms var(--ease-out);
+}
+/* Explicit close (×) button on the chat history rail — mobile-only.
+   The user couldn't discover scrim-tap dismissal in real-device
+   testing — a visible × in the rail's top-right anchors the
+   "you can close this" intent. Self-positioning (absolute) so it
+   doesn't take grid space inside the rail's flex column.
+
+   Default is `display: none` (desktop hides it; the rail is permanent
+   on desktop so there's no close affordance to begin with). The mobile
+   media query below flips it on. **Don't add another rule for
+   .link-ai-history-close after the @media block** — cascade order
+   would override the `none` default.
+*/
+.link-ai-history-close {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  z-index: 2;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.link-ai-history-close:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+@media (max-width: 640px) {
+  .link-ai-history-close { display: inline-flex; }
 }
 @media (min-width: 641px) {
   .link-ai-header--mobile { display: none; }
