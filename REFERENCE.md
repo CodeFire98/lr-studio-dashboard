@@ -3,9 +3,17 @@
 > Single source of truth for what this thing is, how it's built, and how the
 > pieces fit together. Updated as the codebase evolves.
 
-**Last updated:** 2026-05-26 (**LinkAI: brand-notes discipline — default to NOT saving; explicit allow/deny rules + anti-pattern callout for meeting-minutes dumps.** User reported LinkAI was indiscriminately saving every bullet from a pasted meeting-minutes blob into `brand_kit_notes` (content pipeline lists, post schedules, week-specific tactical observations, event details — none of which are evergreen brand truths). Notes get re-injected into every future AI call, so polluting them degrades every subsequent generation. Three coordinated prompt changes in `web/api/ai/chat.ts` to fix the over-eagerness: (1) the `write_brand_note` tool description was rewritten with an explicit DEFAULT=NO stance, a 2-clause allow-rule (admin explicit ask OR new evergreen brand-level rule), a labelled allow-list (voice rules, audience facts, forbidden terms, recurring schedule rules, compliance) AND a labelled deny-list with concrete negative examples lifted from the user's screenshot (content pipeline lists, specific upcoming posts, tactical observations, event details, performance recaps). (2) The SYSTEM_PROMPT bullet about remembering things was rewritten in parallel to mirror the same rules and call out the CRITICAL anti-pattern: when admin pastes meeting minutes / transcripts / "content pipeline" dumps, reply with a summary + propose 1-3 maybe-memory-worthy items + ASK before saving — never auto-fire write_brand_note per bullet. (3) The tool-menu entry was tightened to flag "Default: do NOT call" prominently. Same prompt-tightening pattern as the no-em-dashes work: the prompt rule is the primary signal, but the model can still slip — if observed behaviour still leaks after a few weeks of production, a server-side validator-loop is the next layer (regex-reject write_brand_note calls whose body matches anti-pattern signatures: dates, "scheduled for", "post X on Y", numbered pipeline lists). Pure prompt change — no schema, migration, env-var, or client work. Existing 3 over-eager notes in Bamboo Bear's brand_kit_notes are NOT auto-cleaned; user deletes them manually via Brand notes page. Sections touched: Recent changes log; `Last updated`; §10 Edge functions & integrations (chat.ts behavioural change on write_brand_note triggering).)
+**Last updated:** 2026-05-26 (**Supabase: adopt explicit-GRANT convention for new public-schema tables ahead of the 2026-10-30 platform default flip.** Supabase emailed announcing that on 2026-10-30 existing projects (us) will start enforcing a security-first default for the Data API: new public-schema tables created from that date will NOT be exposed to the Data API unless an explicit `GRANT ... ON public.foo TO authenticated` is added in the migration. Tables that exist on Oct 30 are grandfathered and unaffected — all 61 current migrations + every table they create stay working forever with zero changes. Production is safe today and stays safe. The only impact is on future migrations: any new public-schema table that needs client-side query access must include the GRANT alongside the RLS-enable + policies, or `supabase.from('foo')...` will silently fail with a PostgREST "relation does not exist" error. Adopting the convention NOW (5 months ahead of the cutoff) so we don't have to remember the date later — every migration written from this point on includes the GRANT. Service-role-only tables (telemetry / audit / scraper-write paths — see `service_usage_log`, `daily_digest_log`, `slack_notify_log` for the pattern) skip the GRANT since service_role bypasses Data API restrictions. Pure doc + convention change — no code, no migration, no env-var work. Action item for the user: optionally run Supabase dashboard → Database → Security Advisor once before Oct 30 to audit which tables are currently exposed (RLS should already restrict appropriately, but worth eyeballing). Sections touched: Recent changes log; `Last updated`; §6 Data model > Migrations (new "Convention going forward" subsection documenting the GRANT pattern + template).)
 
 ## Recent changes log
+
+### 2026-05-26 — hotfix: chat.ts SYSTEM_PROMPT — remove stray backticks that broke prod
+
+**hotfix: chat.ts SYSTEM_PROMPT — remove stray backticks that broke prod.** PR #143 (brand-notes discipline) introduced backticks around the literal `write_brand_note` in the new SYSTEM_PROMPT bullet. SYSTEM_PROMPT itself is a template literal delimited by backticks, so the first internal backtick terminated the literal early → invalid JS at module load → every cold start of `/api/ai/chat` died with SyntaxError → user observed "thinking..." for ~1s then nothing on every chat message. The file's top-of-file GOTCHA comment explicitly warns about this AND notes that `vite build` doesn't catch it (Vite doesn't compile API routes; Vercel's esbuild emits the broken bundle without flagging). Fix was one character-class change: ``\`write_brand_note\``` → `**write_brand_note**` (bold, no backticks). Per the GOTCHA: italics / bold / plain text all fine for emphasis; only backticks break. **Lesson logged**: every PR that touches SYSTEM_PROMPT needs an explicit "no internal backticks" check, since the local `vite build` smoke-test is structurally blind to this class of bug. Defensive fix for the next session: a `node --check` (or tiny `import()`) on `api/ai/*.ts` in a pre-commit or CI step would have caught this before deploy. Tracked as a possible follow-up. Pure 1-line code change. Sections touched: Recent changes log; `Last updated`.
+
+### 2026-05-26 — LinkAI: brand-notes discipline — default to NOT saving; explicit allow/deny rules
+
+**LinkAI: brand-notes discipline — default to NOT saving; explicit allow/deny rules + anti-pattern callout for meeting-minutes dumps.** User reported LinkAI was indiscriminately saving every bullet from a pasted meeting-minutes blob into `brand_kit_notes` (content pipeline lists, post schedules, week-specific tactical observations, event details — none of which are evergreen brand truths). Notes get re-injected into every future AI call, so polluting them degrades every subsequent generation. Three coordinated prompt changes in `web/api/ai/chat.ts` to fix the over-eagerness: (1) the `write_brand_note` tool description was rewritten with an explicit DEFAULT=NO stance, a 2-clause allow-rule (admin explicit ask OR new evergreen brand-level rule), a labelled allow-list (voice rules, audience facts, forbidden terms, recurring schedule rules, compliance) AND a labelled deny-list with concrete negative examples lifted from the user's screenshot (content pipeline lists, specific upcoming posts, tactical observations, event details, performance recaps). (2) The SYSTEM_PROMPT bullet about remembering things was rewritten in parallel to mirror the same rules and call out the CRITICAL anti-pattern: when admin pastes meeting minutes / transcripts / "content pipeline" dumps, reply with a summary + propose 1-3 maybe-memory-worthy items + ASK before saving — never auto-fire write_brand_note per bullet. (3) The tool-menu entry was tightened to flag "Default: do NOT call" prominently. Same prompt-tightening pattern as the no-em-dashes work: the prompt rule is the primary signal, but the model can still slip — if observed behaviour still leaks after a few weeks of production, a server-side validator-loop is the next layer (regex-reject write_brand_note calls whose body matches anti-pattern signatures: dates, "scheduled for", "post X on Y", numbered pipeline lists). Pure prompt change — no schema, migration, env-var, or client work. Existing 3 over-eager notes in Bamboo Bear's brand_kit_notes are NOT auto-cleaned; user deletes them manually via Brand notes page. **Follow-up incident**: the deploy crashed prod because of a stray backtick in the new SYSTEM_PROMPT bullet — fixed in hotfix #144 (see entry above). Sections touched: Recent changes log; `Last updated`; §10 Edge functions & integrations (chat.ts behavioural change on write_brand_note triggering).
 
 ### 2026-05-26 — Live Posts engagement summary: Engagement-rate KPI replaced with Engagement-per-post
 
@@ -1772,6 +1780,39 @@ Sequentially numbered SQL files in `supabase/migrations/`. Apply via:
 - **CLI** (requires `supabase link` + DB password): `SUPABASE_ACCESS_TOKEN=<PAT> supabase db push`
 - **Management API** (PAT-only — what we used for 0025/0026): `POST https://api.supabase.com/v1/projects/<ref>/database/query` with `{"query": "..."}` and PAT bearer
 - **Dashboard**: SQL Editor → paste → run
+
+#### Convention going forward: explicit GRANTs on new public-schema tables
+
+Per the Supabase 2026-05-26 announcement, the platform's `public`-schema default flips on **2026-10-30** for existing projects (which we are): new tables created from that date will NOT be exposed to the Data API by default. They'll exist in Postgres and migrations will still apply, but `supabase.from('foo')...` from the client will fail until an explicit GRANT is added. Existing tables (0001–0061) are **grandfathered** and unaffected — production is safe forever for everything currently in this list.
+
+To stay aligned with the new convention starting now (so we don't have to remember the cutoff later), every new public-schema table migration should include the GRANT alongside the RLS-enable + policies:
+
+```sql
+CREATE TABLE public.foo (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  ...
+);
+
+ALTER TABLE public.foo ENABLE ROW LEVEL SECURITY;
+
+-- Expose to the Data API. Without this line, client-side queries via
+-- supabase.from('foo') will fail with a PostgREST "relation does not
+-- exist" error on tables created after 2026-10-30. Roles:
+--   - authenticated = logged-in users (most reads/writes)
+--   - anon          = unauthenticated anon-key path (only if a route
+--                     genuinely needs unauth access, e.g. public reads)
+--   - service_role  = service-role client (always allowed; no grant
+--                     needed — but harmless to include for clarity)
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.foo TO authenticated;
+
+-- Then add RLS policies as usual.
+CREATE POLICY foo_select ON public.foo FOR SELECT USING (...);
+-- etc.
+```
+
+Service-role-only tables (writes only via Edge Functions or `/api/*` routes using `SUPABASE_SERVICE_ROLE_KEY`) can omit the `authenticated` / `anon` grants. Most engagement / telemetry / audit tables fall in this bucket — see `service_usage_log` (0053), `daily_digest_log` (0038), `slack_notify_log` (0061) for the pattern.
+
+Reviewable from the dashboard via Database → **Security Advisor**, which flags any table currently exposed to the Data API. Worth running once before 2026-10-30 to confirm nothing existing is leaked.
 
 Most recent: `0061_slack_brand_message_notify.sql`.
 
