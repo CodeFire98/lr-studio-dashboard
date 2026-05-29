@@ -11,11 +11,28 @@ const PerformanceView = () => {
         <h2>See how your creatives <em>actually</em> perform.</h2>
         <p>Integrate with Linkrunner to pull attribution, engagement, and conversion data for every creative we deliver — directly into this dashboard.</p>
         <div className="ctas">
-          <button className="btn btn-primary btn-lg">
+          {/* Integration isn't wired up yet — keep the button visible as a
+              placeholder so the layout matches the final state, but mark it
+              disabled with a "coming soon" affordance. */}
+          <button
+            className="btn btn-primary btn-lg"
+            disabled
+            aria-disabled="true"
+            title="Coming soon"
+            style={{ opacity: 0.55, cursor: 'not-allowed' }}
+          >
             <Icon name="link" size={14}/>
             Connect Linkrunner
           </button>
-          <a className="btn btn-ghost btn-lg" style={{color: "var(--ink-3)"}}>Learn more <Icon name="arrow-up-right" size={13}/></a>
+          <a
+            className="btn btn-ghost btn-lg"
+            href="https://linkrunner.io/"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{color: "var(--ink-3)"}}
+          >
+            Learn more <Icon name="arrow-up-right" size={13}/>
+          </a>
         </div>
       </div>
 
