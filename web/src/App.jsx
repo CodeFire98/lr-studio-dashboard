@@ -19,6 +19,7 @@ import { IdeateInboxView } from './components/IdeateInboxView.jsx';
 import { LibraryView } from './components/LibraryView.jsx';
 import { LivePostsView } from './components/LivePostsView.jsx';
 import { PerformanceView } from './components/PerformanceView.jsx';
+import { BillingView } from './components/BillingView.jsx';
 import { TeamView } from './components/TeamView.jsx';
 import { BrandKitView } from './components/BrandKitView.jsx';
 import { BrandNotesView } from './components/BrandNotesView.jsx';
@@ -86,7 +87,7 @@ import { promptCreateBrand } from './components/CreateBrandModal.jsx';
 const SIMPLE_VIEWS = new Set([
   'calendar', 'ideate', 'library', 'posts', 'brand', 'team',
   'performance', 'profile', 'settings', 'clients', 'members', 'trends', 'notes',
-  'conversations', 'linkai',
+  'conversations', 'linkai', 'billing',
 ]);
 
 function parsePathToRoute(pathname) {
@@ -117,6 +118,7 @@ function parsePathToRoute(pathname) {
   if (path === '/notes')   return { view: 'notes' };
   if (path === '/conversations') return { view: 'conversations' };
   if (path === '/linkai') return { view: 'linkai' };
+  if (path === '/billing') return { view: 'billing' };
   if (path === '/profile') return { view: 'profile' };
   if (path === '/settings') return { view: 'settings' };
   // Unknown path → render the 404 view. We carry the bad pathname so the
@@ -150,7 +152,7 @@ function findFullId(prefix, items) {
 const BRAND_SCOPED_VIEWS = new Set([
   'calendar', 'plan', 'ideate', 'library', 'posts', 'brand',
   'team', 'performance', 'settings', 'trends', 'notes',
-  'conversations', 'linkai',
+  'conversations', 'linkai', 'billing',
 ]);
 
 function viewToPath(next, brandSlug) {
@@ -644,7 +646,7 @@ const App = () => {
     if (!auth?.isAgency) return;
     const r = route.view;
     const allClientsRoutes = new Set(['profile', 'settings', 'clients', 'members', 'not_found']);
-    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'conversations', 'linkai', 'profile', 'settings', 'clients', 'members', 'not_found']);
+    const inBrandRoutes    = new Set(['calendar', 'plan', 'ideate', 'brand', 'library', 'posts', 'performance', 'team', 'trends', 'notes', 'conversations', 'linkai', 'billing', 'profile', 'settings', 'clients', 'members', 'not_found']);
     if (isAllClientsMode) {
       if (!allClientsRoutes.has(r)) navigate('/clients');
     } else {
@@ -976,6 +978,7 @@ const App = () => {
     if (route.view === "brand") return <><strong>Brand Intelligence</strong></>;
     if (route.view === "settings") return <><strong>Settings</strong></>;
     if (route.view === "performance") return <><strong>Performance</strong></>;
+    if (route.view === "billing") return <><strong>Billing</strong></>;
     return <><strong>{(route.view).replace(/^./, (c) => c.toUpperCase())}</strong></>;
   })();
 
@@ -1112,6 +1115,7 @@ const App = () => {
     if (route.view === "library") return <LibraryView auth={auth} accountId={calendarAccountId} setRoute={setRoute}/>;
     if (route.view === "posts") return <LivePostsView accountId={calendarAccountId} accountName={calendarAccountName} setRoute={setRoute} isAgency={!!auth?.isAgency}/>;
     if (route.view === "performance") return <PerformanceView accountId={calendarAccountId}/>;
+    if (route.view === "billing") return <BillingView accountId={calendarAccountId} isAgency={!!auth?.isAgency} authUserId={auth?.id}/>;
     if (route.view === "team") return <TeamView overrideAccountId={auth?.isAgency ? calendarAccountId : null} />;
     if (route.view === "brand") return <BrandKitView accountId={calendarAccountId}/>;
     if (route.view === "notes") {

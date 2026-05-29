@@ -63,6 +63,7 @@ const buildBrandNav = ({ ideaQueueCount, calendarUnreadCount, conversationsUnrea
   );
   const secondary = [
     { key: "performance", label: "Performance", icon: "chart" },
+    { key: "billing", label: "Billing", icon: "receipt" },
     { key: "team", label: isAgency ? "Brand team" : "Team", icon: "team" },
   ];
   if (isAgency) {
