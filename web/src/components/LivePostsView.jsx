@@ -241,22 +241,36 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onRemove, onOpenP
     }
   }, [removing, onRemove, row.id]);
 
-  // Whole-tile click → open live post URL in a new tab. No-op when
-  // there's no live_url on this publication (user marked posted
-  // without pasting a URL). Inner interactive elements (concept-title
-  // button, refresh button) stopPropagation so they don't co-fire.
+  // Click semantics (changed 2026-05-28):
+  //   - Outer tile (surround / metadata / metrics / footer): opens the
+  //     post plan that produced this publication, in-dashboard.
+  //   - Inner embed card (LivePostEmbed below): opens the live IG/X/LI
+  //     post in a new tab. Wraps in a stopPropagation div so the outer
+  //     plan handler doesn't co-fire.
+  //
+  // Previously the whole tile opened the live URL and only the title
+  // button opened the plan — the user found that backwards (the plan
+  // page is the more common destination because that's where they
+  // edit / approve / discuss the work).
   const handleTileClick = useCallback((e) => {
-    // Honor browser conventions for opening in a new tab regardless.
+    // Don't hijack a text selection — common UX gotcha for clickable cards.
+    const selection = window.getSelection?.();
+    if (selection && selection.toString().length > 0) return;
+    if (row.plan?.id) onOpenPlan(row.plan.id);
+  }, [row.plan?.id, onOpenPlan]);
+
+  // Embed-area click → open the live external post in a new tab.
+  // No-op when there's no live_url (publication was saved without a URL).
+  const handleEmbedClick = useCallback((e) => {
+    e.stopPropagation();
     if (!row.liveUrl) return;
-    // If the user clicked on text they're trying to select, don't
-    // hijack — let the selection survive. Common UX gotcha for
-    // clickable cards.
     const selection = window.getSelection?.();
     if (selection && selection.toString().length > 0) return;
     window.open(row.liveUrl, '_blank', 'noopener,noreferrer');
   }, [row.liveUrl]);
 
-  const tileClickable = !!row.liveUrl;
+  const tileClickable = !!row.plan?.id;
+  const embedClickable = !!row.liveUrl;
 
   return (
     <div
@@ -269,10 +283,10 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onRemove, onOpenP
       onKeyDown={tileClickable ? (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          window.open(row.liveUrl, '_blank', 'noopener,noreferrer');
+          if (row.plan?.id) onOpenPlan(row.plan.id);
         }
       } : undefined}
-      title={tileClickable ? 'Open the live post in a new tab' : undefined}
+      title={tileClickable ? 'Open the post plan that produced this' : undefined}
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -386,9 +400,9 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onRemove, onOpenP
       <button
         type="button"
         onClick={(e) => {
-          // The concept-title still opens the post plan in-dashboard;
-          // stopPropagation so the tile-level live-URL handler doesn't
-          // also fire.
+          // Title button opens the post plan — same as a click anywhere
+          // else on the outer tile. stopPropagation kept so the outer
+          // handler doesn't double-fire (harmless but cleaner).
           e.stopPropagation();
           if (row.plan?.id) onOpenPlan(row.plan.id);
         }}
@@ -413,9 +427,29 @@ const LiveTile = ({ row, snapshot, embed, isAgency, onRefresh, onRemove, onOpenP
       {/* Embed card — only when the embed cache has been populated for
           this publication. Until /api/engagement/refresh writes one, the
           slot stays empty (the metrics row + link below already convey
-          the post identity). */}
+          the post identity).
+
+          Wrapped in a click-trap div: clicking the embed opens the live
+          IG/X/LI post in a new tab (stopPropagation so the outer tile's
+          "open plan" handler doesn't co-fire). Keyboard equivalent via
+          role=link + tabIndex when there's a liveUrl. */}
       {embed && (
-        <LivePostEmbed embed={embed} platform={row.platform} liveUrl={row.liveUrl} />
+        <div
+          onClick={handleEmbedClick}
+          onKeyDown={embedClickable ? (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              e.stopPropagation();
+              window.open(row.liveUrl, '_blank', 'noopener,noreferrer');
+            }
+          } : undefined}
+          role={embedClickable ? 'link' : undefined}
+          tabIndex={embedClickable ? 0 : undefined}
+          title={embedClickable ? 'Open the live post in a new tab' : undefined}
+          style={{ cursor: embedClickable ? 'pointer' : 'default' }}
+        >
+          <LivePostEmbed embed={embed} platform={row.platform} liveUrl={row.liveUrl} />
+        </div>
       )}
 
       {/* Metrics row — always renders, with "—" for null fields so the
