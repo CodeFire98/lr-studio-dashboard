@@ -1002,7 +1002,7 @@ const App = () => {
 
     // Agency-only management surfaces — reachable from the picker / profile menu.
     if (auth?.isAgency && route.view === "clients") {
-      return <AdminClientsView onOpenClient={(c) => handleSelectBrand(c.id)}/>;
+      return <AdminClientsView authUserId={auth?.id} onOpenClient={(c) => handleSelectBrand(c.id)}/>;
     }
     if (auth?.isAgency && route.view === "trends") {
       // Trends Radar is brand-scoped now — agencies in All-clients mode
