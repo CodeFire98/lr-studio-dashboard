@@ -1453,6 +1453,116 @@ export async function loadBrandAccounts() {
   });
 }
 
+// Agency-overview variant of loadBrandAccounts. Returns the same shape PLUS
+// `postPlanUnread` (count of post plans with any unread activity for this
+// user — matches the sidebar Social-Calendar badge) and `conversationsUnread`
+// (count of unseen messages in the brand's unified conversation — matches the
+// sidebar Conversations badge). Both are computed per brand for the calling
+// user so a row's badges line up exactly with what the user would see inside
+// that brand. Used by AdminClientsView (the /clients list).
+export async function loadBrandAccountsForAdminClients({ userId }) {
+  const accounts = await loadBrandAccounts();
+  if (!userId || accounts.length === 0) {
+    return accounts.map((a) => ({ ...a, postPlanUnread: 0, conversationsUnread: 0 }));
+  }
+  const accountIds = accounts.map((a) => a.id);
+
+  // ----- Post-plan notifications (per brand) ------------------------------
+  // Mirrors loadPostPlanUnreadCounts but batched across multiple brands so
+  // the table can render N rows with one round-trip per signal source.
+  const { data: planRows } = await supabase
+    .from('post_plans')
+    .select('id, account_id, updated_at')
+    .in('account_id', accountIds);
+  const plans = planRows || [];
+  const planIds = plans.map((p) => p.id);
+  const planAccount = new Map(plans.map((p) => [p.id, p.account_id]));
+
+  let viewByPlan = new Map();
+  let comments = [];
+  let attachments = [];
+  if (planIds.length > 0) {
+    const [viewsRes, commentsRes, attachRes] = await Promise.all([
+      supabase
+        .from('post_plan_views')
+        .select('post_plan_id, last_seen_at')
+        .eq('user_id', userId)
+        .in('post_plan_id', planIds),
+      supabase
+        .from('conversation_messages')
+        .select('tagged_post_plan_id, created_at')
+        .in('tagged_post_plan_id', planIds)
+        .is('parent_message_id', null)
+        .is('deleted_at', null)
+        .neq('author_id', userId),
+      supabase
+        .from('post_plan_attachments')
+        .select('post_plan_id, created_at')
+        .in('post_plan_id', planIds)
+        .neq('uploaded_by', userId),
+    ]);
+    viewByPlan = new Map((viewsRes.data || []).map((v) => [v.post_plan_id, v.last_seen_at]));
+    comments = commentsRes.data || [];
+    attachments = attachRes.data || [];
+  }
+  const unreadPlanIds = new Set();
+  const markIfUnread = (planId, ts) => {
+    const seen = viewByPlan.get(planId);
+    if (!seen || (ts && ts > seen)) unreadPlanIds.add(planId);
+  };
+  for (const c of comments) markIfUnread(c.tagged_post_plan_id, c.created_at);
+  for (const a of attachments) markIfUnread(a.post_plan_id, a.created_at);
+  for (const p of plans) markIfUnread(p.id, p.updated_at);
+  const postPlanUnreadByBrand = new Map();
+  for (const planId of unreadPlanIds) {
+    const acctId = planAccount.get(planId);
+    if (!acctId) continue;
+    postPlanUnreadByBrand.set(acctId, (postPlanUnreadByBrand.get(acctId) || 0) + 1);
+  }
+
+  // ----- Conversations unread (per brand) ---------------------------------
+  // One conversation per brand. We fetch them all + the user's view rows in
+  // two queries, then count unread messages per conversation in parallel.
+  // Each count query is HEAD-only (no payload) so volume is cheap.
+  const { data: convRows } = await supabase
+    .from('conversations')
+    .select('id, account_id')
+    .in('account_id', accountIds);
+  const conversations = convRows || [];
+  const convIds = conversations.map((c) => c.id);
+
+  let viewByConv = new Map();
+  if (convIds.length > 0) {
+    const { data: convViewRows } = await supabase
+      .from('conversation_views')
+      .select('conversation_id, last_seen_at')
+      .eq('user_id', userId)
+      .in('conversation_id', convIds);
+    viewByConv = new Map((convViewRows || []).map((v) => [v.conversation_id, v.last_seen_at]));
+  }
+  const convCounts = await Promise.all(
+    conversations.map(async (c) => {
+      const lastSeen = viewByConv.get(c.id);
+      let q = supabase
+        .from('conversation_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('conversation_id', c.id)
+        .is('deleted_at', null)
+        .neq('author_id', userId);
+      if (lastSeen) q = q.gt('created_at', lastSeen);
+      const { count } = await q;
+      return [c.account_id, count || 0];
+    })
+  );
+  const conversationsUnreadByBrand = new Map(convCounts);
+
+  return accounts.map((a) => ({
+    ...a,
+    postPlanUnread: postPlanUnreadByBrand.get(a.id) || 0,
+    conversationsUnread: conversationsUnreadByBrand.get(a.id) || 0,
+  }));
+}
+
 export async function loadBrandAccountById(accountId) {
   if (!accountId) return null;
   const { data, error } = await supabase

@@ -1651,6 +1651,18 @@ input, textarea { font: inherit; color: inherit; }
   padding: 12px 18px;
   border-bottom: 1px solid var(--line-2);
 }
+/* Clients overview (AdminClientsView) uses 4 narrower columns:
+   Client | Post plan notifs | Conversations | Created. Scoped so the
+   Team table elsewhere keeps its original 2fr/1fr/140px/40px layout. */
+.admin-clients-list .team-row {
+  grid-template-columns: minmax(0, 2fr) 140px 140px 130px;
+}
+@media (max-width: 640px) {
+  .admin-clients-list .team-row {
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    gap: var(--space-3);
+  }
+}
 .team-row:last-child { border-bottom: 0; }
 .team-row.is-head {
   background: var(--bg-panel);

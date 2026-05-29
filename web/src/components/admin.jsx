@@ -17,7 +17,9 @@ import {
   removeTeamMember,
   changeMemberRole,
   loadBrandAccounts,
+  loadBrandAccountsForAdminClients,
 } from '../lib/db.js';
+import { formatDateShort } from '../lib/format.js';
 import { confirm as confirmDialog } from './ConfirmDialog.jsx';
 
 const AdminHome = ({ tasks, setRoute }) => {
@@ -180,7 +182,34 @@ const AdminUploadView = ({ tasks }) => {
   );
 };
 
-const AdminClientsView = ({ onOpenClient }) => {
+// Small inline pill — matches the visual weight of the sidebar nav badge
+// without depending on `.nav-item .badge-count` scoping. Non-zero counts
+// pop with an accent tint; zero shows as an em-dash so the column doesn't
+// feel empty when there's nothing unread.
+function CountCell({ value }) {
+  if (!value || value <= 0) {
+    return <span style={{ color: 'var(--ink-4)', fontSize: 13 }}>—</span>;
+  }
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '2px 9px',
+        borderRadius: 999,
+        background: 'var(--accent-soft)',
+        color: 'var(--accent-ink)',
+        fontSize: 12,
+        fontWeight: 600,
+        fontVariantNumeric: 'tabular-nums',
+      }}
+    >
+      {value}
+    </span>
+  );
+}
+
+const AdminClientsView = ({ authUserId, onOpenClient }) => {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -188,12 +217,12 @@ const AdminClientsView = ({ onOpenClient }) => {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    loadBrandAccounts()
+    loadBrandAccountsForAdminClients({ userId: authUserId })
       .then((rows) => { if (!cancelled) setAccounts(rows); })
       .catch((e) => { if (!cancelled) setErr(e.message || 'Could not load clients.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [authUserId]);
 
   return (
     <div className="view"><div className="view-inner">
@@ -204,9 +233,12 @@ const AdminClientsView = ({ onOpenClient }) => {
           <div className="sub">All brands you manage across the agency. Click a row to open the client's workspace.</div>
         </div>
       </div>
-      <div className="team-list">
+      <div className="team-list admin-clients-list">
         <div className="team-row is-head">
-          <div>Client</div><div>Active tasks</div><div>Plan</div><div></div>
+          <div>Client</div>
+          <div>Post plan notifs</div>
+          <div>Conversations</div>
+          <div>Created</div>
         </div>
         {loading ? (
           <div style={{padding: "20px 16px", color: "var(--ink-4)", fontSize: 13}}>Loading clients…</div>
@@ -232,13 +264,10 @@ const AdminClientsView = ({ onOpenClient }) => {
                   <div className="mail">{a.slug || 'brand'}</div>
                 </div>
               </div>
-              <div style={{fontSize: 13}}>
-                {a.taskCount} task{a.taskCount === 1 ? '' : 's'}
-                {a.deliveredThisMonth > 0 && ` · ${a.deliveredThisMonth} delivered this month`}
-              </div>
-              <div><span className="role-pill admin">Pro</span></div>
-              <div style={{color: "var(--ink-4)", display: "flex", alignItems: "center", gap: 6, fontSize: 12}}>
-                <span>Open</span><Icon name="chevron-right" size={14}/>
+              <div><CountCell value={a.postPlanUnread}/></div>
+              <div><CountCell value={a.conversationsUnread}/></div>
+              <div style={{color: "var(--ink-4)", fontSize: 12.5, fontVariantNumeric: 'tabular-nums'}}>
+                {formatDateShort(a.createdAt) || '—'}
               </div>
             </button>
           );
