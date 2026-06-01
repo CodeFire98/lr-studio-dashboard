@@ -1322,6 +1322,20 @@ export async function removeBrandProductImage({ accountId, imageId }) {
   return mapBrandKitRow(updated);
 }
 
+// Lightweight read of just the product_reference_images array (no full
+// brand-kit hydrate) — for surfaces like the AI image-prompt panel that
+// only need the image list. Returns [] on any error.
+export async function listBrandProductImages(accountId) {
+  if (!accountId) return [];
+  const { data, error } = await supabase
+    .from('brand_kits')
+    .select('product_reference_images')
+    .eq('account_id', accountId)
+    .maybeSingle();
+  if (error) return [];
+  return Array.isArray(data?.product_reference_images) ? data.product_reference_images : [];
+}
+
 // Resolve a short-lived signed URL for a product image (private bucket).
 // Returns null on failure so the caller can render a placeholder.
 export async function getBrandProductImageUrl(path, expiresInSeconds = 60 * 60) {

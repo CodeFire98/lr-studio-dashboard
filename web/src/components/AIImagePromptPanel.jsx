@@ -49,6 +49,12 @@ import { experimental_useObject as useObject, useCompletion } from '@ai-sdk/reac
 import { z } from 'zod';
 import { Icon } from './Icon.jsx';
 import { supabase } from '../lib/supabase.js';
+import {
+  listBrandProductImages,
+  addBrandProductImage,
+  removeBrandProductImage,
+  getBrandProductImageUrl,
+} from '../lib/db.js';
 
 // Mirror of the server's IDEAS_SCHEMA (web/api/ai/image.ts). useObject's
 // `schema` option drives the type-validation behaviour of the hook —
@@ -81,6 +87,142 @@ async function fetchWithAuth(url, init) {
 }
 
 const PLATFORM_LABEL = { instagram: 'Instagram', linkedin: 'LinkedIn', x: 'X' };
+
+// Server feeds the most-recent N product reference images to Claude as
+// vision input (web/api/ai/image.ts MAX_VISION_IMAGES). Keep in sync.
+const PRODUCT_REF_FED_TO_AI = 3;
+
+// ---------------------------------------------------------------------------
+// ProductRefStrip — inline product-image uploader inside the image-prompt
+// panel. Uploads save to the brand's shared product-image library
+// (brand_kits.product_reference_images, same as the Brand Kit card), so
+// they persist and every prompt reuses them. The generator auto-feeds the
+// most-recent PRODUCT_REF_FED_TO_AI to Claude — marked with an "AI" badge.
+// ---------------------------------------------------------------------------
+function ProductRefStrip({ accountId }) {
+  const [images, setImages] = useState([]);
+  const [urls, setUrls] = useState({}); // id -> signed url
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState('');
+  const fileRef = useRef(null);
+
+  const refresh = useCallback(async () => {
+    const list = await listBrandProductImages(accountId).catch(() => []);
+    setImages(Array.isArray(list) ? list : []);
+  }, [accountId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Resolve signed URLs for any image we don't have a thumbnail for yet.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const missing = images.filter((p) => p?.id && p?.path && !urls[p.id]);
+      if (missing.length === 0) return;
+      const resolved = await Promise.all(
+        missing.map(async (p) => [p.id, await getBrandProductImageUrl(p.path).catch(() => null)]),
+      );
+      if (cancelled) return;
+      setUrls((prev) => {
+        const next = { ...prev };
+        for (const [id, u] of resolved) if (u) next[id] = u;
+        return next;
+      });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [images.map((p) => p.id).join(',')]);
+
+  const onFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErr(''); setUploading(true);
+    try {
+      const kit = await addBrandProductImage({ accountId, file });
+      setImages(Array.isArray(kit?.productReferenceImages) ? kit.productReferenceImages : []);
+    } catch (ex) {
+      setErr(ex?.message || 'Product image upload failed.');
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const onRemove = async (imageId) => {
+    setErr('');
+    try {
+      const kit = await removeBrandProductImage({ accountId, imageId });
+      setImages(Array.isArray(kit?.productReferenceImages) ? kit.productReferenceImages : []);
+    } catch (ex) {
+      setErr(ex?.message || 'Could not remove product image.');
+    }
+  };
+
+  const fedCount = Math.min(images.length, PRODUCT_REF_FED_TO_AI);
+
+  return (
+    <div className="ai-image-prodrefs">
+      <div className="ai-image-prodrefs-head">
+        <label className="ai-image-label" style={{ margin: 0 }}>Product reference images</label>
+        <span className="ai-image-prodrefs-hint">
+          {images.length === 0
+            ? 'Optional — upload the real product so the AI nails the label & proportions'
+            : `Saved to this brand · the AI uses the ${fedCount === 1 ? 'latest shot' : `latest ${fedCount}`}`}
+        </span>
+      </div>
+
+      <div className="ai-image-prodrefs-row">
+        {images.map((p, i) => {
+          const url = urls[p.id];
+          const usedForAi = i >= images.length - PRODUCT_REF_FED_TO_AI;
+          return (
+            <div key={p.id || p.path} className="ai-image-prodref-thumb" title={p.filename || 'Product image'}>
+              {url ? (
+                <span
+                  className="ai-image-prodref-img"
+                  style={{ backgroundImage: `url(${JSON.stringify(url)})` }}
+                  role="img"
+                  aria-label={p.filename || 'Product image'}
+                />
+              ) : (
+                <span className="ai-image-prodref-img ai-image-prodref-img--loading"><Icon name="image" size={16}/></span>
+              )}
+              {usedForAi && <span className="ai-image-prodref-badge">AI</span>}
+              <button
+                type="button"
+                className="ai-image-prodref-remove"
+                onClick={() => onRemove(p.id)}
+                title="Remove"
+                aria-label="Remove product image"
+              ><Icon name="x" size={10}/></button>
+            </div>
+          );
+        })}
+
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          style={{ display: 'none' }}
+          onChange={onFile}
+        />
+        <button
+          type="button"
+          className="ai-image-prodref-add"
+          onClick={() => fileRef.current?.click()}
+          disabled={uploading}
+          title="Upload a product reference image"
+        >
+          {uploading ? <span className="ai-image-prodref-spin">…</span> : (
+            <><Icon name="plus" size={14}/><span>Add</span></>
+          )}
+        </button>
+      </div>
+
+      {err && <div className="ai-image-error" style={{ marginTop: 8 }}>{err}</div>}
+    </div>
+  );
+}
 
 const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }) => {
   // Top-level navigation:
@@ -362,6 +504,14 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
       </div>
 
       <div style={{ padding: '0 16px 16px' }}>
+        {/* Product reference images — inline uploader (saves to the brand's
+            shared library; the generator auto-feeds the latest 3 to Claude).
+            Shown on the compose steps where the admin is about to generate. */}
+        {((section === 'ideas' && subPhase === 'compose') ||
+          (section === 'prompt' && subPhase === 'compose')) && (
+          <ProductRefStrip accountId={accountId} />
+        )}
+
         {/* IDEAS — COMPOSE */}
         {section === 'ideas' && subPhase === 'compose' && (
           <div className="ai-image-section">
