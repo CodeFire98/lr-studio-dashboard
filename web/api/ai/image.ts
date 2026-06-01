@@ -77,6 +77,65 @@ const PLATFORM_FORMAT: Record<string, string> = {
   x: "16:9 landscape format (X / Twitter)",
 };
 
+// Product reference images (brand_kits.product_reference_images jsonb).
+// We feed up to 3 (most recent) to Claude as vision input. PRIVATE bucket
+// — read via the service-role storage client.
+const PRODUCT_IMAGE_BUCKET = "brand-product-images";
+const MAX_VISION_IMAGES = 3;
+// Media types Anthropic vision accepts. Anything else is dropped.
+const VISION_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+type ProductImageRef = {
+  id?: string;
+  path?: string;
+  filename?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  addedAt?: string;
+};
+type LoadedImage = { data: Uint8Array; mediaType: string };
+
+// Infer an Anthropic-acceptable media type from the stored mimeType, else
+// the filename extension, else null (caller drops the image).
+function resolveVisionMediaType(ref: ProductImageRef): string | null {
+  const mt = (ref.mimeType || "").toLowerCase();
+  if (VISION_MEDIA_TYPES.has(mt)) return mt;
+  const ext = (ref.path || ref.filename || "").toLowerCase().split(".").pop() || "";
+  const byExt: Record<string, string> = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    webp: "image/webp",
+  };
+  return byExt[ext] ?? null;
+}
+
+// Download the most-recent MAX_VISION_IMAGES product photos and return them
+// as raw bytes for the AI SDK's image message parts. Best-effort: skips any
+// that fail to download or have an unsupported type. Order preserved
+// (most-recent last, matching the array's append order).
+async function loadProductImages(
+  serviceClient: { storage: { from: (b: string) => { download: (p: string) => Promise<{ data: Blob | null; error: unknown }> } } },
+  refs: ProductImageRef[],
+): Promise<LoadedImage[]> {
+  const recent = refs.filter((r) => r && r.path).slice(-MAX_VISION_IMAGES);
+  const out: LoadedImage[] = [];
+  for (const ref of recent) {
+    const mediaType = resolveVisionMediaType(ref);
+    if (!mediaType) continue;
+    try {
+      const { data, error } = await serviceClient.storage.from(PRODUCT_IMAGE_BUCKET).download(ref.path as string);
+      if (error || !data) continue;
+      const bytes = new Uint8Array(await data.arrayBuffer());
+      if (bytes.byteLength > 0) out.push({ data: bytes, mediaType });
+    } catch {
+      // skip — text-only still works.
+    }
+  }
+  return out;
+}
+
 // Zod schema for the structured-output ideas mode. The shape MUST match
 // the client's `useObject({ schema })` exactly — the client deserialises
 // into DeepPartial<infer<typeof IDEAS_SCHEMA>> as JSON streams in.
@@ -217,22 +276,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Pull the brand's industry + product categories to select the matching
   // category-specific rules from the image-prompting house style (beverages
-  // / food / fashion / skincare / tech). Non-fatal: if the lookup fails or
-  // nothing matches, the universal house-style directives still ship.
+  // / food / fashion / skincare / tech), plus its product reference images.
+  // Non-fatal: if the lookup fails or nothing matches, the universal
+  // house-style directives still ship and we generate text-only.
   let imageGuide = "";
+  let productImageRefs: ProductImageRef[] = [];
   try {
     const { data: kit } = await serviceClient
       .from("brand_kits")
-      .select("industry, product_categories")
+      .select("industry, product_categories, product_reference_images")
       .eq("account_id", body.accountId)
       .maybeSingle();
     imageGuide = compileImagePromptGuide({
       industry: kit?.industry,
       productCategories: kit?.product_categories,
     });
+    productImageRefs = Array.isArray(kit?.product_reference_images)
+      ? (kit!.product_reference_images as ProductImageRef[])
+      : [];
   } catch {
     imageGuide = compileImagePromptGuide({});
   }
+
+  // Download up to 3 (most recent) product reference photos and pass them
+  // to Claude as vision input so the prompt describes real proportions /
+  // label / packaging instead of guessing. Best-effort: a failed download
+  // is skipped (text-only still works). The house-style system block is
+  // already reference-image-aware — it tells the model to describe from
+  // what it SEES when images are attached.
+  const productImages = await loadProductImages(serviceClient, productImageRefs);
 
   // Disable Vercel response buffering so deltas reach the browser as they're
   // generated. pipeTextStreamToResponse sets Content-Type itself (text/plain).
@@ -300,6 +372,23 @@ Description: ${ideaDescription}${keywords.length ? `\nStyle keywords: ${keywords
 Output the detailed image prompt text only — no preamble, no markdown, no quotes. Ready to paste into the admin's image-gen tool.`;
   }
 
+  // When product reference images ride along, tell the model explicitly so
+  // it grounds the description in what it SEES (the system block already
+  // carries the general rule; this anchors it to THIS message's images).
+  if (productImages.length > 0) {
+    userMessage += `\n\n${productImages.length} product reference image${productImages.length > 1 ? "s are" : " is"} attached to this message — they are the ACTUAL product. Describe its real shape, proportions, label text + layout, colour and packaging from what you see; do not invent or contradict them. Close with the product reference line.`;
+  }
+
+  // Build the user message content: when images are present, send a
+  // multimodal array (image parts first, then the text); otherwise a plain
+  // string. Uint8Array bytes are valid AI SDK image content.
+  const userContent = productImages.length > 0
+    ? [
+        ...productImages.map((img) => ({ type: "image" as const, image: img.data, mediaType: img.mediaType })),
+        { type: "text" as const, text: userMessage },
+      ]
+    : userMessage;
+
   // System messages array shared by both modes. Each block gets its own
   // cache_control via providerOptions.anthropic.cacheControl. The two
   // blocks ride via the `system` parameter (Array<SystemModelMessage>)
@@ -363,7 +452,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
     // eslint-disable-next-line no-console
     console.log(
       `[image] usage account=${body.accountId} plan=${body.plan_id} platform=${body.platform} mode=${label} ` +
-        `input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason ?? "n/a"}`,
+        `images=${productImages.length} input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason ?? "n/a"}`,
     );
     void logServiceUsage({
       service: "anthropic",
@@ -389,6 +478,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         finish_reason: finishReason ?? null,
         cache_read_tokens: cr,
         cache_write_tokens: cw,
+        product_images: productImages.length,
       },
     });
   };
@@ -405,7 +495,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         maxOutputTokens: MAX_TOKENS_IDEAS,
         schema: IDEAS_SCHEMA,
         system: systemMessages,
-        messages: [{ role: "user", content: userMessage }],
+        messages: [{ role: "user", content: userContent }],
         onFinish: ({ usage }) => logUsage("ideas", usage),
       });
 
@@ -416,7 +506,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         model: anthropic(MODEL_ID),
         maxOutputTokens: MAX_TOKENS_PROMPT,
         system: systemMessages,
-        messages: [{ role: "user", content: userMessage }],
+        messages: [{ role: "user", content: userContent }],
         onFinish: ({ totalUsage, finishReason }) => logUsage("prompt", totalUsage, finishReason),
       });
 
