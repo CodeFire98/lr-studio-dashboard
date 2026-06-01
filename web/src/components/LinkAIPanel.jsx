@@ -681,6 +681,9 @@ const LinkAIPanel = ({
   const [attachmentError, setAttachmentError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
+  // Separate input for the mobile camera button. Same accept/handler as the
+  // paperclip, but `capture="environment"` opens the rear camera directly.
+  const cameraInputRef = useRef(null);
   const dragCounterRef = useRef(0);
 
   const readAsDataUrl = (file) => new Promise((resolve, reject) => {
@@ -1423,28 +1426,6 @@ const LinkAIPanel = ({
               </div>
             )}
             <div className="link-ai-page-row">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept={ACCEPTED_MIMES.join(",")}
-                multiple
-                hidden
-                onChange={onFileInputChange}
-              />
-              <button
-                type="button"
-                className="link-ai-attach-btn"
-                onClick={onPickClick}
-                disabled={isBusy || attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
-                title={
-                  attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE
-                    ? `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`
-                    : "Attach image (PNG, JPEG, WebP, GIF — 5 MB max)"
-                }
-                aria-label="Attach image"
-              >
-                <Icon name="paperclip" size={14} />
-              </button>
               <textarea
                 ref={textareaRef}
                 value={draft}
@@ -1460,24 +1441,79 @@ const LinkAIPanel = ({
                 }
                 rows={1}
               />
-              {/* Stop button shows only when the user is VIEWING the
-                  conv that's currently streaming — clicking Stop while
-                  looking at a different background conv would be
-                  confusing. From the off-stream view, only Send is
-                  available (disabled until the stream ends or they
-                  switch back to the streaming conv to hit Stop). */}
-              {isBusy && streamingActiveConv ? (
-                <button className="link-ai-send link-ai-cancel" onClick={stop}>Stop</button>
-              ) : (
+              {/* Actions grouped to the right of the textarea, matching the
+                  Conversations composer: attach + camera (mobile) + Send. */}
+              <div className="link-ai-page-actions">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={ACCEPTED_MIMES.join(",")}
+                  multiple
+                  hidden
+                  onChange={onFileInputChange}
+                />
                 <button
-                  className="link-ai-send"
-                  onClick={handleSend}
-                  disabled={isBusy || (!draft.trim() && attachments.length === 0)}
-                  title={isBusy ? "Wait for the current generation to finish, or click Stop." : undefined}
+                  type="button"
+                  className="link-ai-attach-btn"
+                  onClick={onPickClick}
+                  disabled={isBusy || attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+                  title={
+                    attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE
+                      ? `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`
+                      : "Attach image (PNG, JPEG, WebP, GIF — 5 MB max)"
+                  }
+                  aria-label="Attach image"
                 >
-                  Send
+                  <Icon name="paperclip" size={16} />
                 </button>
-              )}
+                {/* Camera capture — touch devices only, mirrors the
+                    Conversations composer. Feeds the same addFiles pipeline
+                    as the paperclip. */}
+                {isCoarsePointer && (
+                  <input
+                    ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    hidden
+                    onChange={(e) => { onFileInputChange(e); if (e.target) e.target.value = ""; }}
+                  />
+                )}
+                {isCoarsePointer && (
+                  <button
+                    type="button"
+                    className="link-ai-attach-btn"
+                    onClick={() => cameraInputRef.current?.click()}
+                    disabled={isBusy || attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+                    title={
+                      attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE
+                        ? `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`
+                        : "Take a photo"
+                    }
+                    aria-label="Take a photo"
+                  >
+                    <Icon name="aperture" size={16} />
+                  </button>
+                )}
+                {/* Stop button shows only when the user is VIEWING the
+                    conv that's currently streaming — clicking Stop while
+                    looking at a different background conv would be
+                    confusing. From the off-stream view, only Send is
+                    available (disabled until the stream ends or they
+                    switch back to the streaming conv to hit Stop). */}
+                {isBusy && streamingActiveConv ? (
+                  <button className="link-ai-send link-ai-cancel" onClick={stop}>Stop</button>
+                ) : (
+                  <button
+                    className="link-ai-send"
+                    onClick={handleSend}
+                    disabled={isBusy || (!draft.trim() && attachments.length === 0)}
+                    title={isBusy ? "Wait for the current generation to finish, or click Stop." : undefined}
+                  >
+                    Send
+                  </button>
+                )}
+              </div>
             </div>
             <div className="link-ai-page-hint">⌘↩ to send · paste or drop an image to attach</div>
           </>
