@@ -5822,8 +5822,15 @@ input, textarea { font: inherit; color: inherit; }
   border-color: color-mix(in oklab, var(--accent) 50%, var(--line));
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 12%, transparent);
 }
+/* Buttons grouped to the right of the textarea (attach + camera + Send),
+   matching the Conversations composer's .conv-composer-actions. */
+.link-ai-input--page .link-ai-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .link-ai-input--page .link-ai-page-row .link-ai-send {
-  height: 40px;
+  height: 32px;
   flex-shrink: 0;
 }
 .link-ai-page-hint {
@@ -5842,11 +5849,11 @@ input, textarea { font: inherit; color: inherit; }
    the composer row. */
 .link-ai-attach-btn {
   flex-shrink: 0;
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--line);
   background: var(--surface);
-  border-radius: 8px;
+  border-radius: 6px;
   color: var(--ink-2);
   display: grid;
   place-items: center;
