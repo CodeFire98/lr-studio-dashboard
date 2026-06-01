@@ -45,6 +45,7 @@ import { streamText, streamObject } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
+import { compileImagePromptGuide } from "../../src/lib/skillRegistry.js";
 import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
 import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 
@@ -55,12 +56,25 @@ const ANON_KEY = process.env.SUPABASE_ANON_KEY ?? "";
 
 const MODEL_ID = "claude-sonnet-4-6";
 const MAX_TOKENS_IDEAS = 1200;
-const MAX_TOKENS_PROMPT = 1000;
+// House-style prompts run longer (lifestyle 250-350 words, complex scenes
+// 300-400) than the old generic art-direction prompt, so give prompt mode
+// more headroom. 400 words ≈ ~550 tokens; 1200 leaves comfortable margin.
+const MAX_TOKENS_PROMPT = 1200;
 
 const PLATFORM_LABEL: Record<string, string> = {
   instagram: "Instagram",
   linkedin: "LinkedIn",
   x: "X (Twitter)",
+};
+
+// Golden rule #1 — state the format first. We derive the target aspect
+// ratio from the active platform so the prompt always opens with a
+// concrete format the admin didn't have to think about. Stated in words
+// (not "--ar" flags) so it's tool-agnostic.
+const PLATFORM_FORMAT: Record<string, string> = {
+  instagram: "4:5 vertical format (Instagram feed)",
+  linkedin: "16:9 landscape format (LinkedIn)",
+  x: "16:9 landscape format (X / Twitter)",
 };
 
 // Zod schema for the structured-output ideas mode. The shape MUST match
@@ -94,25 +108,21 @@ const SYSTEM_IDEAS = `You are an art director helping an agency plan visual crea
 
 Each direction is a different ANGLE — different framing, mood, subject choice, or compositional idea. Don't propose 5 variations of the same shot. Spread the directions across the realistic possibilities (e.g. studio product shot, in-context lifestyle shot, abstract / conceptual, hands-only / detail crop, behind-the-scenes / process).
 
+The "Image-prompting house style" block above is your craft reference — let it shape the directions (no-face by default, product-as-hero, deliberate lighting, the brand's category rules). But keep each concept SHORT: a title, a 1-2 sentence description, and a few style keywords. The full house-style detail (proportions, label direction, reference line, etc.) gets applied later when the chosen direction is expanded into a full prompt — don't pack it into the concept descriptions here.
+
 Brand voice constraints from the brand context MUST inform every direction — palette, photography style, do/don'ts, voice tags. If the brand voice prohibits something (e.g. "no stock photo feel"), every direction respects that. If the admin's brief is too thin to generate 5 distinct angles, return fewer (3-4 is fine) rather than padding with repeats.`;
 
-const SYSTEM_PROMPT_DETAILED = `You are an art director writing a detailed image-generation prompt for a single brand's social post. The admin has chosen a direction concept; your job is to expand it into a precise, ready-to-paste prompt for Midjourney / DALL-E / Imagen / similar tools.
+const SYSTEM_PROMPT_DETAILED = `You are an art director writing a detailed image-generation prompt for a single brand's social post. The admin has chosen a direction concept; your job is to expand it into a precise, ready-to-paste prompt for Midjourney / DALL-E / Imagen / Nano-Banana / similar tools.
+
+Apply the "Image-prompting house style" block above as hard rules, not suggestions: open with the format, follow the prompt architecture order, name the light, keep faces out unless the direction calls for them, state real product proportions, put the label front and centre, and close with the product reference line. Honour the brand's category-specific rules if they were included.
+
+If reference image(s) are attached to this request, describe the product's shape, label, colour and proportions from what you actually SEE in them — never invent or contradict the reference. If none are attached, still close with the reference-line instruction so the admin knows to attach their product shot in their image tool.
 
 Output ONLY the prompt text — no preamble, no markdown, no explanation, no "Here's the prompt:". Just the prompt, ready to paste.
 
-Structure the prompt so it covers (in this rough order):
-- Subject + key action / pose
-- Setting / environment
-- Composition + framing (close-up / wide / overhead / etc.)
-- Lighting + mood
-- Style / aesthetic / references (cite specific photographic / visual references if relevant, e.g. "Wes Anderson symmetry", "Annie Leibovitz editorial portrait")
-- Brand palette + colour direction (use the brand's actual colour hexes/names from the brand context)
-- Texture, depth-of-field, lens choice if relevant
-- Anything to AVOID (only if the brand voice or admin instruction calls it out)
+Match the brand's photography style + palette from the brand context (use the brand's actual colour hexes/names). The prompt should be specific enough that two different image-gen tools would produce visually compatible results from it. Use the house-style length guide for the shot type — long enough to be specific, short enough to paste.
 
-Match the brand's photography style + palette from the brand context. The prompt should be specific enough that two different image-gen tools would produce visually compatible results from it. Aim for 100-250 words — long enough to be specific, short enough to paste comfortably.
-
-Don't include image-tool-specific syntax (e.g. Midjourney's "--ar 1:1" flags). The admin adds those for their tool of choice.`;
+Don't include image-tool-specific syntax (e.g. Midjourney's "--ar 1:1" flags) — state the format in words instead. The admin adds tool flags for their tool of choice.`;
 
 type RequestBody = {
   accountId?: string;
@@ -205,6 +215,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(404).json({ error: "No brand kit found for this account." });
   }
 
+  // Pull the brand's industry + product categories to select the matching
+  // category-specific rules from the image-prompting house style (beverages
+  // / food / fashion / skincare / tech). Non-fatal: if the lookup fails or
+  // nothing matches, the universal house-style directives still ship.
+  let imageGuide = "";
+  try {
+    const { data: kit } = await serviceClient
+      .from("brand_kits")
+      .select("industry, product_categories")
+      .eq("account_id", body.accountId)
+      .maybeSingle();
+    imageGuide = compileImagePromptGuide({
+      industry: kit?.industry,
+      productCategories: kit?.product_categories,
+    });
+  } catch {
+    imageGuide = compileImagePromptGuide({});
+  }
+
   // Disable Vercel response buffering so deltas reach the browser as they're
   // generated. pipeTextStreamToResponse sets Content-Type itself (text/plain).
   res.setHeader("X-Accel-Buffering", "no");
@@ -238,6 +267,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ? `\n\nCAPTIONS ON THIS POST PLAN (for tonal + campaign context across platforms — match the angle/mood; visualise something cohesive with the captions, not contradictory):\n${allPlatformCopy}`
     : "";
 
+  const targetFormat = PLATFORM_FORMAT[body.platform] ?? "";
+  const formatLine = targetFormat ? `\nTarget format: ${targetFormat}` : "";
+
   let userMessage: string;
   if (mode === "ideas") {
     const briefLine = body.brief?.trim()
@@ -246,7 +278,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     userMessage = `Propose 3-5 image direction concepts for this ${platformLabel} post.
 
 Post concept: ${conceptLine}
-Scheduled: ${scheduledLabel}${copyContextSection}${briefLine}`;
+Scheduled: ${scheduledLabel}${formatLine}${copyContextSection}${briefLine}`;
   } else {
     const ideaTitle = body.idea_title?.trim() || "";
     const ideaDescription = body.idea_description?.trim() || "";
@@ -256,10 +288,10 @@ Scheduled: ${scheduledLabel}${copyContextSection}${briefLine}`;
     const detailsLine = body.prompt?.trim()
       ? `\n\nAdmin's additional details for THIS prompt:\n${body.prompt.trim()}`
       : "";
-    userMessage = `Write a detailed image-generation prompt for this ${platformLabel} post, building on the chosen direction below.
+    userMessage = `Write a detailed image-generation prompt for this ${platformLabel} post, building on the chosen direction below. Open the prompt by stating the format.
 
 Post concept: ${conceptLine}
-Scheduled: ${scheduledLabel}${copyContextSection}
+Scheduled: ${scheduledLabel}${formatLine}${copyContextSection}
 
 CHOSEN DIRECTION:
 Title: ${ideaTitle}
@@ -273,12 +305,28 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
   // blocks ride via the `system` parameter (Array<SystemModelMessage>)
   // instead of being mixed into `messages` — silences the AI SDK's
   // prompt-injection warning AND keeps both cache breakpoints intact.
+  // Three cached blocks (Anthropic allows up to 4 breakpoints):
+  //   1. per-mode persona (static per mode → caches across all calls)
+  //   2. image-prompting house style + category notes (varies only by the
+  //      5 category headings → caches across same-category brands)
+  //   3. brand context (per brand)
+  // The house style rides as its own block so the universal directives
+  // stay a stable cache key regardless of brand.
   const systemMessages = [
     {
       role: "system" as const,
       content: systemInstructions,
       providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } },
     },
+    ...(imageGuide
+      ? [
+          {
+            role: "system" as const,
+            content: `\n\n---\n\n${imageGuide}`,
+            providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } },
+          },
+        ]
+      : []),
     {
       role: "system" as const,
       content: `\n\n---\n\n${brandContext}`,

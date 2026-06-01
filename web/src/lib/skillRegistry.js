@@ -95,6 +95,13 @@ export const SKILL_MENU = [
       'Use when the brand has a product launch, feature announcement, or major milestone coming up. Loads the pre-launch / launch-day / post-launch playbook including teaser cadence, day-of moves, and the post-launch nurture sequence.',
     references: [],
   },
+  {
+    slug: 'image-prompting',
+    title: 'Image Prompting',
+    when_to_load:
+      'Use when the admin wants to write, improve, or art-direct an AI image-generation prompt (Midjourney / DALL-E / Imagen / Nano-Banana / similar) for a brand visual — or asks "how should I prompt for this image" or to draft an image prompt directly in chat. Loads the Linkrunner Media house style: format-first, accurate proportions, label direction, no-face defaults, lighting + camera vocab, and reference-image handling. The `guide` reference adds category-specific rules (beverages/food/fashion/skincare/tech) and copy-paste templates.',
+    references: ['guide'],
+  },
 ];
 
 export const SKILL_SLUGS = SKILL_MENU.map((s) => s.slug);
@@ -318,12 +325,141 @@ export function compileCopyGuidance(platform) {
   return blocks.join('\n\n');
 }
 
+// =====================================================================
+// Image-prompt guidance compiler — used by /api/ai/image
+// =====================================================================
+//
+// The image-ideation surface (ideas + detailed-prompt modes) is
+// single-shot like inline copy — it can't call load_skill at runtime.
+// So we inject the Linkrunner Media image-prompting house style up front
+// as a cached system block, exactly like compileCopyGuidance does for
+// copy. Two pieces:
+//
+//   1. The universal directives (image-prompting/SKILL.md body) — the
+//      always-on golden rules, architecture, vocab, reference-image
+//      handling. Fully static → caches across every brand + call.
+//   2. The matching category-specific notes (beverages / food / fashion
+//      / skincare / tech) extracted from references/guide.md, selected
+//      from the brand's industry + product categories. Skipped when no
+//      category matches (universal directives still ship).
+//
+// Token cost: ~1.4K cached tokens per image call. Cache hits across
+// back-to-back ideas/prompt calls within the 5-min TTL.
+
+// Maps free-text brand industry / product-category strings to one of the
+// guide's category-note headings. First match wins. Order matters:
+// beverage before food (a "beverage brand" shouldn't fall into food),
+// skincare before fashion (both can say "beauty"/"lifestyle").
+const IMAGE_CATEGORY_MATCHERS = [
+  { heading: 'Beverages', re: /\b(beverage|drink|juice|soda|kombucha|cola|coffee|tea|water|seltzer|cocktail|bottle|can)\b/i },
+  { heading: 'Food', re: /\b(food|snack|yog(h)?urt|dairy|bakery|bakes?|confection|dessert|meal|nutrition|protein|chocolate|sauce|spread|cereal|granola)\b/i },
+  { heading: 'Skincare', re: /\b(skincare|skin care|beauty|cosmetic|makeup|make-up|serum|personal care|grooming|wellness|spa)\b/i },
+  { heading: 'Fashion', re: /\b(fashion|apparel|clothing|clothes|wear|footwear|shoe|sneaker|accessor|jewellery|jewelry|bag|eyewear)\b/i },
+  { heading: 'Tech', re: /\b(tech|app|saas|software|fintech|platform|digital|startup|ai|electronics|gadget|device)\b/i },
+];
+
+// Resolve a guide category heading from the brand's industry + product
+// categories. Returns null when nothing matches (universal-only).
+export function resolveImageCategory({ industry, productCategories } = {}) {
+  const haystack = [
+    typeof industry === 'string' ? industry : '',
+    Array.isArray(productCategories) ? productCategories.join(' ') : (typeof productCategories === 'string' ? productCategories : ''),
+  ]
+    .join(' ')
+    .trim();
+  if (!haystack) return null;
+  for (const { heading, re } of IMAGE_CATEGORY_MATCHERS) {
+    if (re.test(haystack)) return heading;
+  }
+  return null;
+}
+
+// Extract one ### subsection (by heading) from within the guide's
+// "## Category-Specific Notes" H2 block. Returns '' if not found.
+function extractCategoryNote(markdown, heading) {
+  if (typeof markdown !== 'string' || !heading) return '';
+  const lines = markdown.split('\n');
+  // Find the parent H2.
+  let h2Idx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '## Category-Specific Notes') { h2Idx = i; break; }
+  }
+  if (h2Idx === -1) return '';
+  // Bound the H2 block (until the next H2).
+  let h2End = lines.length;
+  for (let i = h2Idx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith('## ')) { h2End = i; break; }
+  }
+  // Find the ### subsection inside that block.
+  const startMarker = `### ${heading}`;
+  let startIdx = -1;
+  for (let i = h2Idx + 1; i < h2End; i++) {
+    if (lines[i].trim() === startMarker) { startIdx = i; break; }
+  }
+  if (startIdx === -1) return '';
+  let endIdx = h2End;
+  for (let i = startIdx + 1; i < h2End; i++) {
+    if (lines[i].startsWith('### ') || lines[i].startsWith('## ')) { endIdx = i; break; }
+  }
+  return lines.slice(startIdx, endIdx).join('\n').trim();
+}
+
+let _cachedImageSkillBody = null;
+let _cachedImageGuideMarkdown = null;
+
+function getImageSkillBody() {
+  if (_cachedImageSkillBody !== null) return _cachedImageSkillBody;
+  const raw = readMarkdownFile(path.join(SKILLS_DIR, 'image-prompting', 'SKILL.md'));
+  _cachedImageSkillBody = stripFrontmatter(raw);
+  return _cachedImageSkillBody;
+}
+
+function getImageGuideMarkdown() {
+  if (_cachedImageGuideMarkdown !== null) return _cachedImageGuideMarkdown;
+  _cachedImageGuideMarkdown = readMarkdownFile(
+    path.join(SKILLS_DIR, 'image-prompting', 'references', 'guide.md'),
+  );
+  return _cachedImageGuideMarkdown;
+}
+
+// Returns a markdown-formatted system-prompt block carrying the image
+// house style + (optionally) the brand's matching category notes.
+// `brand` is { industry, productCategories } — pass what the brand kit
+// has; either field may be missing. Degrades gracefully to '' if the
+// skill files aren't in this bundle.
+export function compileImagePromptGuide(brand = {}) {
+  let universal = '';
+  try {
+    universal = getImageSkillBody();
+  } catch {
+    return ''; // files missing in bundle — caller ships brand context alone.
+  }
+
+  const heading = resolveImageCategory(brand);
+  let categoryNote = '';
+  if (heading) {
+    try {
+      categoryNote = extractCategoryNote(getImageGuideMarkdown(), heading);
+    } catch {
+      // guide missing — universal still ships.
+    }
+  }
+
+  const blocks = ['# Image-prompting house style (Linkrunner Media)'];
+  blocks.push(universal);
+  if (categoryNote) {
+    blocks.push(`## Category-specific rules — this brand reads as **${heading}**`);
+    blocks.push(categoryNote);
+  }
+  return blocks.join('\n\n');
+}
+
 // Returns the menu block to inject into the system prompt. Kept terse —
 // just enough for the model to route to the right skill without loading.
 export function compileSkillMenu() {
   const lines = ['## Available marketing playbooks (load on demand)\n'];
   lines.push(
-    "You have access to 7 specialised marketing playbooks. When the admin's request is well-served by one, call `load_skill(slug)` to read the full playbook first, THEN apply its frameworks/templates when drafting or planning. Don't load a skill speculatively — load when its description matches the work. Loaded skill bodies stay in context for the rest of this conversation, so you don't need to re-load.\n",
+    `You have access to ${SKILL_MENU.length} specialised playbooks. When the admin's request is well-served by one, call \`load_skill(slug)\` to read the full playbook first, THEN apply its frameworks/templates when drafting or planning. Don't load a skill speculatively — load when its description matches the work. Loaded skill bodies stay in context for the rest of this conversation, so you don't need to re-load.\n`,
   );
   lines.push(
     'Each skill may also expose deeper reference docs (e.g. copy frameworks, post templates, idea catalogues). The load_skill response lists `available_references`. If a reference looks directly relevant, call `load_skill_reference(slug, reference_name)` to pull it in too.\n',
