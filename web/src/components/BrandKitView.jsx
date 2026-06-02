@@ -20,9 +20,6 @@ import {
   addBrandLogoVariant,
   removeBrandLogoVariant,
   updateBrandLogoVariant,
-  addBrandProductImage,
-  removeBrandProductImage,
-  getBrandProductImageUrl,
   triggerBrandKitEnrichment,
   findCompetitorsForBrand,
 } from '../lib/db.js';
@@ -564,158 +561,6 @@ const LogoMarksCard = ({ accountId, logoUrl, variants, onSave, onVariantsChange,
           </div>
         )}
       </div>
-
-      {err && <div style={{ color: 'var(--accent-ink)', fontSize: 12, marginTop: 12 }}>{err}</div>}
-    </div>
-  );
-};
-
-// ---- Product reference images ------------------------------------------
-// Brand-level library of real product photos. /api/ai/image feeds up to 3
-// (most recent) to Claude as vision input so generated image prompts get
-// accurate proportions / label / packaging. PRIVATE bucket — thumbnails
-// render via signed URLs resolved on load.
-const ProductImagesCard = ({ accountId, images, onChange }) => {
-  const fileRef = useRef(null);
-  const [uploading, setUploading] = useState(false);
-  const [err, setErr] = useState('');
-  const [urls, setUrls] = useState({}); // id -> signed url
-  const lightbox = useLightbox();
-
-  const list = Array.isArray(images) ? images : [];
-
-  // Resolve signed URLs for any image we don't have a URL for yet.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const missing = list.filter((p) => p?.id && p?.path && !urls[p.id]);
-      if (missing.length === 0) return;
-      const resolved = await Promise.all(
-        missing.map(async (p) => [p.id, await getBrandProductImageUrl(p.path).catch(() => null)]),
-      );
-      if (cancelled) return;
-      setUrls((prev) => {
-        const next = { ...prev };
-        for (const [id, url] of resolved) if (url) next[id] = url;
-        return next;
-      });
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [list.map((p) => p.id).join(',')]);
-
-  const handleFile = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setErr(''); setUploading(true);
-    try {
-      const next = await addBrandProductImage({ accountId, file });
-      onChange(next);
-    } catch (ex) {
-      setErr(ex?.message || 'Product image upload failed.');
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = '';
-    }
-  };
-
-  const remove = async (imageId) => {
-    setErr('');
-    try {
-      const next = await removeBrandProductImage({ accountId, imageId });
-      onChange(next);
-    } catch (ex) {
-      setErr(ex?.message || 'Could not remove product image.');
-    }
-  };
-
-  return (
-    <div className="card">
-      <div className="card-head">
-        <div>
-          <div className="card-title">Product reference images</div>
-          <div className="card-sub">Real product shots — AI image prompts use up to 3 (most recent) as exact reference for shape, label &amp; proportions</div>
-        </div>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          style={{ display: 'none' }}
-          onChange={handleFile}
-        />
-        <button
-          type="button"
-          className="btn btn-sm btn-primary"
-          onClick={() => fileRef.current?.click()}
-          disabled={uploading}
-        >
-          <Icon name="upload" size={12}/>
-          {uploading ? 'Uploading…' : 'Add product shot'}
-        </button>
-      </div>
-
-      {list.length === 0 ? (
-        <div style={{ fontSize: 13, color: 'var(--ink-4)', padding: '8px 0' }}>
-          Upload clean photos of the actual product (front label, back, angles). The image-prompt generator feeds these to Claude so prompts get the real proportions, label text and packaging — not a guess.
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-          {list.map((p, i) => {
-            const url = urls[p.id];
-            const usedForAi = i >= list.length - 3; // last 3 = fed to Claude
-            return (
-              <div
-                key={p.id || p.path}
-                style={{
-                  border: '1px solid var(--line-2)',
-                  borderRadius: 10,
-                  overflow: 'hidden',
-                  background: 'var(--surface-2)',
-                  position: 'relative',
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => url && lightbox.open({ src: url, mimeType: p.mimeType || 'image/*', name: p.filename || 'Product image', alt: p.filename || 'Product image', downloadUrl: url })}
-                  style={{
-                    display: 'block', width: '100%',
-                    aspectRatio: '1/1',
-                    border: 0, padding: 0,
-                    background: url
-                      ? `center / cover no-repeat url(${JSON.stringify(url)}), var(--surface-2)`
-                      : 'var(--surface-2)',
-                    cursor: url ? 'zoom-in' : 'default',
-                    display: 'grid', placeItems: 'center',
-                    color: 'var(--ink-4)',
-                  }}
-                  aria-label={`Open ${p.filename || 'product image'} full size`}
-                >
-                  {!url && <Icon name="image" size={24}/>}
-                </button>
-                {usedForAi && (
-                  <div style={{
-                    position: 'absolute', top: 6, left: 6,
-                    fontSize: 10, fontWeight: 600, letterSpacing: '0.02em',
-                    padding: '2px 6px', borderRadius: 5,
-                    background: 'var(--accent)', color: 'var(--accent-ink)',
-                  }}>AI</div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => remove(p.id)}
-                  title="Remove"
-                  style={{
-                    position: 'absolute', top: 6, right: 6,
-                    background: 'var(--surface)', border: '1px solid var(--line-2)',
-                    borderRadius: 6, color: 'var(--ink-3)', cursor: 'pointer',
-                    padding: 4, lineHeight: 0,
-                  }}
-                ><Icon name="x" size={11}/></button>
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       {err && <div style={{ color: 'var(--accent-ink)', fontSize: 12, marginTop: 12 }}>{err}</div>}
     </div>
@@ -2199,11 +2044,6 @@ const BrandKitView = ({ accountId: accountIdProp }) => {
         onSave={saveField}
         onVariantsChange={(updated) => setKit(updated)}
         backgroundHint={kit.backgroundColor}
-      />
-      <ProductImagesCard
-        accountId={accountId}
-        images={kit.productReferenceImages}
-        onChange={(updated) => setKit(updated)}
       />
       <CollapsibleEngineering kit={kit} />
 

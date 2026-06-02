@@ -1046,7 +1046,6 @@ function mapBrandKitRow(row) {
     inspiration: Array.isArray(row.inspiration) ? row.inspiration : [],
     pastCreatives: Array.isArray(row.past_creatives) ? row.past_creatives : [],
     logos: Array.isArray(row.logos) ? row.logos : [],
-    productReferenceImages: Array.isArray(row.product_reference_images) ? row.product_reference_images : [],
     references: Array.isArray(row.references) ? row.references : [],
     onboardingCompletedAt: row.onboarding_completed_at || null,
     updatedAt: row.updated_at,
@@ -1231,120 +1230,6 @@ export async function updateBrandLogoVariant({ accountId, variantId, label }) {
     .single();
   if (writeErr) throw writeErr;
   return mapBrandKitRow(updated);
-}
-
-// ---- Product reference images (brand_kits.product_reference_images JSONB) -
-// Brand-level library of real product photos fed to Claude as vision input
-// by /api/ai/image (up to 3, most recent) so generated image prompts
-// describe accurate proportions / label / packaging. PRIVATE bucket
-// 'brand-product-images' (shots may be pre-launch), path scheme
-// '<accountId>/<ts>_<filename>'. Each array entry:
-//   { id, path, filename, mimeType, sizeBytes, addedAt }
-// The UI resolves a short-lived signed URL per entry for thumbnails via
-// getBrandProductImageUrl(); rows store only the storage path.
-
-const PRODUCT_IMAGE_BUCKET = 'brand-product-images';
-// 5MB matches Claude's per-image vision limit (see LinkAIPanel composer).
-const PRODUCT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-
-export async function addBrandProductImage({ accountId, file }) {
-  if (!accountId) throw new Error('addBrandProductImage: accountId required');
-  if (!file)      throw new Error('addBrandProductImage: file required');
-  if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
-    throw new Error('Product image must be under 5MB (Claude vision limit).');
-  }
-  // Reject browser-unrenderable / oversized images — see imageValidation.js.
-  await validateImageDimensions(file);
-  const safeName = (file.name || 'product').replace(/[^\w.\-]+/g, '_');
-  const path = `${accountId}/${Date.now()}_${safeName}`;
-  const { error: uploadError } = await supabase.storage
-    .from(PRODUCT_IMAGE_BUCKET)
-    .upload(path, file, {
-      cacheControl: '3600',
-      upsert: false,
-      contentType: file.type || undefined,
-    });
-  if (uploadError) throw uploadError;
-
-  // Read current array, append, write back. (No jsonb-append RPC yet —
-  // same approach as addBrandLogoVariant.)
-  const { data: row, error: readErr } = await supabase
-    .from('brand_kits')
-    .select('product_reference_images')
-    .eq('account_id', accountId)
-    .single();
-  if (readErr) throw readErr;
-  const current = Array.isArray(row?.product_reference_images) ? row.product_reference_images : [];
-  const next = [
-    ...current,
-    {
-      id: `pri_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      path,
-      filename: file.name || safeName,
-      mimeType: file.type || '',
-      sizeBytes: file.size || 0,
-      addedAt: new Date().toISOString(),
-    },
-  ];
-  const { data: updated, error: writeErr } = await supabase
-    .from('brand_kits')
-    .update({ product_reference_images: next })
-    .eq('account_id', accountId)
-    .select(BRAND_KIT_SELECT)
-    .single();
-  if (writeErr) throw writeErr;
-  return mapBrandKitRow(updated);
-}
-
-export async function removeBrandProductImage({ accountId, imageId }) {
-  if (!accountId) throw new Error('removeBrandProductImage: accountId required');
-  if (!imageId)   throw new Error('removeBrandProductImage: imageId required');
-  const { data: row, error: readErr } = await supabase
-    .from('brand_kits')
-    .select('product_reference_images')
-    .eq('account_id', accountId)
-    .single();
-  if (readErr) throw readErr;
-  const current = Array.isArray(row?.product_reference_images) ? row.product_reference_images : [];
-  const target = current.find((p) => p.id === imageId);
-  const next = current.filter((p) => p.id !== imageId);
-  const { data: updated, error: writeErr } = await supabase
-    .from('brand_kits')
-    .update({ product_reference_images: next })
-    .eq('account_id', accountId)
-    .select(BRAND_KIT_SELECT)
-    .single();
-  if (writeErr) throw writeErr;
-  // Best-effort storage cleanup — leaving a stray blob beats blocking the UI.
-  if (target?.path) {
-    try { await supabase.storage.from(PRODUCT_IMAGE_BUCKET).remove([target.path]); } catch (_) {}
-  }
-  return mapBrandKitRow(updated);
-}
-
-// Lightweight read of just the product_reference_images array (no full
-// brand-kit hydrate) — for surfaces like the AI image-prompt panel that
-// only need the image list. Returns [] on any error.
-export async function listBrandProductImages(accountId) {
-  if (!accountId) return [];
-  const { data, error } = await supabase
-    .from('brand_kits')
-    .select('product_reference_images')
-    .eq('account_id', accountId)
-    .maybeSingle();
-  if (error) return [];
-  return Array.isArray(data?.product_reference_images) ? data.product_reference_images : [];
-}
-
-// Resolve a short-lived signed URL for a product image (private bucket).
-// Returns null on failure so the caller can render a placeholder.
-export async function getBrandProductImageUrl(path, expiresInSeconds = 60 * 60) {
-  if (!path) return null;
-  const { data, error } = await supabase.storage
-    .from(PRODUCT_IMAGE_BUCKET)
-    .createSignedUrl(path, expiresInSeconds);
-  if (error) return null;
-  return data?.signedUrl || null;
 }
 
 // ---- Re-enrich brand kit (calls the deployed enrich-brand-kit edge fn) -

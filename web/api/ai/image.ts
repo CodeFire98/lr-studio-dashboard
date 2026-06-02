@@ -77,61 +77,34 @@ const PLATFORM_FORMAT: Record<string, string> = {
   x: "16:9 landscape format (X / Twitter)",
 };
 
-// Product reference images (brand_kits.product_reference_images jsonb).
-// We feed up to 3 (most recent) to Claude as vision input. PRIVATE bucket
-// — read via the service-role storage client.
-const PRODUCT_IMAGE_BUCKET = "brand-product-images";
+// Ephemeral reference images — uploaded per generation by the client and
+// sent inline in the request body as base64 data URLs. They are NOT
+// persisted anywhere; they live only for this one call. We cap at 3 and
+// pass them to Claude as vision input. Media types Anthropic accepts:
 const MAX_VISION_IMAGES = 3;
-// Media types Anthropic vision accepts. Anything else is dropped.
 const VISION_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
-type ProductImageRef = {
-  id?: string;
-  path?: string;
-  filename?: string;
-  mimeType?: string;
-  sizeBytes?: number;
-  addedAt?: string;
-};
-type LoadedImage = { data: Uint8Array; mediaType: string };
+// Client payload shape for one reference image.
+type RefImageInput = { dataUrl?: string; mediaType?: string };
+// What we hand to the AI SDK image part (a data: URL string is accepted
+// directly as image content).
+type VisionImage = { image: string; mediaType: string };
 
-// Infer an Anthropic-acceptable media type from the stored mimeType, else
-// the filename extension, else null (caller drops the image).
-function resolveVisionMediaType(ref: ProductImageRef): string | null {
-  const mt = (ref.mimeType || "").toLowerCase();
-  if (VISION_MEDIA_TYPES.has(mt)) return mt;
-  const ext = (ref.path || ref.filename || "").toLowerCase().split(".").pop() || "";
-  const byExt: Record<string, string> = {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    gif: "image/gif",
-    webp: "image/webp",
-  };
-  return byExt[ext] ?? null;
-}
-
-// Download the most-recent MAX_VISION_IMAGES product photos and return them
-// as raw bytes for the AI SDK's image message parts. Best-effort: skips any
-// that fail to download or have an unsupported type. Order preserved
-// (most-recent last, matching the array's append order).
-async function loadProductImages(
-  serviceClient: { storage: { from: (b: string) => { download: (p: string) => Promise<{ data: Blob | null; error: unknown }> } } },
-  refs: ProductImageRef[],
-): Promise<LoadedImage[]> {
-  const recent = refs.filter((r) => r && r.path).slice(-MAX_VISION_IMAGES);
-  const out: LoadedImage[] = [];
-  for (const ref of recent) {
-    const mediaType = resolveVisionMediaType(ref);
-    if (!mediaType) continue;
-    try {
-      const { data, error } = await serviceClient.storage.from(PRODUCT_IMAGE_BUCKET).download(ref.path as string);
-      if (error || !data) continue;
-      const bytes = new Uint8Array(await data.arrayBuffer());
-      if (bytes.byteLength > 0) out.push({ data: bytes, mediaType });
-    } catch {
-      // skip — text-only still works.
-    }
+// Parse + validate the client's reference_images into AI SDK image parts.
+// Keeps only well-formed `data:image/<type>;base64,…` URLs with an accepted
+// media type, capped at MAX_VISION_IMAGES. Best-effort — bad entries are
+// dropped silently so a malformed upload never fails the whole call.
+function parseReferenceImages(raw: unknown): VisionImage[] {
+  if (!Array.isArray(raw)) return [];
+  const out: VisionImage[] = [];
+  for (const entry of raw.slice(0, MAX_VISION_IMAGES)) {
+    const item = entry as RefImageInput;
+    const dataUrl = typeof item?.dataUrl === "string" ? item.dataUrl : "";
+    const m = /^data:(image\/[a-z+]+);base64,/i.exec(dataUrl);
+    if (!m) continue;
+    const mediaType = (item.mediaType || m[1]).toLowerCase();
+    if (!VISION_MEDIA_TYPES.has(mediaType)) continue;
+    out.push({ image: dataUrl, mediaType });
   }
   return out;
 }
@@ -196,6 +169,9 @@ type RequestBody = {
   idea_title?: string;
   idea_description?: string;
   idea_style_keywords?: string[];
+  // Ephemeral reference images for THIS generation only (base64 data URLs).
+  // Sent by both modes; never persisted. Capped at 3 server-side.
+  reference_images?: Array<{ dataUrl?: string; mediaType?: string }>;
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -276,35 +252,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Pull the brand's industry + product categories to select the matching
   // category-specific rules from the image-prompting house style (beverages
-  // / food / fashion / skincare / tech), plus its product reference images.
-  // Non-fatal: if the lookup fails or nothing matches, the universal
-  // house-style directives still ship and we generate text-only.
+  // / food / fashion / skincare / tech). Non-fatal: if the lookup fails or
+  // nothing matches, the universal house-style directives still ship.
   let imageGuide = "";
-  let productImageRefs: ProductImageRef[] = [];
   try {
     const { data: kit } = await serviceClient
       .from("brand_kits")
-      .select("industry, product_categories, product_reference_images")
+      .select("industry, product_categories")
       .eq("account_id", body.accountId)
       .maybeSingle();
     imageGuide = compileImagePromptGuide({
       industry: kit?.industry,
       productCategories: kit?.product_categories,
     });
-    productImageRefs = Array.isArray(kit?.product_reference_images)
-      ? (kit!.product_reference_images as ProductImageRef[])
-      : [];
   } catch {
     imageGuide = compileImagePromptGuide({});
   }
 
-  // Download up to 3 (most recent) product reference photos and pass them
-  // to Claude as vision input so the prompt describes real proportions /
-  // label / packaging instead of guessing. Best-effort: a failed download
-  // is skipped (text-only still works). The house-style system block is
-  // already reference-image-aware — it tells the model to describe from
-  // what it SEES when images are attached.
-  const productImages = await loadProductImages(serviceClient, productImageRefs);
+  // Ephemeral reference images for THIS generation: the admin attached them
+  // inline in the request and they live only for this call (never persisted).
+  // Pass them to Claude as vision input so the prompt describes the real
+  // product. The house-style system block is already reference-image-aware
+  // — it tells the model to describe from what it SEES when images ride along.
+  const productImages = parseReferenceImages(body.reference_images);
 
   // Disable Vercel response buffering so deltas reach the browser as they're
   // generated. pipeTextStreamToResponse sets Content-Type itself (text/plain).
@@ -384,7 +354,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
   // string. Uint8Array bytes are valid AI SDK image content.
   const userContent = productImages.length > 0
     ? [
-        ...productImages.map((img) => ({ type: "image" as const, image: img.data, mediaType: img.mediaType })),
+        ...productImages.map((img) => ({ type: "image" as const, image: img.image, mediaType: img.mediaType })),
         { type: "text" as const, text: userMessage },
       ]
     : userMessage;
