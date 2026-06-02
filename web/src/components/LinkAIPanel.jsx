@@ -44,6 +44,7 @@ import { z } from "zod";
 import { Icon } from "./Icon.jsx";
 import { supabase } from "../lib/supabase.js";
 import { buildTemplatedLinkAISuggestions } from "../lib/db.js";
+import { downscaleImageToDataUrl } from "../lib/imageDownscale.js";
 import { useCoarsePointer } from "../lib/useCoarsePointer.ts";
 import { CopyButton } from "./primitives.jsx";
 import { formatPlanChipTime } from "./ConversationsView.jsx";
@@ -665,15 +666,24 @@ const LinkAIPanel = ({
   // Constraints:
   //   - Only image/* mime types accepted (Claude vision supports PNG,
   //     JPEG, GIF, WebP). PDFs deferred to a future PR.
-  //   - 5 MB per file (Claude's vision limit is 5 MB per image).
+  //   - Each accepted image is DOWNSCALED client-side to a compact JPEG
+  //     (downscaleImageToDataUrl, ~1568px long edge) BEFORE it goes into
+  //     state / the request body. Critical: attachments are sent as
+  //     base64 data URLs inside the JSON body, and full-size photos blow
+  //     past Vercel's ~4.5 MB serverless body limit → the request is
+  //     rejected with a 413 at the edge before /api/ai/chat runs, which
+  //     surfaces as a chat bubble that says "thinking…" then vanishes.
+  //     Downscaling takes each image from multiple MB to ~150-400 KB.
+  //   - Source files up to 25 MB are accepted (we shrink them); the cap
+  //     is just a decode-sanity guard, not the old 5 MB payload limit.
   //   - 4 attachments per message (Claude allows up to 100 images in a
   //     single request, but a chat composer rarely needs more than a
   //     handful and the UI gets cramped beyond 4).
   //   - Attachments are NOT persisted to localStorage — see the persist
   //     effect above. On reload, the data URLs would balloon the v3
-  //     conv key past the 5 MB quota fast. Acceptable tradeoff: image
-  //     is "in this turn only", which is also how the chat reads.
-  const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+  //     conv key fast. Acceptable tradeoff: image is "in this turn only",
+  //     which is also how the chat reads.
+  const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
   const MAX_ATTACHMENTS_PER_MESSAGE = 4;
   const ACCEPTED_MIMES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
@@ -685,13 +695,6 @@ const LinkAIPanel = ({
   // paperclip, but `capture="environment"` opens the rear camera directly.
   const cameraInputRef = useRef(null);
   const dragCounterRef = useRef(0);
-
-  const readAsDataUrl = (file) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error(`Could not read "${file.name}".`));
-    reader.readAsDataURL(file);
-  });
 
   const isAcceptedMime = (mime) =>
     typeof mime === "string" && ACCEPTED_MIMES.includes(mime.toLowerCase());
@@ -713,16 +716,18 @@ const LinkAIPanel = ({
         continue;
       }
       if (f.size > MAX_ATTACHMENT_BYTES) {
-        firstError = firstError || `"${f.name}" exceeds the 5 MB attachment limit.`;
+        firstError = firstError || `"${f.name}" is too large (over 25 MB).`;
         continue;
       }
       try {
-        const dataUrl = await readAsDataUrl(f);
+        // Downscale to a compact JPEG so the base64 payload stays small —
+        // prevents the oversized-body 413 that silently drops the message.
+        const dataUrl = await downscaleImageToDataUrl(f);
         accepted.push({
           id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           name: f.name,
-          mimeType: f.type,
-          size: f.size,
+          mimeType: "image/jpeg", // re-encoded by downscale
+          size: dataUrl.length,
           dataUrl,
         });
       } catch (e) {
