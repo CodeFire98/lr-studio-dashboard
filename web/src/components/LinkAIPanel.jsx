@@ -1213,6 +1213,12 @@ const LinkAIPanel = ({
   // gate the "Generating…" indicator + the error banner so they only
   // surface on the conv they describe.
   const streamingActiveConv = isBusy && (!isPageVariant || sdkConvId === activeConvId);
+  // Error gate — same conv-correctness as streamingActiveConv but WITHOUT
+  // the isBusy requirement. A failed send (e.g. an oversized-payload 413
+  // rejected at the edge) flips status straight to 'error', so isBusy is
+  // already false by the time the error exists; gating the banner on
+  // streamingActiveConv would hide it and the message would just vanish.
+  const errorOnActiveConv = !!error && (!isPageVariant || sdkConvId === activeConvId);
 
   const panelContent = (
     <div
@@ -1352,11 +1358,12 @@ const LinkAIPanel = ({
           <LinkAIStatus status={status} messages={messages} />
         )}
 
-        {/* Same gating for the error banner — only show on the conv the
-            error describes (the one the SDK was streaming to). */}
-        {error && streamingActiveConv && displayMessages.length > 0 && (
+        {/* Error banner — show on the conv the error describes, whether or
+            not a stream is still in flight (a pre-stream 413/network failure
+            sets error with isBusy already false). */}
+        {errorOnActiveConv && displayMessages.length > 0 && (
           <div className="link-ai-error">
-            <Icon name="alert" size={12} /> {error.message || String(error)}
+            <Icon name="alert" size={12} /> {error.message || "Something went wrong sending that message. Please try again."}
           </div>
         )}
       </div>
