@@ -20,6 +20,7 @@
       "maxDuration": 30
     },
     "api/ai/image.ts": {
+      "includeFiles": "src/data/skills/**",
       "maxDuration": 30
     },
     "api/ai/suggestions.ts": {
