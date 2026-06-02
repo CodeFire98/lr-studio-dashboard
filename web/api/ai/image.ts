@@ -77,6 +77,38 @@ const PLATFORM_FORMAT: Record<string, string> = {
   x: "16:9 landscape format (X / Twitter)",
 };
 
+// Ephemeral reference images — uploaded per generation by the client and
+// sent inline in the request body as base64 data URLs. They are NOT
+// persisted anywhere; they live only for this one call. We cap at 3 and
+// pass them to Claude as vision input. Media types Anthropic accepts:
+const MAX_VISION_IMAGES = 3;
+const VISION_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+// Client payload shape for one reference image.
+type RefImageInput = { dataUrl?: string; mediaType?: string };
+// What we hand to the AI SDK image part (a data: URL string is accepted
+// directly as image content).
+type VisionImage = { image: string; mediaType: string };
+
+// Parse + validate the client's reference_images into AI SDK image parts.
+// Keeps only well-formed `data:image/<type>;base64,…` URLs with an accepted
+// media type, capped at MAX_VISION_IMAGES. Best-effort — bad entries are
+// dropped silently so a malformed upload never fails the whole call.
+function parseReferenceImages(raw: unknown): VisionImage[] {
+  if (!Array.isArray(raw)) return [];
+  const out: VisionImage[] = [];
+  for (const entry of raw.slice(0, MAX_VISION_IMAGES)) {
+    const item = entry as RefImageInput;
+    const dataUrl = typeof item?.dataUrl === "string" ? item.dataUrl : "";
+    const m = /^data:(image\/[a-z+]+);base64,/i.exec(dataUrl);
+    if (!m) continue;
+    const mediaType = (item.mediaType || m[1]).toLowerCase();
+    if (!VISION_MEDIA_TYPES.has(mediaType)) continue;
+    out.push({ image: dataUrl, mediaType });
+  }
+  return out;
+}
+
 // Zod schema for the structured-output ideas mode. The shape MUST match
 // the client's `useObject({ schema })` exactly — the client deserialises
 // into DeepPartial<infer<typeof IDEAS_SCHEMA>> as JSON streams in.
@@ -137,6 +169,9 @@ type RequestBody = {
   idea_title?: string;
   idea_description?: string;
   idea_style_keywords?: string[];
+  // Ephemeral reference images for THIS generation only (base64 data URLs).
+  // Sent by both modes; never persisted. Capped at 3 server-side.
+  reference_images?: Array<{ dataUrl?: string; mediaType?: string }>;
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -234,6 +269,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     imageGuide = compileImagePromptGuide({});
   }
 
+  // Ephemeral reference images for THIS generation: the admin attached them
+  // inline in the request and they live only for this call (never persisted).
+  // Pass them to Claude as vision input so the prompt describes the real
+  // product. The house-style system block is already reference-image-aware
+  // — it tells the model to describe from what it SEES when images ride along.
+  const productImages = parseReferenceImages(body.reference_images);
+
   // Disable Vercel response buffering so deltas reach the browser as they're
   // generated. pipeTextStreamToResponse sets Content-Type itself (text/plain).
   res.setHeader("X-Accel-Buffering", "no");
@@ -300,6 +342,23 @@ Description: ${ideaDescription}${keywords.length ? `\nStyle keywords: ${keywords
 Output the detailed image prompt text only — no preamble, no markdown, no quotes. Ready to paste into the admin's image-gen tool.`;
   }
 
+  // When product reference images ride along, tell the model explicitly so
+  // it grounds the description in what it SEES (the system block already
+  // carries the general rule; this anchors it to THIS message's images).
+  if (productImages.length > 0) {
+    userMessage += `\n\n${productImages.length} product reference image${productImages.length > 1 ? "s are" : " is"} attached to this message — they are the ACTUAL product. Describe its real shape, proportions, label text + layout, colour and packaging from what you see; do not invent or contradict them. Close with the product reference line.`;
+  }
+
+  // Build the user message content: when images are present, send a
+  // multimodal array (image parts first, then the text); otherwise a plain
+  // string. Uint8Array bytes are valid AI SDK image content.
+  const userContent = productImages.length > 0
+    ? [
+        ...productImages.map((img) => ({ type: "image" as const, image: img.image, mediaType: img.mediaType })),
+        { type: "text" as const, text: userMessage },
+      ]
+    : userMessage;
+
   // System messages array shared by both modes. Each block gets its own
   // cache_control via providerOptions.anthropic.cacheControl. The two
   // blocks ride via the `system` parameter (Array<SystemModelMessage>)
@@ -363,7 +422,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
     // eslint-disable-next-line no-console
     console.log(
       `[image] usage account=${body.accountId} plan=${body.plan_id} platform=${body.platform} mode=${label} ` +
-        `input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason ?? "n/a"}`,
+        `images=${productImages.length} input=${nc} cache_read=${cr} cache_write=${cw} output=${out} finish=${finishReason ?? "n/a"}`,
     );
     void logServiceUsage({
       service: "anthropic",
@@ -389,6 +448,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         finish_reason: finishReason ?? null,
         cache_read_tokens: cr,
         cache_write_tokens: cw,
+        product_images: productImages.length,
       },
     });
   };
@@ -405,7 +465,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         maxOutputTokens: MAX_TOKENS_IDEAS,
         schema: IDEAS_SCHEMA,
         system: systemMessages,
-        messages: [{ role: "user", content: userMessage }],
+        messages: [{ role: "user", content: userContent }],
         onFinish: ({ usage }) => logUsage("ideas", usage),
       });
 
@@ -416,7 +476,7 @@ Output the detailed image prompt text only — no preamble, no markdown, no quot
         model: anthropic(MODEL_ID),
         maxOutputTokens: MAX_TOKENS_PROMPT,
         system: systemMessages,
-        messages: [{ role: "user", content: userMessage }],
+        messages: [{ role: "user", content: userContent }],
         onFinish: ({ totalUsage, finishReason }) => logUsage("prompt", totalUsage, finishReason),
       });
 

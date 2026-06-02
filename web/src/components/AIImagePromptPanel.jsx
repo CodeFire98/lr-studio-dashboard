@@ -82,6 +82,146 @@ async function fetchWithAuth(url, init) {
 
 const PLATFORM_LABEL = { instagram: 'Instagram', linkedin: 'LinkedIn', x: 'X' };
 
+// Ephemeral reference-image limits. These images are held in component
+// state and sent inline in the request body for ONE generation — never
+// persisted. Server caps at the same count (web/api/ai/image.ts).
+const MAX_REF_IMAGES = 3;
+const REF_ACCEPTED_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const REF_MAX_SOURCE_BYTES = 15 * 1024 * 1024; // pre-downscale guard
+
+// Downscale + re-encode an image file to a compact JPEG data URL. Claude
+// vision downsamples to ~1568px on the long edge anyway, so we cap there;
+// this also keeps the request body well under Vercel's ~4.5MB limit even
+// with 3 images (each lands ~150-400KB instead of multiple MB).
+function downscaleToDataUrl(file, maxEdge = 1568, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxEdge / Math.max(img.width || 1, img.height || 1));
+      const w = Math.max(1, Math.round((img.width || 1) * scale));
+      const h = Math.max(1, Math.round((img.height || 1) * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas not supported in this browser.')); return; }
+      // White matte so transparent PNGs don't go black when flattened to JPEG.
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      try { resolve(canvas.toDataURL('image/jpeg', quality)); }
+      catch (e) { reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Could not read "${file.name || 'image'}".`)); };
+    img.src = url;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ProductRefStrip — EPHEMERAL reference-image uploader. Images live only in
+// component state (held by the parent panel) and ride inline in the request
+// body for ONE generation. Nothing is uploaded to storage or persisted.
+// Controlled: `value` is the array of { id, dataUrl, mediaType, name },
+// `onChange` updates it.
+// ---------------------------------------------------------------------------
+function ProductRefStrip({ value, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const fileRef = useRef(null);
+  const images = Array.isArray(value) ? value : [];
+
+  const addFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setErr(''); setBusy(true);
+    try {
+      const room = MAX_REF_IMAGES - images.length;
+      if (room <= 0) { setErr(`Up to ${MAX_REF_IMAGES} reference images.`); return; }
+      const added = [];
+      for (const f of files.slice(0, room)) {
+        if (!REF_ACCEPTED_MIMES.includes(f.type)) { setErr('Use a PNG, JPEG, WebP or GIF image.'); continue; }
+        if (f.size > REF_MAX_SOURCE_BYTES) { setErr(`"${f.name}" is too large.`); continue; }
+        const dataUrl = await downscaleToDataUrl(f);
+        added.push({
+          id: `ref_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          dataUrl,
+          mediaType: 'image/jpeg',
+          name: f.name || 'image',
+        });
+      }
+      if (added.length) onChange([...images, ...added].slice(0, MAX_REF_IMAGES));
+      if (files.length > room) setErr(`Up to ${MAX_REF_IMAGES} reference images — extra files skipped.`);
+    } catch (ex) {
+      setErr(ex?.message || 'Could not add the image.');
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const remove = (id) => onChange(images.filter((i) => i.id !== id));
+
+  return (
+    <div className="ai-image-prodrefs">
+      <div className="ai-image-prodrefs-head">
+        <label className="ai-image-label" style={{ margin: 0 }}>Reference images (optional)</label>
+        <span className="ai-image-prodrefs-hint">
+          {images.length === 0
+            ? 'Attach the real product / a moodboard — used for this prompt only, not saved'
+            : `${images.length}/${MAX_REF_IMAGES} attached · the AI references these for this prompt only`}
+        </span>
+      </div>
+
+      <div className="ai-image-prodrefs-row">
+        {images.map((p) => (
+          <div key={p.id} className="ai-image-prodref-thumb" title={p.name || 'Reference image'}>
+            <span
+              className="ai-image-prodref-img"
+              style={{ backgroundImage: `url(${JSON.stringify(p.dataUrl)})` }}
+              role="img"
+              aria-label={p.name || 'Reference image'}
+            />
+            <button
+              type="button"
+              className="ai-image-prodref-remove"
+              onClick={() => remove(p.id)}
+              title="Remove"
+              aria-label="Remove reference image"
+            ><Icon name="x" size={10}/></button>
+          </div>
+        ))}
+
+        {images.length < MAX_REF_IMAGES && (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => addFiles(e.target.files)}
+            />
+            <button
+              type="button"
+              className="ai-image-prodref-add"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy}
+              title="Attach a reference image for this prompt"
+            >
+              {busy ? <span className="ai-image-prodref-spin">…</span> : (
+                <><Icon name="plus" size={14}/><span>Add</span></>
+              )}
+            </button>
+          </>
+        )}
+      </div>
+
+      {err && <div className="ai-image-error" style={{ marginTop: 8 }}>{err}</div>}
+    </div>
+  );
+}
+
 const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }) => {
   // Top-level navigation:
   //   'idle'  — collapsed entry-point card with the launch button
@@ -101,6 +241,16 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
   // The idea the admin picked from the ideas grid. Cleared when they
   // "← Try another direction" back to the picker, or close the panel.
   const [chosenIdea, setChosenIdea] = useState(null);
+
+  // Ephemeral reference images for THIS prompt-gen session. Held in memory
+  // as downscaled JPEG data URLs, sent inline in the request body for both
+  // modes, and discarded on reset/close — never persisted. Kept across the
+  // ideas→prompt step so the chosen direction expands with the same refs.
+  const [refImages, setRefImages] = useState([]);
+  const refImagesBody = useMemo(
+    () => refImages.map((i) => ({ dataUrl: i.dataUrl, mediaType: i.mediaType })),
+    [refImages],
+  );
 
   // Copy-to-clipboard confirmation pill toggle.
   const [copied, setCopied] = useState(false);
@@ -203,6 +353,7 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
     setBrief('');
     setDetails('');
     setChosenIdea(null);
+    setRefImages([]);
   };
 
   const generateIdeas = useCallback(() => {
@@ -214,8 +365,9 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
       platform,
       mode: 'ideas',
       brief: brief.trim(),
+      reference_images: refImagesBody,
     });
-  }, [accountId, planId, platform, brief, ideasHook, promptHook]);
+  }, [accountId, planId, platform, brief, refImagesBody, ideasHook, promptHook]);
 
   const backToBrief = () => {
     // "← Different brief" — clear the ideas state and the chosen idea,
@@ -244,9 +396,10 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
         idea_title: chosenIdea.title,
         idea_description: chosenIdea.description,
         idea_style_keywords: chosenIdea.styleKeywords,
+        reference_images: refImagesBody,
       },
     });
-  }, [accountId, planId, platform, chosenIdea, details, promptHook]);
+  }, [accountId, planId, platform, chosenIdea, details, refImagesBody, promptHook]);
 
   const backToPicking = () => {
     // From prompt_compose OR prompt_done. Keep the ideas state intact
@@ -362,6 +515,14 @@ const AIImagePromptPanel = ({ accountId, planId, platform, defaultOpen = false }
       </div>
 
       <div style={{ padding: '0 16px 16px' }}>
+        {/* Ephemeral reference images for this generation only — attached
+            inline, sent in the request body, never persisted. Shown on the
+            compose steps where the admin is about to generate. */}
+        {((section === 'ideas' && subPhase === 'compose') ||
+          (section === 'prompt' && subPhase === 'compose')) && (
+          <ProductRefStrip value={refImages} onChange={setRefImages} />
+        )}
+
         {/* IDEAS — COMPOSE */}
         {section === 'ideas' && subPhase === 'compose' && (
           <div className="ai-image-section">
