@@ -49,6 +49,7 @@ import { experimental_useObject as useObject, useCompletion } from '@ai-sdk/reac
 import { z } from 'zod';
 import { Icon } from './Icon.jsx';
 import { supabase } from '../lib/supabase.js';
+import { downscaleImageToDataUrl } from '../lib/imageDownscale.js';
 
 // Mirror of the server's IDEAS_SCHEMA (web/api/ai/image.ts). useObject's
 // `schema` option drives the type-validation behaviour of the hook —
@@ -89,34 +90,9 @@ const MAX_REF_IMAGES = 3;
 const REF_ACCEPTED_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 const REF_MAX_SOURCE_BYTES = 15 * 1024 * 1024; // pre-downscale guard
 
-// Downscale + re-encode an image file to a compact JPEG data URL. Claude
-// vision downsamples to ~1568px on the long edge anyway, so we cap there;
-// this also keeps the request body well under Vercel's ~4.5MB limit even
-// with 3 images (each lands ~150-400KB instead of multiple MB).
-function downscaleToDataUrl(file, maxEdge = 1568, quality = 0.85) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const scale = Math.min(1, maxEdge / Math.max(img.width || 1, img.height || 1));
-      const w = Math.max(1, Math.round((img.width || 1) * scale));
-      const h = Math.max(1, Math.round((img.height || 1) * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { reject(new Error('Canvas not supported in this browser.')); return; }
-      // White matte so transparent PNGs don't go black when flattened to JPEG.
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      try { resolve(canvas.toDataURL('image/jpeg', quality)); }
-      catch (e) { reject(e); }
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Could not read "${file.name || 'image'}".`)); };
-    img.src = url;
-  });
-}
+// Image downscaling lives in the shared `lib/imageDownscale.js` util
+// (`downscaleImageToDataUrl`) — same one the LinkAI composer uses — so the
+// ~1568px / JPEG / 4.5MB-body-limit rationale has a single source of truth.
 
 // ---------------------------------------------------------------------------
 // ProductRefStrip — EPHEMERAL reference-image uploader. Images live only in
@@ -142,7 +118,7 @@ function ProductRefStrip({ value, onChange }) {
       for (const f of files.slice(0, room)) {
         if (!REF_ACCEPTED_MIMES.includes(f.type)) { setErr('Use a PNG, JPEG, WebP or GIF image.'); continue; }
         if (f.size > REF_MAX_SOURCE_BYTES) { setErr(`"${f.name}" is too large.`); continue; }
-        const dataUrl = await downscaleToDataUrl(f);
+        const dataUrl = await downscaleImageToDataUrl(f);
         added.push({
           id: `ref_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           dataUrl,
