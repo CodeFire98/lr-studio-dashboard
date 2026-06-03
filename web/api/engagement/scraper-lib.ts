@@ -263,6 +263,12 @@ type SupremeCoderLinkedInItem = {
   authorUrn?: string;
   postedAtISO?: string;
   postedAtTimestamp?: number;
+  // When the actor's own scrape crashes it still returns HTTP 200 with a
+  // dataset item shaped { error, inputUrl } instead of post data. We detect
+  // this so the snapshot is recorded as `failed` (alertable) rather than
+  // silently degrading to a null-metric `partial`.
+  error?: string;
+  inputUrl?: string;
 };
 
 export async function scrapeLinkedIn(liveUrl: string): Promise<ScrapeResult> {
@@ -301,6 +307,23 @@ export async function scrapeLinkedIn(liveUrl: string): Promise<ScrapeResult> {
   const items = (await res.json().catch(() => [])) as SupremeCoderLinkedInItem[];
   const item = Array.isArray(items) ? items[0] : null;
   if (!item) return failed(LINKEDIN_ACTOR_ID, actorRunId, "supreme_coder/linkedin-post returned no items for this URL", items);
+
+  // The actor returns HTTP 200 even when its own parse crashes — the item
+  // is then { error: "Failed to scrape post: …", inputUrl } with NO metrics
+  // or author. Without this guard those land as a null-metric `partial`,
+  // which the UI reads as "No metrics in this window" and which hides the
+  // outage from monitoring (it never shows as `failed`). Surface it as a
+  // real failure so it's alertable and distinguishable from a genuinely
+  // zero-engagement post. (Seen 2026-06 when LinkedIn markup changed and
+  // broke the actor — every URL returned this shape.)
+  if (typeof item.error === "string" && item.error.trim()) {
+    return failed(
+      LINKEDIN_ACTOR_ID,
+      actorRunId,
+      `supreme_coder/linkedin-post actor error: ${item.error.slice(0, 240)}`,
+      item,
+    );
+  }
 
   const likes    = numOrNull(item.numLikes);
   const comments = numOrNull(item.numComments);
