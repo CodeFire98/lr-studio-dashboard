@@ -199,7 +199,7 @@ export function estimateFirecrawlCostUsd(credits: number): number {
 // scraper shootout (REFERENCE.md §9, 2026-05-12 / 2026-05-14).
 const APIFY_USD_PER_SCRAPE: Record<string, number> = {
   "apify/instagram-scraper": 0.0023,
-  "supreme_coder/linkedin-post": 0.001,
+  "apimaestro/linkedin-post-detail": 0.005, // $5 / 1k results (swapped 2026-06-03)
   "scrape.badger/twitter-tweets-scraper": 0.0002,
 };
 
