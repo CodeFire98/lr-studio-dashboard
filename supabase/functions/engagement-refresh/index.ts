@@ -117,7 +117,7 @@ type PubRow = {
 // warrants extraction; two is the threshold for staying inline.
 const APIFY_USD_PER_SCRAPE: Record<string, number> = {
   "apify/instagram-scraper": 0.0023,
-  "supreme_coder/linkedin-post": 0.001,
+  "apimaestro/linkedin-post-detail": 0.005, // $5 / 1k results
   "scrape.badger/twitter-tweets-scraper": 0.0002,
 };
 
@@ -350,19 +350,35 @@ async function scrapeInstagram(liveUrl: string): Promise<ScrapeResult> {
 
 // ----------------------------------------------------- Apify — LinkedIn
 
-const LINKEDIN_ACTOR_ID = "supreme_coder/linkedin-post";
+// supreme_coder/linkedin-post broke ~2026-06-01 (LinkedIn markup change →
+// crashed on every URL, returning {error,inputUrl}). Swapped to
+// apimaestro/linkedin-post-detail (no-cookies, single post URL or activity
+// id → stats.total_reactions/comments/shares + author + media). Verified
+// 2026-06-03 against Bamboo Bear's 3 live posts.
+const LINKEDIN_ACTOR_ID = "apimaestro/linkedin-post-detail";
+
+// ".../in/theshrutimishra?…" → "theshrutimishra"; ".../company/drinkbamboobear/posts" → "drinkbamboobear".
+function parseLinkedInHandle(profileUrl: string | null): string | null {
+  if (!profileUrl) return null;
+  const m = /\/(?:in|company|school|showcase)\/([^/?#]+)/i.exec(profileUrl);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 
 async function scrapeLinkedIn(liveUrl: string): Promise<ScrapeResult> {
   const url =
     `https://api.apify.com/v2/acts/${encodeURIComponent(LINKEDIN_ACTOR_ID)}` +
     `/run-sync-get-dataset-items?token=${encodeURIComponent(APIFY_API_TOKEN)}`;
 
+  // Strip query string (utm_*, miniProfileUrn, …) — the actor resolves the
+  // post from the slug/activity id; a clean URL avoids parser edge cases.
+  const cleanUrl = liveUrl.split("?")[0];
+
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ urls: [liveUrl] }),
+      body: JSON.stringify({ post_urls: [cleanUrl] }),
     });
   } catch (ex) {
     return failed(LINKEDIN_ACTOR_ID, null, `network: ${(ex as Error).message}`);
@@ -384,68 +400,71 @@ async function scrapeLinkedIn(liveUrl: string): Promise<ScrapeResult> {
   }
 
   const items = (await res.json().catch(() => [])) as Array<Record<string, unknown>>;
-  const item = Array.isArray(items) ? items[0] : null;
-  if (!item) {
-    return failed(LINKEDIN_ACTOR_ID, actorRunId, "supreme_coder/linkedin-post returned no items for this URL", items);
+  const raw = Array.isArray(items) ? items[0] : null;
+  if (!raw) {
+    return failed(LINKEDIN_ACTOR_ID, actorRunId, "apimaestro/linkedin-post-detail returned no items for this URL", items);
   }
+  const item = raw as {
+    post?: { text?: unknown; type?: unknown; created_at?: { timestamp?: unknown; date?: unknown } };
+    author?: { name?: unknown; profile_url?: unknown; profile_picture?: unknown };
+    media?: Array<{ type?: unknown; url?: unknown }>;
+    stats?: { total_reactions?: unknown; comments?: unknown; shares?: unknown };
+    error?: unknown;
+  };
 
-  // The actor returns HTTP 200 even when its own parse crashes — the item is
-  // then { error: "Failed to scrape post: …", inputUrl } with NO metrics or
-  // author. Without this guard those land as a null-metric `partial`, which
-  // the UI reads as "No metrics in this window" and which hides the outage
-  // from monitoring (never shows as `failed`). Surface it as a real failure.
-  // (Seen 2026-06 when a LinkedIn markup change broke the actor — every URL
-  // returned this shape.)
+  // Surface explicit error items / empty shells as real failures rather than
+  // null-metric `partial`s — keeps actor outages alertable (see the 2026-06
+  // supreme_coder breakage RCA).
   if (typeof item.error === "string" && item.error.trim()) {
-    return failed(
-      LINKEDIN_ACTOR_ID,
-      actorRunId,
-      `supreme_coder/linkedin-post actor error: ${item.error.slice(0, 240)}`,
-      item,
-    );
+    return failed(LINKEDIN_ACTOR_ID, actorRunId, `apimaestro/linkedin-post-detail actor error: ${item.error.slice(0, 240)}`, raw);
+  }
+  if (!item.stats && !item.post) {
+    return failed(LINKEDIN_ACTOR_ID, actorRunId, "apimaestro/linkedin-post-detail returned an item with no post/stats", raw);
   }
 
-  const likes    = numOrNull(item.numLikes);
-  const comments = numOrNull(item.numComments);
-  const shares   = numOrNull(item.numShares);
-
+  const stats = item.stats ?? {};
   const metrics: NormalizedMetrics = {
-    like_count: likes,
-    reaction_count: likes,
-    comment_count: comments,
-    share_count: shares,
+    like_count: numOrNull(stats.total_reactions),
+    reaction_count: numOrNull(stats.total_reactions),
+    comment_count: numOrNull(stats.comments),
+    share_count: numOrNull(stats.shares),
     save_count: null,
     view_count: null,
     bookmark_count: null,
     quote_count: null,
     engagement_rate: null,
     availability_notes:
-      "LinkedIn: like_count and reaction_count point at the same number (public scrapes return a single rolled-up reactions count). View counts not exposed for public posts.",
+      "LinkedIn: like_count and reaction_count are the same rolled-up total_reactions (sum of like/empathy/praise/etc.). View counts not exposed for public posts.",
   };
 
-  const images = Array.isArray(item.images)
-    ? (item.images as unknown[]).filter((s): s is string => typeof s === "string" && s.length > 0)
-    : [];
+  const post = item.post ?? {};
+  const author = item.author ?? {};
+  const media = (Array.isArray(item.media) ? item.media : []).filter(
+    (m): m is { type?: unknown; url: string } => !!m && typeof m.url === "string",
+  );
+  const mediaUrls = media.map((m) => m.url);
   const mediaType: NormalizedEmbed["media_type"] =
-    item.type === "video" ? "video" :
-    images.length > 1 ? "carousel" :
-    images.length === 1 ? "image" : "text";
+    post.type === "video" || media.some((m) => m.type === "video") ? "video" :
+    mediaUrls.length > 1 ? "carousel" :
+    mediaUrls.length === 1 ? "image" : "text";
+
+  const ts = post.created_at?.timestamp;
+  const dateStr = post.created_at?.date;
+  const postedAt =
+    typeof ts === "number" ? new Date(ts).toISOString() :
+    typeof dateStr === "string" ? new Date(`${dateStr.replace(" ", "T")}Z`).toISOString() :
+    null;
 
   const embed: NormalizedEmbed = {
-    author_handle: typeof item.authorProfileId === "string" ? item.authorProfileId : null,
-    author_display_name: typeof item.authorName === "string" ? item.authorName : null,
-    author_avatar_url: typeof item.authorProfilePicture === "string" ? item.authorProfilePicture : null,
-    caption: typeof item.text === "string" ? item.text : null,
+    author_handle: parseLinkedInHandle(typeof author.profile_url === "string" ? author.profile_url : null),
+    author_display_name: typeof author.name === "string" ? author.name : null,
+    author_avatar_url: typeof author.profile_picture === "string" ? author.profile_picture : null,
+    caption: typeof post.text === "string" ? post.text : null,
     media_type: mediaType,
-    media_url: images[0] ?? null,
-    media_urls: images.length > 1 ? images : null,
+    media_url: mediaUrls[0] ?? null,
+    media_urls: mediaUrls.length > 1 ? mediaUrls : null,
     media_aspect_ratio: null,
-    posted_at:
-      typeof item.postedAtISO === "string"
-        ? item.postedAtISO
-        : typeof item.postedAtTimestamp === "number"
-        ? new Date(item.postedAtTimestamp).toISOString()
-        : null,
+    posted_at: postedAt,
   };
 
   const partial = !embed.media_url && !embed.caption;
@@ -454,7 +473,7 @@ async function scrapeLinkedIn(liveUrl: string): Promise<ScrapeResult> {
     ok: true,
     status: partial ? "partial" : "ok",
     errorMessage: null,
-    metrics, embed, raw: item,
+    metrics, embed, raw,
     actorRunId, actorId: LINKEDIN_ACTOR_ID,
   };
 }
