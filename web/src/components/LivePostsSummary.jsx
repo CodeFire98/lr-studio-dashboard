@@ -329,7 +329,7 @@ function PlatformRow({ platform, info }) {
 }
 
 // ---------- Main component -------------------------------------------
-export function LivePostsSummary({ accountId }) {
+export function LivePostsSummary({ accountId, refreshSignal = 0 }) {
   const [period, setPeriod] = useState(() => {
     try {
       const stored = localStorage.getItem(PERIOD_STORAGE_KEY);
@@ -349,7 +349,8 @@ export function LivePostsSummary({ accountId }) {
     try { localStorage.setItem(PERIOD_STORAGE_KEY, String(period)); } catch {}
   }, [period]);
 
-  // Fetch on mount + brand-change + period-change.
+  // Fetch on mount + brand-change + period-change + when a new engagement
+  // snapshot lands (refreshSignal bumps from the parent's realtime handler).
   useEffect(() => {
     let cancelled = false;
     if (!accountId) {
@@ -369,7 +370,7 @@ export function LivePostsSummary({ accountId }) {
         }
       });
     return () => { cancelled = true; };
-  }, [accountId, period]);
+  }, [accountId, period, refreshSignal]);
 
   const tiles = useMemo(() => {
     if (!summary || summary.isEmpty) return null;
