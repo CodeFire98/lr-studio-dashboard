@@ -623,6 +623,13 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
   // /api/engagement/refresh writes new rows.
   const [snapshotsByPubId, setSnapshotsByPubId] = useState(() => new Map());
   const [embedsByPubId, setEmbedsByPubId] = useState(() => new Map());
+  // Bumped whenever a snapshot lands (manual "Refresh now" or daily cron,
+  // both via realtime). The KPI summary strip is a one-shot read that has
+  // no realtime subscription of its own, so we pass this counter down as a
+  // refresh signal — without it the per-platform rows show pre-refresh
+  // aggregates (e.g. a stale "No metrics in this window" for LinkedIn even
+  // after the tiles below have repainted with fresh numbers).
+  const [engagementVersion, setEngagementVersion] = useState(0);
 
   useEffect(() => {
     if (!accountId) {
@@ -701,6 +708,8 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
         next.set(pubId, evt.snapshot);
         return next;
       });
+      // Signal the KPI summary strip to re-aggregate with the new snapshot.
+      setEngagementVersion((v) => v + 1);
     });
     const unsubEmbed = subscribeToAllEmbedCache((evt) => {
       if (evt.type === 'DELETE') {
@@ -822,7 +831,7 @@ const LivePostsView = ({ accountId, accountName, setRoute, isAgency }) => {
       </div>
 
       {/* Engagement summary strip (KPI tiles + per-platform rows) */}
-      <LivePostsSummary accountId={accountId} />
+      <LivePostsSummary accountId={accountId} refreshSignal={engagementVersion} />
 
       {/* Filter pills + search */}
       <div
