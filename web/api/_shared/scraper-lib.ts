@@ -674,8 +674,27 @@ export async function persistScrapeResult(
     .single();
   if (snapErr) throw new Error(`Failed to write snapshot: ${snapErr.message}`);
 
+  // Only write the embed cache when the scrape actually returned content.
+  // A degraded/empty scrape (e.g. a `partial` whose author/caption/media all
+  // came back null) must NOT clobber a previously-good embed with nulls —
+  // that's what produced the "Unknown author", caption-less cards. This is
+  // the embed-side analog of the last-good metrics fallback in db.js: a
+  // failed refresh means "couldn't read it this time", not "the post has no
+  // author/content now". A genuinely good scrape always repopulates it.
+  const e = result.embed;
+  const embedHasContent =
+    !!e &&
+    !!(
+      e.author_display_name ||
+      e.author_handle ||
+      e.author_avatar_url ||
+      e.caption ||
+      e.media_url ||
+      (Array.isArray(e.media_urls) && e.media_urls.length > 0)
+    );
+
   let upsertedEmbed: unknown = null;
-  if (result.ok && result.embed) {
+  if (result.ok && result.embed && embedHasContent) {
     const embedRow = {
       publication_id: publicationId,
       author_handle: result.embed.author_handle,

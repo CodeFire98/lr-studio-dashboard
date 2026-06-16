@@ -639,7 +639,23 @@ async function persistScrapeResult(
     .insert(snapshotRow);
   if (snapErr) throw new Error(`Failed to write snapshot: ${snapErr.message}`);
 
-  if (result.ok && result.embed) {
+  // Don't let a degraded/empty scrape (a `partial` with all-null author/
+  // caption/media) clobber a previously-good embed with nulls — that's what
+  // produced the "Unknown author", caption-less cards. Mirrors the Vercel
+  // scraper-lib.ts persist guard + the last-good metrics fallback in db.js.
+  const e = result.embed;
+  const embedHasContent =
+    !!e &&
+    !!(
+      e.author_display_name ||
+      e.author_handle ||
+      e.author_avatar_url ||
+      e.caption ||
+      e.media_url ||
+      (Array.isArray(e.media_urls) && e.media_urls.length > 0)
+    );
+
+  if (result.ok && result.embed && embedHasContent) {
     const embedRow = {
       publication_id: publicationId,
       author_handle: result.embed.author_handle,
