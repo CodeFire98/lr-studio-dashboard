@@ -55,7 +55,7 @@ console.log("[chat] module-load-ok");
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 // supabase-js client now created inside auth-lib.
-import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
+import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "../_shared/auth-lib.js";
 import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 import {
   stripDashes,

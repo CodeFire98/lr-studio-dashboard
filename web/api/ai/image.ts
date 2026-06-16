@@ -46,7 +46,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { compileImagePromptGuide } from "../../src/lib/skillRegistry.js";
-import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
+import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "../_shared/auth-lib.js";
 import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";

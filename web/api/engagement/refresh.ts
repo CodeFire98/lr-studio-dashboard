@@ -29,7 +29,7 @@ import {
   dispatchScrape,
   persistScrapeResult,
   type Platform,
-} from "./scraper-lib.js";
+} from "../_shared/scraper-lib.js";
 import { logServiceUsage, estimateApifyCostUsd } from "../_shared/usage.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
