@@ -2885,10 +2885,29 @@ export function mapEmbedCacheRow(row) {
   };
 }
 
-// Bulk loader — returns Map<publicationId, latestSnapshot>. The
-// schema indexes (publication_id, fetched_at desc) so the
-// distinct-on emulation here is cheap: fetch in order, keep first
-// hit per publication_id.
+// True when a snapshot carries at least one real metric reading. A
+// genuinely zero-engagement post still has numeric 0s here; a
+// failed/blocked/empty scrape has all-null metrics. Used to keep a
+// failed refresh from blanking out previously-good numbers.
+export function snapshotHasMetrics(s) {
+  if (!s) return false;
+  return [
+    s.likeCount, s.commentCount, s.shareCount, s.viewCount,
+    s.reactionCount, s.bookmarkCount, s.saveCount, s.quoteCount,
+  ].some((v) => typeof v === 'number');
+}
+
+// Bulk loader — returns Map<publicationId, snapshot>. The schema
+// indexes (publication_id, fetched_at desc) so the distinct-on
+// emulation here is cheap: fetch in order, keep first hit per
+// publication_id.
+//
+// A failed/empty scrape (all-null metrics) must NOT blank out the
+// last-known counts: a refresh failing means "we couldn't read it
+// this time", not "engagement is now zero". So we surface the LATEST
+// snapshot for refresh status/error/timestamp, but overlay the metric
+// fields from the most recent snapshot that actually had metrics
+// (flagged `metricsStale` so the UI can note the numbers are last-good).
 export async function loadLatestEngagementSnapshots(publicationIds) {
   if (!Array.isArray(publicationIds) || publicationIds.length === 0) return new Map();
   const { data, error } = await supabase
@@ -2897,11 +2916,39 @@ export async function loadLatestEngagementSnapshots(publicationIds) {
     .in('publication_id', publicationIds)
     .order('fetched_at', { ascending: false });
   if (error) throw error;
-  const out = new Map();
+  const latest = new Map();
+  const lastGood = new Map();
   for (const row of data || []) {
-    if (!out.has(row.publication_id)) {
-      out.set(row.publication_id, mapEngagementSnapshotRow(row));
+    const pubId = row.publication_id;
+    const snap = mapEngagementSnapshotRow(row);
+    if (!latest.has(pubId)) latest.set(pubId, snap);
+    if (!lastGood.has(pubId) && snapshotHasMetrics(snap)) lastGood.set(pubId, snap);
+  }
+  const out = new Map();
+  for (const [pubId, latestSnap] of latest.entries()) {
+    if (snapshotHasMetrics(latestSnap)) {
+      out.set(pubId, latestSnap);
+      continue;
     }
+    const good = lastGood.get(pubId);
+    if (!good) {
+      out.set(pubId, latestSnap); // nothing good to fall back to
+      continue;
+    }
+    out.set(pubId, {
+      ...latestSnap,
+      likeCount: good.likeCount,
+      commentCount: good.commentCount,
+      shareCount: good.shareCount,
+      saveCount: good.saveCount,
+      viewCount: good.viewCount,
+      bookmarkCount: good.bookmarkCount,
+      quoteCount: good.quoteCount,
+      reactionCount: good.reactionCount,
+      engagementRate: good.engagementRate,
+      metricsStale: true,
+      metricsFetchedAt: good.fetchedAt,
+    });
   }
   return out;
 }
@@ -4336,15 +4383,20 @@ function istDayKeyToEndOfDayMs(key) {
 
 // Find latest snapshot in a pub's sorted (asc) snapshot list with
 // fetched_at <= asOfMs. Returns null if no snapshot qualifies.
-function latestSnapshotAtOrBefore(snaps, asOfMs) {
+// Latest snapshot at-or-before asOfMs that carries real metrics —
+// skips failed/blocked/empty scrapes so a single bad refresh doesn't
+// zero out the brand's aggregate numbers. Falls back to the most
+// recent snapshot that actually had a reading. Mirrors the last-good
+// logic in loadLatestEngagementSnapshots.
+function latestSnapshotWithMetricsAtOrBefore(snaps, asOfMs) {
   if (!snaps || snaps.length === 0) return null;
-  let latest = null;
+  let best = null;
   for (const s of snaps) {
     const t = new Date(s.fetchedAt).getTime();
     if (t > asOfMs) break;
-    latest = s;
+    if (snapshotHasMetrics(s)) best = s;
   }
-  return latest;
+  return best;
 }
 
 // Aggregate cumulative engagement / views / posts across publications,
@@ -4366,7 +4418,7 @@ function aggregateAtTime(publications, snapsByPub, asOfMs, platformFilter = null
     postsCount += 1;
 
     const snaps = snapsByPub.get(pub.id) || [];
-    const snap = latestSnapshotAtOrBefore(snaps, asOfMs);
+    const snap = latestSnapshotWithMetricsAtOrBefore(snaps, asOfMs);
     if (!snap) continue;
 
     engagement += summaryEngagementTotal(snap);
@@ -4405,7 +4457,7 @@ function aggregatePerMetricAtTime(publications, snapsByPub, asOfMs, platform, me
     if (!pub.publishedAt) continue;
     if (new Date(pub.publishedAt).getTime() > asOfMs) continue;
     const snaps = snapsByPub.get(pub.id) || [];
-    const snap = latestSnapshotAtOrBefore(snaps, asOfMs);
+    const snap = latestSnapshotWithMetricsAtOrBefore(snaps, asOfMs);
     if (!snap) continue;
     const v = snap[metricKey];
     if (typeof v !== 'number') continue;

@@ -145,7 +145,18 @@ const refreshFooter = ({ snapshot, refreshing, lastError, embed }) => {
     return 'Metrics paused — Apify monthly quota exhausted';
   }
   if (snapshot.scrapeStatus === 'failed') {
+    // A failed refresh doesn't mean engagement is zero — if we still
+    // have last-good metrics (see loadLatestEngagementSnapshots) the
+    // card shows those, so say so rather than implying no data.
+    if (snapshot.metricsStale) {
+      const ago = formatRelative(snapshot.metricsFetchedAt);
+      return ago ? `Showing last good figures (${ago}) · latest refresh failed` : 'Showing last good figures · latest refresh failed';
+    }
     return snapshot.errorMessage ? `Last refresh failed: ${snapshot.errorMessage}` : 'Last refresh failed';
+  }
+  if (snapshot.metricsStale) {
+    const ago = formatRelative(snapshot.metricsFetchedAt);
+    return ago ? `Showing last good figures (${ago}) · latest refresh incomplete` : 'Showing last good figures · latest refresh incomplete';
   }
   const ts = formatRelative(snapshot.fetchedAt);
   const note = snapshot.scrapeStatus === 'partial' ? ' (partial)' : '';
