@@ -46,7 +46,7 @@ import { streamText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { loadAndCompileBrandContext } from "../../src/lib/brandContext.js";
 import { compileCopyGuidance } from "../../src/lib/skillRegistry.js";
-import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "./auth-lib.js";
+import { authorizeAiCall, checkAndRecordAiUsage, quotaExceededResponse } from "../_shared/auth-lib.js";
 import { logServiceUsage, estimateAnthropicCostUsd } from "../_shared/usage.js";
 import {
   stripDashes,
