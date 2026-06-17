@@ -821,12 +821,31 @@ async function handleDailyDigest(body: DailyDigestRequest): Promise<Response> {
     appUrl: APP_URL,
   });
 
-  const { ids, failures } = await callResendBatch({
-    recipients: body.recipients,
-    subject: rendered.subject,
-    html: rendered.html,
-    text: rendered.text,
-  });
+  // Resend counts EACH email in an /emails/batch call toward the 2 req/sec
+  // cap, so a multi-recipient brand digest 429s as a single batch — exactly
+  // the same failure the service-usage-daily template hit. Observed: Bamboo
+  // Bear's 4 recipients failed every night from ~2026-06-11 with
+  // "Resend 429: ... 2 requests per second". Mirror that template's fix:
+  // send one-at-a-time with an 1100ms spacer (sliding 1s window) and lean on
+  // callResend's built-in 429 retry. Brand recipient counts are small.
+  const ids: string[] = [];
+  const failures: Array<{ to: string; error: string }> = [];
+  const SPACER_MS = 1100;
+  for (let i = 0; i < body.recipients.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, SPACER_MS));
+    const to = body.recipients[i];
+    try {
+      const { id } = await callResend({
+        to,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
+      });
+      ids.push(id);
+    } catch (ex) {
+      failures.push({ to, error: (ex as Error).message });
+    }
+  }
 
   const totalRecipients = body.recipients.length;
   if (ids.length === 0) {
