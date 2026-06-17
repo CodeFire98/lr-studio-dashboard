@@ -260,15 +260,16 @@ async function callResend(args: {
   };
   if (args.replyTo) payload.reply_to = args.replyTo;
 
-  // 1-shot retry on Resend 429. Our plan caps at 2 req/sec sliding-window;
-  // the digest spacer alone isn't always enough because Resend's window
-  // boundary timing isn't strictly aligned with our setTimeout deltas
-  // (network jitter, function cold-start, Deno timer skew all contribute).
-  // We give it one extra try with a 1500ms cool-off — total worst case
-  // ~2s per recipient, still well inside the 90s timeout.
+  // Resend caps at 2 req/sec on our plan. The per-recipient spacer keeps
+  // OUR own sends apart, but at cron time (18:00 IST) the request can still
+  // collide with other traffic on the shared Resend key and 429. So retry
+  // 429s aggressively: up to 4 attempts, honoring Resend's `Retry-After`
+  // header when present, else exponential backoff (1s, 2s, 4s). Worst case
+  // ~7s/recipient — fine inside the function timeout, and it rides out a
+  // multi-second contention burst instead of hard-failing the whole brand.
+  const MAX_ATTEMPTS = 4;
   let lastErr: Error | null = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -285,9 +286,14 @@ async function callResend(args: {
     }
     const msg = (data as { message?: string } | null)?.message || text || res.statusText;
     lastErr = new Error(`Resend ${res.status}: ${msg}`);
-    // Only retry on 429 (rate limit). 4xx-other and 5xx aren't retryable
-    // from our side — bubble up.
-    if (res.status !== 429) break;
+    // Only 429 (rate limit) is retryable; other 4xx/5xx bubble up at once.
+    if (res.status !== 429 || attempt === MAX_ATTEMPTS - 1) break;
+    const retryAfterSec = parseInt(res.headers.get("retry-after") ?? "", 10);
+    const waitMs =
+      Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? retryAfterSec * 1000
+        : 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+    await new Promise((r) => setTimeout(r, waitMs));
   }
   throw lastErr ?? new Error("Resend call failed with no captured error");
 }
